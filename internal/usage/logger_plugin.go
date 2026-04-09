@@ -71,6 +71,9 @@ type RequestStatistics struct {
 	requestsByHour map[int]int64
 	tokensByDay    map[string]int64
 	tokensByHour   map[int]int64
+
+	// ipTracker tracks client IP activity
+	ipTracker *IPTracker
 }
 
 // apiStats holds aggregated metrics for a single API key.
@@ -140,14 +143,23 @@ var defaultRequestStatistics = NewRequestStatistics()
 // GetRequestStatistics returns the shared statistics store.
 func GetRequestStatistics() *RequestStatistics { return defaultRequestStatistics }
 
+// GetIPTracker returns the shared IP tracker.
+func GetIPTracker() *IPTracker {
+	if defaultRequestStatistics == nil {
+		return nil
+	}
+	return defaultRequestStatistics.ipTracker
+}
+
 // NewRequestStatistics constructs an empty statistics store.
 func NewRequestStatistics() *RequestStatistics {
 	return &RequestStatistics{
-		apis:           make(map[string]*apiStats),
-		requestsByDay:  make(map[string]int64),
+		apis:          make(map[string]*apiStats),
+		requestsByDay: make(map[string]int64),
 		requestsByHour: make(map[int]int64),
-		tokensByDay:    make(map[string]int64),
-		tokensByHour:   make(map[int]int64),
+		tokensByDay:   make(map[string]int64),
+		tokensByHour: make(map[int]int64),
+		ipTracker:     NewIPTracker(),
 	}
 }
 
@@ -178,6 +190,13 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	if modelName == "" {
 		modelName = "unknown"
 	}
+
+	// Record IP activity
+	clientIP := resolveClientIP(ctx)
+	if clientIP != "" && s.ipTracker != nil {
+		s.ipTracker.RecordActivity(clientIP, statsKey, totalTokens, failed)
+	}
+
 	dayKey := timestamp.Format("2006-01-02")
 	hourKey := timestamp.Hour()
 
@@ -422,6 +441,19 @@ func resolveAPIIdentifier(ctx context.Context, record coreusage.Record) string {
 		return record.Provider
 	}
 	return "unknown"
+}
+
+// resolveClientIP extracts the client IP address from the request context.
+// It uses Gin's ClientIP() method which handles X-Forwarded-For and X-Real-IP headers.
+func resolveClientIP(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || ginCtx == nil {
+		return ""
+	}
+	return ginCtx.ClientIP()
 }
 
 func resolveSuccess(ctx context.Context) bool {

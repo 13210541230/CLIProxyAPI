@@ -492,6 +492,9 @@ func (s *Server) registerManagementRoutes() {
 	{
 		mgmt.GET("/usage", s.mgmt.GetUsageStatistics)
 		mgmt.GET("/usage/export", s.mgmt.ExportUsageStatistics)
+		mgmt.GET("/active-ips", s.mgmt.GetActiveIPs)
+		mgmt.GET("/ip-statistics", s.mgmt.GetIPStatistics)
+		mgmt.DELETE("/inactive-ips", s.mgmt.CleanupInactiveIPs)
 		mgmt.POST("/usage/import", s.mgmt.ImportUsageStatistics)
 		mgmt.GET("/config", s.mgmt.GetConfig)
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
