@@ -28,6 +28,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/store"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
@@ -62,6 +63,26 @@ func defaultRequestLoggerFactory(cfg *config.Config, configPath string) logging.
 	configDir := filepath.Dir(configPath)
 	logsDir := logging.ResolveLogDirectory(cfg)
 	return logging.NewFileRequestLogger(cfg.RequestLog, logsDir, configDir, cfg.ErrorLogsMaxFiles)
+}
+
+func resolveKeyPermissionFilePath(configFilePath string) string {
+	if writable := strings.TrimSpace(util.WritablePath()); writable != "" {
+		return filepath.Join(writable, "key_permissions.json")
+	}
+
+	trimmed := strings.TrimSpace(configFilePath)
+	if trimmed == "" {
+		return ""
+	}
+
+	base := filepath.Dir(trimmed)
+	if info, err := os.Stat(trimmed); err == nil && info.IsDir() {
+		base = trimmed
+	}
+	if strings.TrimSpace(base) == "" {
+		return ""
+	}
+	return filepath.Join(base, "key_permissions.json")
 }
 
 // WithMiddleware appends additional Gin middleware during server construction.
@@ -177,6 +198,9 @@ type Server struct {
 	keepAliveOnTimeout func()
 	keepAliveHeartbeat chan struct{}
 	keepAliveStop      chan struct{}
+
+	// keyPermissionCache manages API key to model permissions
+	keyPermissionCache *store.KeyPermissionCache
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -253,7 +277,23 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		envManagementSecret: envManagementSecret,
 		wsRoutes:            make(map[string]struct{}),
 	}
+	keyPermissionPath := resolveKeyPermissionFilePath(configFilePath)
+	if keyPermissionPath != "" {
+		s.keyPermissionCache = store.NewKeyPermissionCache(keyPermissionPath)
+		if errEnsure := s.keyPermissionCache.EnsureDefault(); errEnsure != nil {
+			log.Warnf("key permission cache ensure default failed: %v", errEnsure)
+		}
+		if errLoad := s.keyPermissionCache.Load(); errLoad != nil {
+			log.Warnf("key permission cache initial load failed: %v", errLoad)
+		}
+	}
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
+
+	// Start key permission cache reload loop
+	if s.keyPermissionCache != nil {
+		s.keyPermissionCache.StartReloadLoop(30 * time.Second)
+	}
+
 	// Save initial YAML snapshot
 	s.oldConfigYaml, _ = yaml.Marshal(cfg)
 	s.applyAccessConfig(nil, cfg)
@@ -333,6 +373,9 @@ func (s *Server) setupRoutes() {
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
 	v1.Use(AuthMiddleware(s.accessManager))
+	if s.keyPermissionCache != nil {
+		v1.Use(middleware.ModelPermissionMiddleware(s.keyPermissionCache))
+	}
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
@@ -347,6 +390,9 @@ func (s *Server) setupRoutes() {
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
 	v1beta.Use(AuthMiddleware(s.accessManager))
+	if s.keyPermissionCache != nil {
+		v1beta.Use(middleware.ModelPermissionMiddleware(s.keyPermissionCache))
+	}
 	{
 		v1beta.GET("/models", geminiHandlers.GeminiModels)
 		v1beta.POST("/models/*action", geminiHandlers.GeminiHandler)
@@ -477,6 +523,12 @@ func (s *Server) registerManagementRoutes() {
 
 	mgmt := s.engine.Group("/v0/management")
 	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
+	if s.keyPermissionCache != nil {
+		mgmt.Use(func(c *gin.Context) {
+			c.Set("keyPermissionCache", s.keyPermissionCache)
+			c.Next()
+		})
+	}
 	{
 		mgmt.GET("/usage", s.mgmt.GetUsageStatistics)
 		mgmt.GET("/usage/export", s.mgmt.ExportUsageStatistics)
@@ -625,6 +677,13 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/auth-files/status", s.mgmt.PatchAuthFileStatus)
 		mgmt.PATCH("/auth-files/fields", s.mgmt.PatchAuthFileFields)
 		mgmt.POST("/vertex/import", s.mgmt.ImportVertexCredential)
+
+		// Key Permission Management API
+		mgmt.GET("/key-permissions", s.mgmt.GetKeyPermissions)
+		mgmt.GET("/key-permissions/:key", s.mgmt.GetKeyPermission)
+		mgmt.PUT("/key-permissions/:key", s.mgmt.PutKeyPermission)
+		mgmt.PATCH("/key-permissions/:key", s.mgmt.PatchKeyPermission)
+		mgmt.DELETE("/key-permissions/:key", s.mgmt.DeleteKeyPermission)
 
 		mgmt.GET("/anthropic-auth-url", s.mgmt.RequestAnthropicToken)
 		mgmt.GET("/codex-auth-url", s.mgmt.RequestCodexToken)
@@ -821,6 +880,10 @@ func (s *Server) Stop(ctx context.Context) error {
 		case s.keepAliveStop <- struct{}{}:
 		default:
 		}
+	}
+
+	if s.keyPermissionCache != nil {
+		s.keyPermissionCache.Stop()
 	}
 
 	// Shutdown the HTTP server.
