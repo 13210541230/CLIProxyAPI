@@ -6,6 +6,37 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
 
+func TestBuildConfigModelsCopiesConfiguredContextWindow(t *testing.T) {
+	models := []config.CodexModel{{
+		Name:          "gpt-5-codex",
+		Alias:         "codex-custom",
+		ContextWindow: 262144,
+	}}
+
+	out := buildConfigModels(models, "openai", "openai")
+	if len(out) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(out))
+	}
+	if got := out[0].ContextLength; got != 262144 {
+		t.Fatalf("expected context length 262144, got %d", got)
+	}
+}
+
+func TestBuildConfigModelsLeavesContextWindowUnsetByDefault(t *testing.T) {
+	models := []config.CodexModel{{
+		Name:  "gpt-5-codex",
+		Alias: "codex-custom",
+	}}
+
+	out := buildConfigModels(models, "openai", "openai")
+	if len(out) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(out))
+	}
+	if got := out[0].ContextLength; got != 0 {
+		t.Fatalf("expected default context length 0, got %d", got)
+	}
+}
+
 func TestApplyOAuthModelAlias_Rename(t *testing.T) {
 	cfg := &config.Config{
 		OAuthModelAlias: map[string][]config.OAuthModelAlias{

@@ -411,10 +411,14 @@ type ClaudeModel struct {
 
 	// Alias is the client-facing model name that maps to Name.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// ContextWindow overrides the advertised context window for this model.
+	ContextWindow int `yaml:"context-window,omitempty" json:"context-window,omitempty"`
 }
 
-func (m ClaudeModel) GetName() string  { return m.Name }
-func (m ClaudeModel) GetAlias() string { return m.Alias }
+func (m ClaudeModel) GetName() string         { return m.Name }
+func (m ClaudeModel) GetAlias() string        { return m.Alias }
+func (m ClaudeModel) GetContextWindow() int   { return m.ContextWindow }
 
 // CodexKey represents the configuration for a Codex API key,
 // including the API key itself and an optional base URL for the API endpoint.
@@ -459,10 +463,14 @@ type CodexModel struct {
 
 	// Alias is the client-facing model name that maps to Name.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// ContextWindow overrides the advertised context window for this model.
+	ContextWindow int `yaml:"context-window,omitempty" json:"context-window,omitempty"`
 }
 
-func (m CodexModel) GetName() string  { return m.Name }
-func (m CodexModel) GetAlias() string { return m.Alias }
+func (m CodexModel) GetName() string         { return m.Name }
+func (m CodexModel) GetAlias() string        { return m.Alias }
+func (m CodexModel) GetContextWindow() int   { return m.ContextWindow }
 
 // GeminiKey represents the configuration for a Gemini API key,
 // including optional overrides for upstream base URL, proxy routing, and headers.
@@ -503,10 +511,14 @@ type GeminiModel struct {
 
 	// Alias is the client-facing model name that maps to Name.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// ContextWindow overrides the advertised context window for this model.
+	ContextWindow int `yaml:"context-window,omitempty" json:"context-window,omitempty"`
 }
 
-func (m GeminiModel) GetName() string  { return m.Name }
-func (m GeminiModel) GetAlias() string { return m.Alias }
+func (m GeminiModel) GetName() string         { return m.Name }
+func (m GeminiModel) GetAlias() string        { return m.Alias }
+func (m GeminiModel) GetContextWindow() int   { return m.ContextWindow }
 
 // OpenAICompatibility represents the configuration for OpenAI API compatibility
 // with external providers, allowing model aliases to be routed through OpenAI API format.
@@ -552,13 +564,17 @@ type OpenAICompatibilityModel struct {
 	// Alias is the model name alias that clients will use to reference this model.
 	Alias string `yaml:"alias" json:"alias"`
 
+	// ContextWindow overrides the advertised context window for this model.
+	ContextWindow int `yaml:"context-window,omitempty" json:"context-window,omitempty"`
+
 	// Thinking configures the thinking/reasoning capability for this model.
 	// If nil, the model defaults to level-based reasoning with levels ["low", "medium", "high"].
 	Thinking *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
 }
 
-func (m OpenAICompatibilityModel) GetName() string  { return m.Name }
-func (m OpenAICompatibilityModel) GetAlias() string { return m.Alias }
+func (m OpenAICompatibilityModel) GetName() string         { return m.Name }
+func (m OpenAICompatibilityModel) GetAlias() string        { return m.Alias }
+func (m OpenAICompatibilityModel) GetContextWindow() int   { return m.ContextWindow }
 
 // LoadConfig reads a YAML configuration file from the given path,
 // unmarshals it into a Config struct, applies environment variable overrides,

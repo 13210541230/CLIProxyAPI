@@ -17,7 +17,11 @@ func TestServiceApplyCoreAuthAddOrUpdate_DeleteReAddDoesNotInheritStaleRuntimeSt
 	}
 
 	authID := "service-stale-state-auth"
-	modelID := "stale-model"
+	claudeModels := registry.GetClaudeModels()
+	if len(claudeModels) == 0 || claudeModels[0] == nil || claudeModels[0].ID == "" {
+		t.Fatal("expected static Claude models for regression setup")
+	}
+	modelID := claudeModels[0].ID
 	lastRefreshedAt := time.Date(2026, time.March, 1, 8, 0, 0, 0, time.UTC)
 	nextRefreshAfter := lastRefreshedAt.Add(30 * time.Minute)
 

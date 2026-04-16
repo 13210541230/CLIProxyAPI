@@ -13,6 +13,7 @@ import (
 	gin "github.com/gin-gonic/gin"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
@@ -67,6 +68,75 @@ func TestHealthz(t *testing.T) {
 	if resp.Status != "ok" {
 		t.Fatalf("unexpected response status: got %q want %q", resp.Status, "ok")
 	}
+}
+
+func TestUnifiedModelsExposeClientSpecificMetadata(t *testing.T) {
+	server := newTestServer(t)
+	reg := registry.GetGlobalRegistry()
+
+	reg.RegisterClient("claude-client", "claude", []*registry.ModelInfo{{
+		ID:                  "claude-sonnet",
+		OwnedBy:             "anthropic",
+		ContextLength:       200000,
+		MaxCompletionTokens: 8192,
+	}})
+	defer reg.UnregisterClient("claude-client")
+
+	reg.RegisterClient("openai-client", "openai", []*registry.ModelInfo{{
+		ID:                  "gpt-5-codex",
+		OwnedBy:             "openai",
+		ContextLength:       400000,
+		MaxCompletionTokens: 32000,
+	}})
+	defer reg.UnregisterClient("openai-client")
+
+	reg.RegisterClient("codex-config-client", "openai", []*registry.ModelInfo{{
+		ID:            "codex-custom",
+		OwnedBy:       "openai",
+		ContextLength: 262144,
+	}})
+	defer reg.UnregisterClient("codex-config-client")
+
+	t.Run("claude user agent", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("User-Agent", "claude-cli/1.0")
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+		}
+		body := rr.Body.String()
+		if !strings.Contains(body, `"max_input_tokens":200000`) {
+			t.Fatalf("expected Claude response to include max_input_tokens, body=%s", body)
+		}
+		if !strings.Contains(body, `"max_tokens":8192`) {
+			t.Fatalf("expected Claude response to include max_tokens, body=%s", body)
+		}
+	})
+
+	t.Run("openai user agent", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("User-Agent", "codex-cli/1.0")
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+		}
+		body := rr.Body.String()
+		if !strings.Contains(body, `"context_window":400000`) {
+			t.Fatalf("expected OpenAI response to include context_window, body=%s", body)
+		}
+		if !strings.Contains(body, `"auto_compact_token_limit":32000`) {
+			t.Fatalf("expected OpenAI response to include auto_compact_token_limit, body=%s", body)
+		}
+		if !strings.Contains(body, `"id":"codex-custom"`) || !strings.Contains(body, `"context_window":262144`) {
+			t.Fatalf("expected configured OpenAI model to expose overridden context_window, body=%s", body)
+		}
+	})
 }
 
 func TestAmpProviderModelRoutes(t *testing.T) {
