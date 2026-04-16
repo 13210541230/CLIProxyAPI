@@ -62,7 +62,6 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 	// Get all available models
 	allModels := h.Models()
 
-	// Filter to only include the 4 required fields: id, object, created, owned_by
 	filteredModels := make([]map[string]any, len(allModels))
 	for i, model := range allModels {
 		filteredModel := map[string]any{
@@ -70,14 +69,23 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 			"object": model["object"],
 		}
 
-		// Add created field if it exists
 		if created, exists := model["created"]; exists {
 			filteredModel["created"] = created
 		}
-
-		// Add owned_by field if it exists
 		if ownedBy, exists := model["owned_by"]; exists {
 			filteredModel["owned_by"] = ownedBy
+		}
+		if contextWindow, exists := model["context_window"]; exists {
+			filteredModel["context_window"] = contextWindow
+		}
+		if autoCompact, exists := model["auto_compact_token_limit"]; exists {
+			filteredModel["auto_compact_token_limit"] = autoCompact
+		}
+		if effectivePercent, exists := model["effective_context_window_percent"]; exists {
+			filteredModel["effective_context_window_percent"] = effectivePercent
+		}
+		if truncationPolicy, exists := model["truncation_policy"]; exists {
+			filteredModel["truncation_policy"] = truncationPolicy
 		}
 
 		filteredModels[i] = filteredModel

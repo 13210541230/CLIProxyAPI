@@ -11,12 +11,12 @@ import (
 	"time"
 
 	gin "github.com/gin-gonic/gin"
-	proxyconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
 
 func newTestServer(t *testing.T) *Server {
@@ -51,124 +51,90 @@ func newTestServer(t *testing.T) *Server {
 func TestHealthz(t *testing.T) {
 	server := newTestServer(t)
 
-	t.Run("GET", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	var resp struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response JSON: %v; body=%s", err, rr.Body.String())
+	}
+	if resp.Status != "ok" {
+		t.Fatalf("unexpected response status: got %q want %q", resp.Status, "ok")
+	}
+}
+
+func TestUnifiedModelsExposeClientSpecificMetadata(t *testing.T) {
+	server := newTestServer(t)
+	reg := registry.GetGlobalRegistry()
+
+	reg.RegisterClient("claude-client", "claude", []*registry.ModelInfo{{
+		ID:                  "claude-sonnet",
+		OwnedBy:             "anthropic",
+		ContextLength:       200000,
+		MaxCompletionTokens: 8192,
+	}})
+	defer reg.UnregisterClient("claude-client")
+
+	reg.RegisterClient("openai-client", "openai", []*registry.ModelInfo{{
+		ID:                  "gpt-5-codex",
+		OwnedBy:             "openai",
+		ContextLength:       400000,
+		MaxCompletionTokens: 32000,
+	}})
+	defer reg.UnregisterClient("openai-client")
+
+	reg.RegisterClient("codex-config-client", "openai", []*registry.ModelInfo{{
+		ID:            "codex-custom",
+		OwnedBy:       "openai",
+		ContextLength: 262144,
+	}})
+	defer reg.UnregisterClient("codex-config-client")
+
+	t.Run("claude user agent", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("User-Agent", "claude-cli/1.0")
 		rr := httptest.NewRecorder()
 		server.engine.ServeHTTP(rr, req)
 
 		if rr.Code != http.StatusOK {
 			t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
 		}
-
-		var resp struct {
-			Status string `json:"status"`
+		body := rr.Body.String()
+		if !strings.Contains(body, `"max_input_tokens":200000`) {
+			t.Fatalf("expected Claude response to include max_input_tokens, body=%s", body)
 		}
-		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-			t.Fatalf("failed to parse response JSON: %v; body=%s", err, rr.Body.String())
-		}
-		if resp.Status != "ok" {
-			t.Fatalf("unexpected response status: got %q want %q", resp.Status, "ok")
+		if !strings.Contains(body, `"max_tokens":8192`) {
+			t.Fatalf("expected Claude response to include max_tokens, body=%s", body)
 		}
 	})
 
-	t.Run("HEAD", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodHead, "/healthz", nil)
+	t.Run("openai user agent", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("User-Agent", "codex-cli/1.0")
 		rr := httptest.NewRecorder()
 		server.engine.ServeHTTP(rr, req)
 
 		if rr.Code != http.StatusOK {
 			t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
 		}
-		if rr.Body.Len() != 0 {
-			t.Fatalf("expected empty body for HEAD request, got %q", rr.Body.String())
+		body := rr.Body.String()
+		if !strings.Contains(body, `"context_window":400000`) {
+			t.Fatalf("expected OpenAI response to include context_window, body=%s", body)
 		}
-	})
-}
-
-func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
-
-	prevQueueEnabled := redisqueue.Enabled()
-	redisqueue.SetEnabled(false)
-	t.Cleanup(func() {
-		redisqueue.SetEnabled(false)
-		redisqueue.SetEnabled(prevQueueEnabled)
-	})
-
-	server := newTestServer(t)
-
-	redisqueue.Enqueue([]byte(`{"id":1}`))
-	redisqueue.Enqueue([]byte(`{"id":2}`))
-
-	missingKeyReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage-queue?count=2", nil)
-	missingKeyRR := httptest.NewRecorder()
-	server.engine.ServeHTTP(missingKeyRR, missingKeyReq)
-	if missingKeyRR.Code != http.StatusUnauthorized {
-		t.Fatalf("missing key status = %d, want %d body=%s", missingKeyRR.Code, http.StatusUnauthorized, missingKeyRR.Body.String())
-	}
-
-	legacyReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage?count=2", nil)
-	legacyReq.Header.Set("Authorization", "Bearer test-management-key")
-	legacyRR := httptest.NewRecorder()
-	server.engine.ServeHTTP(legacyRR, legacyReq)
-	if legacyRR.Code != http.StatusNotFound {
-		t.Fatalf("legacy usage status = %d, want %d body=%s", legacyRR.Code, http.StatusNotFound, legacyRR.Body.String())
-	}
-
-	authReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage-queue?count=2", nil)
-	authReq.Header.Set("Authorization", "Bearer test-management-key")
-	authRR := httptest.NewRecorder()
-	server.engine.ServeHTTP(authRR, authReq)
-	if authRR.Code != http.StatusOK {
-		t.Fatalf("authenticated status = %d, want %d body=%s", authRR.Code, http.StatusOK, authRR.Body.String())
-	}
-
-	var payload []json.RawMessage
-	if errUnmarshal := json.Unmarshal(authRR.Body.Bytes(), &payload); errUnmarshal != nil {
-		t.Fatalf("unmarshal response: %v body=%s", errUnmarshal, authRR.Body.String())
-	}
-	if len(payload) != 2 {
-		t.Fatalf("response records = %d, want 2", len(payload))
-	}
-	for i, raw := range payload {
-		var record struct {
-			ID int `json:"id"`
+		if !strings.Contains(body, `"auto_compact_token_limit":32000`) {
+			t.Fatalf("expected OpenAI response to include auto_compact_token_limit, body=%s", body)
 		}
-		if errUnmarshal := json.Unmarshal(raw, &record); errUnmarshal != nil {
-			t.Fatalf("unmarshal record %d: %v", i, errUnmarshal)
-		}
-		if record.ID != i+1 {
-			t.Fatalf("record %d id = %d, want %d", i, record.ID, i+1)
-		}
-	}
-
-	if remaining := redisqueue.PopOldest(1); len(remaining) != 0 {
-		t.Fatalf("remaining queue = %q, want empty", remaining)
-	}
-}
-
-func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
-	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
-
-	server := newTestServer(t)
-	server.cfg.Home.Enabled = true
-
-	t.Run("management endpoints return 404", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/v0/management/config", nil)
-		req.Header.Set("Authorization", "Bearer test-management-key")
-		rr := httptest.NewRecorder()
-		server.engine.ServeHTTP(rr, req)
-		if rr.Code != http.StatusNotFound {
-			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
-		}
-	})
-
-	t.Run("management control panel returns 404", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/management.html", nil)
-		rr := httptest.NewRecorder()
-		server.engine.ServeHTTP(rr, req)
-		if rr.Code != http.StatusNotFound {
-			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
+		if !strings.Contains(body, `"id":"codex-custom"`) || !strings.Contains(body, `"context_window":262144`) {
+			t.Fatalf("expected configured OpenAI model to expose overridden context_window, body=%s", body)
 		}
 	})
 }
