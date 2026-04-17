@@ -239,9 +239,10 @@ type RoutingConfig struct {
 // When Fork is true, the alias is added as an additional model in listings while
 // keeping the original model ID available.
 type OAuthModelAlias struct {
-	Name  string `yaml:"name" json:"name"`
-	Alias string `yaml:"alias" json:"alias"`
-	Fork  bool   `yaml:"fork,omitempty" json:"fork,omitempty"`
+	Name          string `yaml:"name" json:"name"`
+	Alias         string `yaml:"alias" json:"alias"`
+	Fork          bool   `yaml:"fork,omitempty" json:"fork,omitempty"`
+	ContextWindow int    `yaml:"context-window,omitempty" json:"context-window,omitempty"`
 }
 
 // AmpModelMapping defines a model name mapping for Amp CLI requests.
@@ -416,9 +417,9 @@ type ClaudeModel struct {
 	ContextWindow int `yaml:"context-window,omitempty" json:"context-window,omitempty"`
 }
 
-func (m ClaudeModel) GetName() string         { return m.Name }
-func (m ClaudeModel) GetAlias() string        { return m.Alias }
-func (m ClaudeModel) GetContextWindow() int   { return m.ContextWindow }
+func (m ClaudeModel) GetName() string       { return m.Name }
+func (m ClaudeModel) GetAlias() string      { return m.Alias }
+func (m ClaudeModel) GetContextWindow() int { return m.ContextWindow }
 
 // CodexKey represents the configuration for a Codex API key,
 // including the API key itself and an optional base URL for the API endpoint.
@@ -468,9 +469,9 @@ type CodexModel struct {
 	ContextWindow int `yaml:"context-window,omitempty" json:"context-window,omitempty"`
 }
 
-func (m CodexModel) GetName() string         { return m.Name }
-func (m CodexModel) GetAlias() string        { return m.Alias }
-func (m CodexModel) GetContextWindow() int   { return m.ContextWindow }
+func (m CodexModel) GetName() string       { return m.Name }
+func (m CodexModel) GetAlias() string      { return m.Alias }
+func (m CodexModel) GetContextWindow() int { return m.ContextWindow }
 
 // GeminiKey represents the configuration for a Gemini API key,
 // including optional overrides for upstream base URL, proxy routing, and headers.
@@ -516,9 +517,9 @@ type GeminiModel struct {
 	ContextWindow int `yaml:"context-window,omitempty" json:"context-window,omitempty"`
 }
 
-func (m GeminiModel) GetName() string         { return m.Name }
-func (m GeminiModel) GetAlias() string        { return m.Alias }
-func (m GeminiModel) GetContextWindow() int   { return m.ContextWindow }
+func (m GeminiModel) GetName() string       { return m.Name }
+func (m GeminiModel) GetAlias() string      { return m.Alias }
+func (m GeminiModel) GetContextWindow() int { return m.ContextWindow }
 
 // OpenAICompatibility represents the configuration for OpenAI API compatibility
 // with external providers, allowing model aliases to be routed through OpenAI API format.
@@ -572,9 +573,9 @@ type OpenAICompatibilityModel struct {
 	Thinking *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
 }
 
-func (m OpenAICompatibilityModel) GetName() string         { return m.Name }
-func (m OpenAICompatibilityModel) GetAlias() string        { return m.Alias }
-func (m OpenAICompatibilityModel) GetContextWindow() int   { return m.ContextWindow }
+func (m OpenAICompatibilityModel) GetName() string       { return m.Name }
+func (m OpenAICompatibilityModel) GetAlias() string      { return m.Alias }
+func (m OpenAICompatibilityModel) GetContextWindow() int { return m.ContextWindow }
 
 // LoadConfig reads a YAML configuration file from the given path,
 // unmarshals it into a Config struct, applies environment variable overrides,
@@ -833,7 +834,7 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 			if name == "" || alias == "" {
 				continue
 			}
-			if strings.EqualFold(name, alias) {
+			if strings.EqualFold(name, alias) && entry.ContextWindow == 0 {
 				continue
 			}
 			aliasKey := strings.ToLower(alias)
@@ -841,7 +842,7 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 				continue
 			}
 			seenAlias[aliasKey] = struct{}{}
-			clean = append(clean, OAuthModelAlias{Name: name, Alias: alias, Fork: entry.Fork})
+			clean = append(clean, OAuthModelAlias{Name: name, Alias: alias, Fork: entry.Fork, ContextWindow: entry.ContextWindow})
 		}
 		if len(clean) > 0 {
 			out[channel] = clean
