@@ -72,6 +72,23 @@ CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-fo
 
 请参见 [MANAGEMENT_API_CN.md](https://help.router-for.me/cn/management/api)
 
+常用端点（统一前缀 `/v0/management`）：
+
+- `GET /check-update` — 检查 GitHub 最新发布信息（`latest_version`、`has_update`、`download_url`、`release_url`）。
+- `GET /latest-version` — 仅返回最新版本号（轻量检查）。
+- `GET /key-permissions` — 获取 API Key 模型权限列表。
+- `GET /key-permissions/:key` — 获取单个 API Key 权限。
+- `PUT /key-permissions/:key` — 创建或整条替换单个 API Key 权限。
+- `PATCH /key-permissions/:key` — 部分更新单个 API Key 权限。
+- `DELETE /key-permissions/:key` — 删除单个 API Key 权限。
+
+`key-permissions` 数据字段：
+
+- `key_id`（字符串）
+- `models`（字符串数组）
+- `excluded_models`（字符串数组）
+- `label`（可选字符串）
+
 ## Amp CLI 支持
 
 CLIProxyAPI 已内置对 [Amp CLI](https://ampcode.com) 和 Amp IDE 扩展的支持，可让你使用自己的 Google/ChatGPT/Claude OAuth 订阅来配合 Amp 编码工具：

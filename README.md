@@ -72,6 +72,23 @@ CLIProxyAPI Guides: [https://help.router-for.me/](https://help.router-for.me/)
 
 see [MANAGEMENT_API.md](https://help.router-for.me/management/api)
 
+Common endpoints (under `/v0/management`):
+
+- `GET /check-update` — checks latest GitHub release metadata (`latest_version`, `has_update`, `download_url`, `release_url`).
+- `GET /latest-version` — returns the latest version string only (lightweight check).
+- `GET /key-permissions` — lists API key model permission entries.
+- `GET /key-permissions/:key` — gets one key permission entry.
+- `PUT /key-permissions/:key` — creates or fully replaces one key permission entry.
+- `PATCH /key-permissions/:key` — partially updates one key permission entry.
+- `DELETE /key-permissions/:key` — removes one key permission entry.
+
+`key-permissions` payload fields:
+
+- `key_id` (string)
+- `models` (string[])
+- `excluded_models` (string[])
+- `label` (string, optional)
+
 ## Amp CLI Support
 
 CLIProxyAPI includes integrated support for [Amp CLI](https://ampcode.com) and Amp IDE extensions, enabling you to use your Google/ChatGPT/Claude OAuth subscriptions with Amp's coding tools:
