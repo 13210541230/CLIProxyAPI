@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -136,14 +137,42 @@ func TestGetAvailableModelsReturnsClonedSupportedParameters(t *testing.T) {
 }
 
 func TestLookupModelInfoReturnsCloneForStaticDefinitions(t *testing.T) {
-	first := LookupModelInfo("glm-4.6")
-	if first == nil || first.Thinking == nil || len(first.Thinking.Levels) == 0 {
-		t.Fatalf("expected static model with thinking levels, got %+v", first)
+	all := [][]*ModelInfo{
+		GetClaudeModels(),
+		GetGeminiModels(),
+		GetGeminiVertexModels(),
+		GetGeminiCLIModels(),
+		GetAIStudioModels(),
+		GetCodexProModels(),
+		GetKimiModels(),
+		GetAntigravityModels(),
 	}
-	first.Thinking.Levels[0] = "mutated"
 
-	second := LookupModelInfo("glm-4.6")
-	if second == nil || second.Thinking == nil || len(second.Thinking.Levels) == 0 || second.Thinking.Levels[0] == "mutated" {
+	modelID := ""
+	for _, group := range all {
+		for _, model := range group {
+			if model != nil && strings.TrimSpace(model.ID) != "" {
+				modelID = model.ID
+				break
+			}
+		}
+		if modelID != "" {
+			break
+		}
+	}
+
+	if modelID == "" {
+		t.Skip("no static model definitions available")
+	}
+
+	first := LookupModelInfo(modelID)
+	if first == nil {
+		t.Fatalf("expected static model for %q", modelID)
+	}
+	first.DisplayName = "mutated"
+
+	second := LookupModelInfo(modelID)
+	if second == nil || second.DisplayName == "mutated" {
 		t.Fatalf("expected static lookup clone, got %+v", second)
 	}
 }

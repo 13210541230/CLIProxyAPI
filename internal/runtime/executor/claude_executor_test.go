@@ -1714,7 +1714,7 @@ func TestClaudeExecutor_ExecuteStream_AcceptEncodingOverrideCannotBypassIdentity
 	}
 }
 
-// Test case 1: String system prompt is preserved and converted to a content block
+// Test case 1: String system prompt is forwarded to first user message in non-strict mode
 func TestCheckSystemInstructionsWithMode_StringSystemPreserved(t *testing.T) {
 	payload := []byte(`{"system":"You are a helpful assistant.","messages":[{"role":"user","content":"hi"}]}`)
 
@@ -1733,14 +1733,16 @@ func TestCheckSystemInstructionsWithMode_StringSystemPreserved(t *testing.T) {
 	if !strings.HasPrefix(blocks[0].Get("text").String(), "x-anthropic-billing-header:") {
 		t.Fatalf("blocks[0] should be billing header, got %q", blocks[0].Get("text").String())
 	}
-	if blocks[1].Get("text").String() != "You are a Claude agent, built on Anthropic's Claude Agent SDK." {
+	if blocks[1].Get("text").String() != "You are Claude Code, Anthropic's official CLI for Claude." {
 		t.Fatalf("blocks[1] should be agent block, got %q", blocks[1].Get("text").String())
 	}
-	if blocks[2].Get("text").String() != "You are a helpful assistant." {
-		t.Fatalf("blocks[2] should be user system prompt, got %q", blocks[2].Get("text").String())
+	if !strings.Contains(blocks[2].Get("text").String(), helps.ClaudeCodeIntro) {
+		t.Fatalf("blocks[2] should contain static Claude Code prompt")
 	}
-	if blocks[2].Get("cache_control.type").String() != "ephemeral" {
-		t.Fatalf("blocks[2] should have cache_control.type=ephemeral")
+
+	firstUser := gjson.GetBytes(out, "messages.0.content").String()
+	if !strings.Contains(firstUser, "<system-reminder>") || !strings.Contains(firstUser, "You are a helpful assistant.") {
+		t.Fatalf("first user message should include forwarded system reminder, got %q", firstUser)
 	}
 }
 
@@ -1751,8 +1753,12 @@ func TestCheckSystemInstructionsWithMode_StringSystemStrict(t *testing.T) {
 	out := checkSystemInstructionsWithMode(payload, true)
 
 	blocks := gjson.GetBytes(out, "system").Array()
-	if len(blocks) != 2 {
-		t.Fatalf("strict mode should produce 2 blocks, got %d", len(blocks))
+	if len(blocks) != 3 {
+		t.Fatalf("strict mode should produce 3 system blocks, got %d", len(blocks))
+	}
+	firstUser := gjson.GetBytes(out, "messages.0.content").String()
+	if strings.Contains(firstUser, "<system-reminder>") || strings.Contains(firstUser, "You are a helpful assistant.") {
+		t.Fatalf("strict mode should not forward system prompt, got %q", firstUser)
 	}
 }
 
@@ -1763,12 +1769,16 @@ func TestCheckSystemInstructionsWithMode_EmptyStringSystemIgnored(t *testing.T) 
 	out := checkSystemInstructionsWithMode(payload, false)
 
 	blocks := gjson.GetBytes(out, "system").Array()
-	if len(blocks) != 2 {
-		t.Fatalf("empty string system should produce 2 blocks, got %d", len(blocks))
+	if len(blocks) != 3 {
+		t.Fatalf("empty string system should produce 3 system blocks, got %d", len(blocks))
+	}
+	firstUser := gjson.GetBytes(out, "messages.0.content").String()
+	if strings.Contains(firstUser, "<system-reminder>") {
+		t.Fatalf("empty system should not inject system reminder, got %q", firstUser)
 	}
 }
 
-// Test case 4: Array system prompt is unaffected by the string handling
+// Test case 4: Array system prompt is forwarded to first user message in non-strict mode
 func TestCheckSystemInstructionsWithMode_ArraySystemStillWorks(t *testing.T) {
 	payload := []byte(`{"system":[{"type":"text","text":"Be concise."}],"messages":[{"role":"user","content":"hi"}]}`)
 
@@ -1778,8 +1788,9 @@ func TestCheckSystemInstructionsWithMode_ArraySystemStillWorks(t *testing.T) {
 	if len(blocks) != 3 {
 		t.Fatalf("expected 3 system blocks, got %d", len(blocks))
 	}
-	if blocks[2].Get("text").String() != "Be concise." {
-		t.Fatalf("blocks[2] should be user system prompt, got %q", blocks[2].Get("text").String())
+	firstUser := gjson.GetBytes(out, "messages.0.content").String()
+	if !strings.Contains(firstUser, "<system-reminder>") || !strings.Contains(firstUser, "Be concise.") {
+		t.Fatalf("first user message should include forwarded array system prompt, got %q", firstUser)
 	}
 }
 
@@ -1793,8 +1804,9 @@ func TestCheckSystemInstructionsWithMode_StringWithSpecialChars(t *testing.T) {
 	if len(blocks) != 3 {
 		t.Fatalf("expected 3 system blocks, got %d", len(blocks))
 	}
-	if blocks[2].Get("text").String() != `Use <xml> tags & "quotes" in output.` {
-		t.Fatalf("blocks[2] text mangled, got %q", blocks[2].Get("text").String())
+	firstUser := gjson.GetBytes(out, "messages.0.content").String()
+	if !strings.Contains(firstUser, `<system-reminder>`) || !strings.Contains(firstUser, `Use <xml> tags & "quotes" in output.`) {
+		t.Fatalf("forwarded system prompt text mangled, got %q", firstUser)
 	}
 }
 
