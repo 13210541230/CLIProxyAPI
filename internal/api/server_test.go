@@ -116,6 +116,26 @@ func TestUnifiedModelsExposeClientSpecificMetadata(t *testing.T) {
 		}
 	})
 
+	t.Run("anthropic version header", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("anthropic-version", "2023-06-01")
+		req.Header.Set("User-Agent", "custom-client/1.0")
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+		}
+		body := rr.Body.String()
+		if !strings.Contains(body, `"max_input_tokens":200000`) {
+			t.Fatalf("expected Anthropic-compatible response to include max_input_tokens, body=%s", body)
+		}
+		if strings.Contains(body, `"context_window":400000`) {
+			t.Fatalf("expected Anthropic-compatible response to avoid OpenAI-only context_window field, body=%s", body)
+		}
+	})
+
 	t.Run("openai user agent", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 		req.Header.Set("Authorization", "Bearer test-key")

@@ -158,6 +158,37 @@ func TestGetAvailableModelsMapsClaudeTokenMetadata(t *testing.T) {
 	}
 }
 
+func TestGetAvailableModelsPrefersClaudeProviderMetadataForClaudeHandler(t *testing.T) {
+	r := newTestModelRegistry()
+	r.RegisterClient("claude-client", "claude", []*ModelInfo{{
+		ID:                  "gpt-5.4",
+		OwnedBy:             "anthropic",
+		ContextLength:       1050000,
+		MaxCompletionTokens: 128000,
+		DisplayName:         "gpt-5.4",
+	}})
+	r.RegisterClient("compat-client", "openai-compatibility", []*ModelInfo{{
+		ID:            "gpt-5.4",
+		OwnedBy:       "routin",
+		DisplayName:   "gpt-5.4",
+		ContextLength: 0,
+	}})
+
+	models := r.GetAvailableModels("claude")
+	if len(models) != 1 {
+		t.Fatalf("expected one model, got %d", len(models))
+	}
+	if got := models[0]["owned_by"]; got != "anthropic" {
+		t.Fatalf("expected claude handler to prefer anthropic owner, got %#v", got)
+	}
+	if got := models[0]["max_input_tokens"]; got != 1050000 {
+		t.Fatalf("expected max_input_tokens 1050000, got %#v", got)
+	}
+	if got := models[0]["max_tokens"]; got != 128000 {
+		t.Fatalf("expected max_tokens 128000, got %#v", got)
+	}
+}
+
 func TestGetAvailableModelsMapsOpenAIMetadataForCodex(t *testing.T) {
 	r := newTestModelRegistry()
 	r.RegisterClient("client-1", "openai", []*ModelInfo{{

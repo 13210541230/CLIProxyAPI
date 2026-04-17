@@ -814,19 +814,17 @@ func (s *Server) watchKeepAlive() {
 }
 
 // unifiedModelsHandler creates a unified handler for the /v1/models endpoint
-// that routes to different handlers based on the User-Agent header.
-// If User-Agent starts with "claude-cli", it routes to Claude handler,
-// otherwise it routes to OpenAI handler.
+// that routes Claude-compatible requests to the Claude handler and everything
+// else to the OpenAI handler.
 func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, claudeHandler *claude.ClaudeCodeAPIHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userAgent := c.GetHeader("User-Agent")
+		anthropicVersion := c.GetHeader("anthropic-version")
 
-		// Route to Claude handler if User-Agent starts with "claude-cli"
-		if strings.HasPrefix(userAgent, "claude-cli") {
-			// log.Debugf("Routing /v1/models to Claude handler for User-Agent: %s", userAgent)
+		// Route to Claude handler for Claude CLI requests or Anthropic-compatible requests.
+		if strings.HasPrefix(userAgent, "claude-cli") || anthropicVersion != "" {
 			claudeHandler.ClaudeModels(c)
 		} else {
-			// log.Debugf("Routing /v1/models to OpenAI handler for User-Agent: %s", userAgent)
 			openaiHandler.OpenAIModels(c)
 		}
 	}

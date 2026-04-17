@@ -822,7 +822,13 @@ func (r *ModelRegistry) buildAvailableModelsLocked(handlerType string, now time.
 		}
 
 		if effectiveClients > 0 || (availableClients > 0 && (expiredClients > 0 || cooldownSuspended > 0) && otherSuspended == 0) {
-			model := r.convertModelToMap(registration.Info, handlerType)
+			modelInfo := registration.Info
+			if infoByProvider := registration.InfoByProvider; infoByProvider != nil {
+				if providerInfo, ok := infoByProvider[handlerType]; ok && providerInfo != nil {
+					modelInfo = providerInfo
+				}
+			}
+			model := r.convertModelToMap(modelInfo, handlerType)
 			if model != nil {
 				models = append(models, model)
 			}
