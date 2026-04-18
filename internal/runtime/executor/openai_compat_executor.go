@@ -18,6 +18,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -273,12 +274,23 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, 52_428_800) // 50MB
 		var param any
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+		const toolCallsFinishGraceWindow = 800 * time.Millisecond
+		var pendingToolCallsFinishLine []byte
+		var pendingToolCallsFinishDeadline time.Time
+		sawTerminalDone := false
+
+		emitTranslated := func(line []byte) {
 			if detail, ok := helps.ParseOpenAIStreamUsage(line); ok {
 				reporter.Publish(ctx, detail)
 			}
+			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, line, &param)
+			for i := range chunks {
+				out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}
+			}
+		}
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 			if len(line) == 0 {
 				continue
 			}
@@ -287,12 +299,41 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				continue
 			}
 
+			currentLine := bytes.Clone(line)
+			if isSSEDoneMarker(currentLine) {
+				sawTerminalDone = true
+			}
+
+			if len(pendingToolCallsFinishLine) > 0 {
+				if hasToolCallNameOrID(currentLine) {
+					emitTranslated(currentLine)
+					emitTranslated(pendingToolCallsFinishLine)
+					pendingToolCallsFinishLine = nil
+					pendingToolCallsFinishDeadline = time.Time{}
+					continue
+				}
+
+				if !pendingToolCallsFinishDeadline.IsZero() && (time.Now().After(pendingToolCallsFinishDeadline) || isSSEDoneMarker(currentLine)) {
+					emitTranslated(pendingToolCallsFinishLine)
+					pendingToolCallsFinishLine = nil
+					pendingToolCallsFinishDeadline = time.Time{}
+				}
+			}
+
+			if isToolCallsFinishWithoutNameOrID(currentLine) {
+				pendingToolCallsFinishLine = currentLine
+				pendingToolCallsFinishDeadline = time.Now().Add(toolCallsFinishGraceWindow)
+				continue
+			}
+
 			// OpenAI-compatible streams are SSE: lines typically prefixed with "data: ".
 			// Pass through translator; it yields one or more chunks for the target schema.
-			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, bytes.Clone(line), &param)
-			for i := range chunks {
-				out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}
-			}
+			emitTranslated(currentLine)
+		}
+		if len(pendingToolCallsFinishLine) > 0 {
+			emitTranslated(pendingToolCallsFinishLine)
+			pendingToolCallsFinishLine = nil
+			pendingToolCallsFinishDeadline = time.Time{}
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
@@ -302,15 +343,83 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			// In case the upstream close the stream without a terminal [DONE] marker.
 			// Feed a synthetic done marker through the translator so pending
 			// response.completed events are still emitted exactly once.
-			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param)
-			for i := range chunks {
-				out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}
+			if !sawTerminalDone {
+				chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param)
+				for i := range chunks {
+					out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}
+				}
 			}
 		}
 		// Ensure we record the request if no usage chunk was ever seen
 		reporter.EnsurePublished(ctx)
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+}
+
+func isSSEDoneMarker(line []byte) bool {
+	if !bytes.HasPrefix(line, []byte("data:")) {
+		return false
+	}
+	body := bytes.TrimSpace(line[len("data:"):])
+	return bytes.Equal(body, []byte("[DONE]"))
+}
+
+func isToolCallsFinishWithoutNameOrID(line []byte) bool {
+	if !bytes.HasPrefix(line, []byte("data:")) {
+		return false
+	}
+	body := bytes.TrimSpace(line[len("data:"):])
+	if len(body) == 0 || bytes.Equal(body, []byte("[DONE]")) || !gjson.ValidBytes(body) {
+		return false
+	}
+	root := gjson.ParseBytes(body)
+	if root.Get("choices.0.finish_reason").String() != "tool_calls" {
+		return false
+	}
+	toolCalls := root.Get("choices.0.delta.tool_calls")
+	if !toolCalls.Exists() || !toolCalls.IsArray() {
+		return false
+	}
+	hasNameOrID := false
+	toolCalls.ForEach(func(_, toolCall gjson.Result) bool {
+		if id := strings.TrimSpace(toolCall.Get("id").String()); id != "" {
+			hasNameOrID = true
+			return false
+		}
+		if name := strings.TrimSpace(toolCall.Get("function.name").String()); name != "" {
+			hasNameOrID = true
+			return false
+		}
+		return true
+	})
+	return !hasNameOrID
+}
+
+func hasToolCallNameOrID(line []byte) bool {
+	if !bytes.HasPrefix(line, []byte("data:")) {
+		return false
+	}
+	body := bytes.TrimSpace(line[len("data:"):])
+	if len(body) == 0 || bytes.Equal(body, []byte("[DONE]")) || !gjson.ValidBytes(body) {
+		return false
+	}
+	toolCalls := gjson.GetBytes(body, "choices.0.delta.tool_calls")
+	if !toolCalls.Exists() || !toolCalls.IsArray() {
+		return false
+	}
+	found := false
+	toolCalls.ForEach(func(_, toolCall gjson.Result) bool {
+		if id := strings.TrimSpace(toolCall.Get("id").String()); id != "" {
+			found = true
+			return false
+		}
+		if name := strings.TrimSpace(toolCall.Get("function.name").String()); name != "" {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
