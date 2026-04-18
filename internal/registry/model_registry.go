@@ -822,7 +822,13 @@ func (r *ModelRegistry) buildAvailableModelsLocked(handlerType string, now time.
 		}
 
 		if effectiveClients > 0 || (availableClients > 0 && (expiredClients > 0 || cooldownSuspended > 0) && otherSuspended == 0) {
-			model := r.convertModelToMap(registration.Info, handlerType)
+			modelInfo := registration.Info
+			if infoByProvider := registration.InfoByProvider; infoByProvider != nil {
+				if providerInfo, ok := infoByProvider[handlerType]; ok && providerInfo != nil {
+					modelInfo = providerInfo
+				}
+			}
+			model := r.convertModelToMap(modelInfo, handlerType)
 			if model != nil {
 				models = append(models, model)
 			}
@@ -1134,9 +1140,16 @@ func (r *ModelRegistry) convertModelToMap(model *ModelInfo, handlerType string) 
 		}
 		if model.ContextLength > 0 {
 			result["context_length"] = model.ContextLength
+			result["context_window"] = model.ContextLength
+			result["effective_context_window_percent"] = 100
 		}
 		if model.MaxCompletionTokens > 0 {
 			result["max_completion_tokens"] = model.MaxCompletionTokens
+			result["auto_compact_token_limit"] = model.MaxCompletionTokens
+			result["truncation_policy"] = map[string]any{
+				"mode":  "tokens",
+				"limit": model.MaxCompletionTokens,
+			}
 		}
 		if len(model.SupportedParameters) > 0 {
 			result["supported_parameters"] = append([]string(nil), model.SupportedParameters...)
@@ -1157,6 +1170,12 @@ func (r *ModelRegistry) convertModelToMap(model *ModelInfo, handlerType string) 
 		}
 		if model.DisplayName != "" {
 			result["display_name"] = model.DisplayName
+		}
+		if model.ContextLength > 0 {
+			result["max_input_tokens"] = model.ContextLength
+		}
+		if model.MaxCompletionTokens > 0 {
+			result["max_tokens"] = model.MaxCompletionTokens
 		}
 		return result
 

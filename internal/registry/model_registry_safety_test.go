@@ -136,6 +136,93 @@ func TestGetAvailableModelsReturnsClonedSupportedParameters(t *testing.T) {
 	}
 }
 
+func TestGetAvailableModelsMapsClaudeTokenMetadata(t *testing.T) {
+	r := newTestModelRegistry()
+	r.RegisterClient("client-1", "claude", []*ModelInfo{{
+		ID:                  "claude-sonnet",
+		OwnedBy:             "anthropic",
+		ContextLength:       200000,
+		MaxCompletionTokens: 8192,
+		DisplayName:         "Claude Sonnet",
+	}})
+
+	models := r.GetAvailableModels("claude")
+	if len(models) != 1 {
+		t.Fatalf("expected one model, got %d", len(models))
+	}
+	if got := models[0]["max_input_tokens"]; got != 200000 {
+		t.Fatalf("expected max_input_tokens 200000, got %#v", got)
+	}
+	if got := models[0]["max_tokens"]; got != 8192 {
+		t.Fatalf("expected max_tokens 8192, got %#v", got)
+	}
+}
+
+func TestGetAvailableModelsPrefersClaudeProviderMetadataForClaudeHandler(t *testing.T) {
+	r := newTestModelRegistry()
+	r.RegisterClient("claude-client", "claude", []*ModelInfo{{
+		ID:                  "gpt-5.4",
+		OwnedBy:             "anthropic",
+		ContextLength:       1050000,
+		MaxCompletionTokens: 128000,
+		DisplayName:         "gpt-5.4",
+	}})
+	r.RegisterClient("compat-client", "openai-compatibility", []*ModelInfo{{
+		ID:            "gpt-5.4",
+		OwnedBy:       "routin",
+		DisplayName:   "gpt-5.4",
+		ContextLength: 0,
+	}})
+
+	models := r.GetAvailableModels("claude")
+	if len(models) != 1 {
+		t.Fatalf("expected one model, got %d", len(models))
+	}
+	if got := models[0]["owned_by"]; got != "anthropic" {
+		t.Fatalf("expected claude handler to prefer anthropic owner, got %#v", got)
+	}
+	if got := models[0]["max_input_tokens"]; got != 1050000 {
+		t.Fatalf("expected max_input_tokens 1050000, got %#v", got)
+	}
+	if got := models[0]["max_tokens"]; got != 128000 {
+		t.Fatalf("expected max_tokens 128000, got %#v", got)
+	}
+}
+
+func TestGetAvailableModelsMapsOpenAIMetadataForCodex(t *testing.T) {
+	r := newTestModelRegistry()
+	r.RegisterClient("client-1", "openai", []*ModelInfo{{
+		ID:                  "gpt-5-codex",
+		OwnedBy:             "openai",
+		ContextLength:       400000,
+		MaxCompletionTokens: 32000,
+	}})
+
+	models := r.GetAvailableModels("openai")
+	if len(models) != 1 {
+		t.Fatalf("expected one model, got %d", len(models))
+	}
+	if got := models[0]["context_window"]; got != 400000 {
+		t.Fatalf("expected context_window 400000, got %#v", got)
+	}
+	if got := models[0]["auto_compact_token_limit"]; got != 32000 {
+		t.Fatalf("expected auto_compact_token_limit 32000, got %#v", got)
+	}
+	if got := models[0]["effective_context_window_percent"]; got != 100 {
+		t.Fatalf("expected effective_context_window_percent 100, got %#v", got)
+	}
+	truncation, ok := models[0]["truncation_policy"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected truncation_policy map, got %#v", models[0]["truncation_policy"])
+	}
+	if got := truncation["mode"]; got != "tokens" {
+		t.Fatalf("expected truncation mode tokens, got %#v", got)
+	}
+	if got := truncation["limit"]; got != 32000 {
+		t.Fatalf("expected truncation limit 32000, got %#v", got)
+	}
+}
+
 func TestLookupModelInfoReturnsCloneForStaticDefinitions(t *testing.T) {
 	all := [][]*ModelInfo{
 		GetClaudeModels(),
