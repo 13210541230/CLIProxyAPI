@@ -50,10 +50,14 @@ type VertexCompatModel struct {
 
 	// Alias is the model name alias that clients will use to reference this model.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// ContextWindow overrides the advertised context window for this model.
+	ContextWindow int `yaml:"context-window,omitempty" json:"context-window,omitempty"`
 }
 
-func (m VertexCompatModel) GetName() string  { return m.Name }
-func (m VertexCompatModel) GetAlias() string { return m.Alias }
+func (m VertexCompatModel) GetName() string       { return m.Name }
+func (m VertexCompatModel) GetAlias() string      { return m.Alias }
+func (m VertexCompatModel) GetContextWindow() int { return m.ContextWindow }
 
 // SanitizeVertexCompatKeys deduplicates and normalizes Vertex-compatible API key credentials.
 func (cfg *Config) SanitizeVertexCompatKeys() {

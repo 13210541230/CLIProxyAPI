@@ -983,15 +983,27 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 						if thinking == nil {
 							thinking = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
 						}
+						contextLength := defaultModelContextWindow
+						maxCompletionTokens := 0
+						if upstream := registry.LookupStaticModelInfo(m.Name); upstream != nil {
+							if maxCompletionTokens == 0 {
+								maxCompletionTokens = upstream.MaxCompletionTokens
+							}
+							if m.Thinking == nil && upstream.Thinking != nil {
+								thinking = upstream.Thinking
+							}
+						}
 						ms = append(ms, &ModelInfo{
-							ID:          modelID,
-							Object:      "model",
-							Created:     time.Now().Unix(),
-							OwnedBy:     compat.Name,
-							Type:        "openai-compatibility",
-							DisplayName: modelID,
-							UserDefined: false,
-							Thinking:    thinking,
+							ID:                  modelID,
+							Object:              "model",
+							Created:             time.Now().Unix(),
+							OwnedBy:             compat.Name,
+							Type:                "openai-compatibility",
+							DisplayName:         modelID,
+							UserDefined:         false,
+							ContextLength:       contextLength,
+							MaxCompletionTokens: maxCompletionTokens,
+							Thinking:            thinking,
 						})
 					}
 					// Register and return
@@ -999,6 +1011,9 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 						if providerKey == "" {
 							providerKey = "openai-compatibility"
 						}
+						ms = applyDefaultModelContextWindow(ms)
+						ms = applyOAuthModelAlias(s.cfg, provider, authKind, ms)
+						ms = applyGlobalAliasContextWindow(s.cfg, ms)
 						s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
 					} else {
 						// Ensure stale registrations are cleared when model list becomes empty.
@@ -1014,7 +1029,9 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 			}
 		}
 	}
+	models = applyDefaultModelContextWindow(models)
 	models = applyOAuthModelAlias(s.cfg, provider, authKind, models)
+	models = applyGlobalAliasContextWindow(s.cfg, models)
 	if len(models) > 0 {
 		key := provider
 		if key == "" {
@@ -1338,6 +1355,7 @@ func matchWildcard(pattern, value string) bool {
 type modelEntry interface {
 	GetName() string
 	GetAlias() string
+	GetContextWindow() int
 }
 
 func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*ModelInfo {
@@ -1366,14 +1384,16 @@ func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*M
 		if display == "" {
 			display = alias
 		}
+		contextLength := defaultModelContextWindow
 		info := &ModelInfo{
-			ID:          alias,
-			Object:      "model",
-			Created:     now,
-			OwnedBy:     ownedBy,
-			Type:        modelType,
-			DisplayName: display,
-			UserDefined: true,
+			ID:            alias,
+			Object:        "model",
+			Created:       now,
+			OwnedBy:       ownedBy,
+			Type:          modelType,
+			DisplayName:   display,
+			UserDefined:   true,
+			ContextLength: contextLength,
 		}
 		if name != "" {
 			if upstream := registry.LookupStaticModelInfo(name); upstream != nil && upstream.Thinking != nil {
@@ -1413,6 +1433,37 @@ func buildCodexConfigModels(entry *config.CodexKey) []*ModelInfo {
 	return buildConfigModels(entry.Models, "openai", "openai")
 }
 
+func applyDefaultModelContextWindow(models []*ModelInfo) []*ModelInfo {
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		if model.ContextLength == 0 {
+			model.ContextLength = defaultModelContextWindow
+		}
+	}
+	return models
+}
+
+func applyGlobalAliasContextWindow(cfg *config.Config, models []*ModelInfo) []*ModelInfo {
+	if cfg == nil || len(models) == 0 || len(cfg.ModelAliasContextWindow) == 0 {
+		return models
+	}
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		aliasKey := strings.ToLower(strings.TrimSpace(model.ID))
+		if aliasKey == "" {
+			continue
+		}
+		if contextWindow, ok := cfg.ModelAliasContextWindow[aliasKey]; ok && contextWindow > 0 {
+			model.ContextLength = contextWindow
+		}
+	}
+	return models
+}
+
 func rewriteModelInfoName(name, oldID, newID string) string {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
@@ -1438,6 +1489,8 @@ func rewriteModelInfoName(name, oldID, newID string) string {
 	}
 	return name
 }
+
+const defaultModelContextWindow = 200000
 
 func applyOAuthModelAlias(cfg *config.Config, provider, authKind string, models []*ModelInfo) []*ModelInfo {
 	if cfg == nil || len(models) == 0 {

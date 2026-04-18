@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -134,6 +135,10 @@ type Config struct {
 	// gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, vertex-api-key, and ampcode.
 	OAuthModelAlias map[string][]OAuthModelAlias `yaml:"oauth-model-alias,omitempty" json:"oauth-model-alias,omitempty"`
 
+	// ModelAliasContextWindow defines global context-window overrides keyed by model alias.
+	// Key matching is normalized with trim + lower-case.
+	ModelAliasContextWindow map[string]int `yaml:"model-alias-context-window,omitempty" json:"model-alias-context-window,omitempty"`
+
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
 
@@ -239,9 +244,10 @@ type RoutingConfig struct {
 // When Fork is true, the alias is added as an additional model in listings while
 // keeping the original model ID available.
 type OAuthModelAlias struct {
-	Name  string `yaml:"name" json:"name"`
-	Alias string `yaml:"alias" json:"alias"`
-	Fork  bool   `yaml:"fork,omitempty" json:"fork,omitempty"`
+	Name          string `yaml:"name" json:"name"`
+	Alias         string `yaml:"alias" json:"alias"`
+	Fork          bool   `yaml:"fork,omitempty" json:"fork,omitempty"`
+	ContextWindow int    `yaml:"context-window,omitempty" json:"context-window,omitempty"`
 }
 
 // AmpModelMapping defines a model name mapping for Amp CLI requests.
@@ -411,10 +417,14 @@ type ClaudeModel struct {
 
 	// Alias is the client-facing model name that maps to Name.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// ContextWindow overrides the advertised context window for this model.
+	ContextWindow int `yaml:"context-window,omitempty" json:"context-window,omitempty"`
 }
 
-func (m ClaudeModel) GetName() string  { return m.Name }
-func (m ClaudeModel) GetAlias() string { return m.Alias }
+func (m ClaudeModel) GetName() string       { return m.Name }
+func (m ClaudeModel) GetAlias() string      { return m.Alias }
+func (m ClaudeModel) GetContextWindow() int { return m.ContextWindow }
 
 // CodexKey represents the configuration for a Codex API key,
 // including the API key itself and an optional base URL for the API endpoint.
@@ -459,10 +469,14 @@ type CodexModel struct {
 
 	// Alias is the client-facing model name that maps to Name.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// ContextWindow overrides the advertised context window for this model.
+	ContextWindow int `yaml:"context-window,omitempty" json:"context-window,omitempty"`
 }
 
-func (m CodexModel) GetName() string  { return m.Name }
-func (m CodexModel) GetAlias() string { return m.Alias }
+func (m CodexModel) GetName() string       { return m.Name }
+func (m CodexModel) GetAlias() string      { return m.Alias }
+func (m CodexModel) GetContextWindow() int { return m.ContextWindow }
 
 // GeminiKey represents the configuration for a Gemini API key,
 // including optional overrides for upstream base URL, proxy routing, and headers.
@@ -503,10 +517,14 @@ type GeminiModel struct {
 
 	// Alias is the client-facing model name that maps to Name.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// ContextWindow overrides the advertised context window for this model.
+	ContextWindow int `yaml:"context-window,omitempty" json:"context-window,omitempty"`
 }
 
-func (m GeminiModel) GetName() string  { return m.Name }
-func (m GeminiModel) GetAlias() string { return m.Alias }
+func (m GeminiModel) GetName() string       { return m.Name }
+func (m GeminiModel) GetAlias() string      { return m.Alias }
+func (m GeminiModel) GetContextWindow() int { return m.ContextWindow }
 
 // OpenAICompatibility represents the configuration for OpenAI API compatibility
 // with external providers, allowing model aliases to be routed through OpenAI API format.
@@ -552,13 +570,17 @@ type OpenAICompatibilityModel struct {
 	// Alias is the model name alias that clients will use to reference this model.
 	Alias string `yaml:"alias" json:"alias"`
 
+	// ContextWindow overrides the advertised context window for this model.
+	ContextWindow int `yaml:"context-window,omitempty" json:"context-window,omitempty"`
+
 	// Thinking configures the thinking/reasoning capability for this model.
 	// If nil, the model defaults to level-based reasoning with levels ["low", "medium", "high"].
 	Thinking *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
 }
 
-func (m OpenAICompatibilityModel) GetName() string  { return m.Name }
-func (m OpenAICompatibilityModel) GetAlias() string { return m.Alias }
+func (m OpenAICompatibilityModel) GetName() string       { return m.Name }
+func (m OpenAICompatibilityModel) GetAlias() string      { return m.Alias }
+func (m OpenAICompatibilityModel) GetContextWindow() int { return m.ContextWindow }
 
 // LoadConfig reads a YAML configuration file from the given path,
 // unmarshals it into a Config struct, applies environment variable overrides,
@@ -695,6 +717,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Normalize global OAuth model name aliases.
 	cfg.SanitizeOAuthModelAlias()
 
+	// Normalize global alias context-window overrides.
+	cfg.ModelAliasContextWindow = NormalizeAliasContextWindows(cfg.ModelAliasContextWindow)
+
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()
 
@@ -817,7 +842,7 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 			if name == "" || alias == "" {
 				continue
 			}
-			if strings.EqualFold(name, alias) {
+			if strings.EqualFold(name, alias) && entry.ContextWindow == 0 {
 				continue
 			}
 			aliasKey := strings.ToLower(alias)
@@ -825,7 +850,7 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 				continue
 			}
 			seenAlias[aliasKey] = struct{}{}
-			clean = append(clean, OAuthModelAlias{Name: name, Alias: alias, Fork: entry.Fork})
+			clean = append(clean, OAuthModelAlias{Name: name, Alias: alias, Fork: entry.Fork, ContextWindow: entry.ContextWindow})
 		}
 		if len(clean) > 0 {
 			out[channel] = clean
@@ -1000,6 +1025,40 @@ func NormalizeOAuthExcludedModels(entries map[string][]string) map[string][]stri
 			continue
 		}
 		out[key] = normalized
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// NormalizeAliasContextWindows normalizes global alias context window overrides.
+// Alias keys are matched by trim + lower-case; empty aliases and non-positive
+// context windows are dropped.
+func NormalizeAliasContextWindows(entries map[string]int) map[string]int {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(entries))
+	keys := make([]string, 0, len(entries))
+	for alias := range entries {
+		keys = append(keys, alias)
+	}
+	sort.Strings(keys)
+	for _, rawAlias := range keys {
+		window := entries[rawAlias]
+		alias := strings.ToLower(strings.TrimSpace(rawAlias))
+		if alias == "" || window <= 0 {
+			continue
+		}
+		if prev, exists := out[alias]; exists && prev != window {
+			log.WithFields(log.Fields{
+				"alias":    alias,
+				"existing": prev,
+				"incoming": window,
+			}).Warn("model-alias-context-window collision after normalization; last normalized key wins")
+		}
+		out[alias] = window
 	}
 	if len(out) == 0 {
 		return nil

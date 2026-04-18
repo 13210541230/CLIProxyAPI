@@ -1,6 +1,8 @@
 package config
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestSanitizeOAuthModelAlias_PreservesForkFlag(t *testing.T) {
 	cfg := &Config{
@@ -52,5 +54,36 @@ func TestSanitizeOAuthModelAlias_AllowsMultipleAliasesForSameName(t *testing.T) 
 		if aliases[i].Name != exp.Name || aliases[i].Alias != exp.Alias || aliases[i].Fork != exp.Fork {
 			t.Fatalf("expected alias %d to be name=%q alias=%q fork=%v, got name=%q alias=%q fork=%v", i, exp.Name, exp.Alias, exp.Fork, aliases[i].Name, aliases[i].Alias, aliases[i].Fork)
 		}
+	}
+}
+
+func TestNormalizeAliasContextWindows_NormalizesAndFilters(t *testing.T) {
+	in := map[string]int{
+		" gPt-5.4 ": 272000,
+		"":          123,
+		"gpt-4":     0,
+	}
+
+	out := NormalizeAliasContextWindows(in)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(out))
+	}
+	if got := out["gpt-5.4"]; got != 272000 {
+		t.Fatalf("expected gpt-5.4 context window 272000, got %d", got)
+	}
+}
+
+func TestNormalizeAliasContextWindows_CollisionKeepsDeterministicWinner(t *testing.T) {
+	in := map[string]int{
+		" A ": 111,
+		"a":   222,
+	}
+
+	out := NormalizeAliasContextWindows(in)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(out))
+	}
+	if got := out["a"]; got != 222 {
+		t.Fatalf("expected normalized winner value 222, got %d", got)
 	}
 }
