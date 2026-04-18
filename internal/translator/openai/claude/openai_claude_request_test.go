@@ -708,9 +708,9 @@ func TestInferToolName_NoDeterministicFallbackWhenAmbiguous(t *testing.T) {
 	acc := &ToolCallAccumulator{}
 	acc.Arguments.WriteString(`{"command":"pwd"}`)
 
-	name, reason := inferToolName(param, 0, acc)
+	name, reason := inferToolName(param, -1, acc)
 	if name != "" {
-		t.Fatalf("expected no inferred name for ambiguous tools, got %q", name)
+		t.Fatalf("expected no inferred name for ambiguous tools without valid index, got %q", name)
 	}
 	if reason != "no_match" {
 		t.Fatalf("expected reason %q, got %q", "no_match", reason)
@@ -733,5 +733,25 @@ func TestInferToolName_UsesSingleDeterministicCandidate(t *testing.T) {
 	}
 	if reason != "single_tool_name" {
 		t.Fatalf("expected reason %q, got %q", "single_tool_name", reason)
+	}
+}
+
+func TestInferToolName_UsesDeterministicIndexFallback(t *testing.T) {
+	param := &ConvertOpenAIResponseToAnthropicParams{
+		ToolNames: []string{"Read", "Bash"},
+		ToolNameMap: map[string]string{
+			"read": "Read",
+			"bash": "Bash",
+		},
+	}
+	acc := &ToolCallAccumulator{}
+	acc.Arguments.WriteString(`{"command":"pwd"}`)
+
+	name, reason := inferToolName(param, 1, acc)
+	if name != "Bash" {
+		t.Fatalf("expected inferred name %q, got %q", "Bash", name)
+	}
+	if reason != "index_tool_name" {
+		t.Fatalf("expected reason %q, got %q", "index_tool_name", reason)
 	}
 }

@@ -603,7 +603,7 @@ func flushToolArgsTailAndStop(param *ConvertOpenAIResponseToAnthropicParams, ind
 	delete(param.ToolCallBlockIndexes, index)
 }
 
-func inferToolName(param *ConvertOpenAIResponseToAnthropicParams, _ int, accumulator *ToolCallAccumulator) (string, string) {
+func inferToolName(param *ConvertOpenAIResponseToAnthropicParams, index int, accumulator *ToolCallAccumulator) (string, string) {
 	if param == nil {
 		return "", "param_nil"
 	}
@@ -618,6 +618,11 @@ func inferToolName(param *ConvertOpenAIResponseToAnthropicParams, _ int, accumul
 	}
 	if matched := inferToolNameByPropertyScoring(param.ToolSchemas, accumulator.Arguments.String()); matched != "" {
 		return matched, "schema_score"
+	}
+	if index >= 0 && index < len(param.ToolNames) {
+		if name := strings.TrimSpace(param.ToolNames[index]); name != "" {
+			return name, "index_tool_name"
+		}
 	}
 	if unique := uniqueToolNameCandidate(param.ToolNames, param.ToolNameMap); unique != "" {
 		return unique, "single_tool_candidate"
