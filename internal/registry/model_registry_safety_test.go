@@ -263,3 +263,16 @@ func TestLookupModelInfoReturnsCloneForStaticDefinitions(t *testing.T) {
 		t.Fatalf("expected static lookup clone, got %+v", second)
 	}
 }
+
+func TestLookupModelInfoReturnsDeepCloneForThinkingLevels(t *testing.T) {
+	model := LookupModelInfo("claude-sonnet-4-6")
+	if model == nil || model.Thinking == nil || len(model.Thinking.Levels) == 0 {
+		t.Fatalf("expected static model with thinking levels, got %+v", model)
+	}
+	model.Thinking.Levels[0] = "mutated"
+
+	again := LookupModelInfo("claude-sonnet-4-6")
+	if again == nil || again.Thinking == nil || len(again.Thinking.Levels) == 0 || again.Thinking.Levels[0] == "mutated" {
+		t.Fatalf("expected deep clone for thinking levels, got %+v", again)
+	}
+}
