@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -64,6 +65,12 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 
 	filteredModels := make([]map[string]any, len(allModels))
 	for i, model := range allModels {
+		modelID := strings.TrimSpace(fmt.Sprintf("%v", model["id"]))
+		overrideContextWindow := 0
+		if h.Cfg != nil && len(h.Cfg.ModelAliasContextWindow) > 0 {
+			overrideContextWindow = h.Cfg.ModelAliasContextWindow[modelID]
+		}
+
 		filteredModel := map[string]any{
 			"id":     model["id"],
 			"object": model["object"],
@@ -87,6 +94,11 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 		}
 		if contextWindow, exists := model["context_window"]; exists {
 			filteredModel["context_window"] = contextWindow
+		}
+		if overrideContextWindow > 0 {
+			filteredModel["context_window"] = overrideContextWindow
+			filteredModel["context_length"] = overrideContextWindow
+			filteredModel["max_input_tokens"] = overrideContextWindow
 		}
 		if autoCompact, exists := model["auto_compact_token_limit"]; exists {
 			filteredModel["auto_compact_token_limit"] = autoCompact

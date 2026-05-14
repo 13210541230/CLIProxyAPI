@@ -44,6 +44,10 @@ type SDKConfig struct {
 	// NonStreamKeepAliveInterval controls how often blank lines are emitted for non-streaming responses.
 	// <= 0 disables keep-alives. Value is in seconds.
 	NonStreamKeepAliveInterval int `yaml:"nonstream-keepalive-interval,omitempty" json:"nonstream-keepalive-interval,omitempty"`
+
+	// ModelAliasContextWindow overrides advertised context window by client-visible model alias.
+	// Key is model id/alias returned by /v1/models and consumed by routing.
+	ModelAliasContextWindow map[string]int `yaml:"model-alias-context-window,omitempty" json:"model-alias-context-window,omitempty"`
 }
 
 // StreamingConfig holds server streaming behavior configuration.

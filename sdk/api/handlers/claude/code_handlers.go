@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
@@ -130,6 +131,26 @@ func (h *ClaudeCodeAPIHandler) ClaudeCountTokens(c *gin.Context) {
 //   - c: The Gin context for the request.
 func (h *ClaudeCodeAPIHandler) ClaudeModels(c *gin.Context) {
 	models := h.Models()
+	if h.Cfg != nil && len(h.Cfg.ModelAliasContextWindow) > 0 {
+		updated := make([]map[string]any, 0, len(models))
+		for _, model := range models {
+			if model == nil {
+				updated = append(updated, nil)
+				continue
+			}
+			copyModel := make(map[string]any, len(model))
+			for key, value := range model {
+				copyModel[key] = value
+			}
+			modelID := strings.TrimSpace(fmt.Sprintf("%v", copyModel["id"]))
+			if override := h.Cfg.ModelAliasContextWindow[modelID]; override > 0 {
+				copyModel["max_input_tokens"] = override
+			}
+			updated = append(updated, copyModel)
+		}
+		models = updated
+	}
+
 	firstID := ""
 	lastID := ""
 	if len(models) > 0 {
