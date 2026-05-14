@@ -28,6 +28,7 @@ import (
 //   - []byte: The transformed request data in OpenAI chat completions format
 func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inputRawJSON []byte, stream bool) []byte {
 	rawJSON := inputRawJSON
+	isDeepSeekModel := strings.Contains(strings.ToLower(strings.TrimSpace(modelName)), "deepseek")
 	// Base OpenAI chat completions template with default values
 	out := []byte(`{"model":"","messages":[],"stream":false}`)
 
@@ -81,6 +82,9 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			}
 			assistantMessage := []byte(`{"role":"assistant","tool_calls":[]}`)
 			assistantMessage, _ = sjson.SetBytes(assistantMessage, "tool_calls", pendingToolCalls)
+			if isDeepSeekModel {
+				assistantMessage, _ = sjson.SetBytes(assistantMessage, "reasoning_content", "")
+			}
 			out, _ = sjson.SetRawBytes(out, "messages.-1", assistantMessage)
 			for _, id := range pendingToolCallIDs {
 				if strings.TrimSpace(id) == "" {
@@ -136,6 +140,8 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 
 				if content := item.Get("content"); content.Exists() && content.IsArray() {
 					var messageContent string
+					var reasoningContent string
+					hasRenderableContent := false
 					var toolCalls []interface{}
 
 					content.ForEach(func(_, contentItem gjson.Result) bool {
@@ -150,11 +156,22 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 							contentPart := []byte(`{"type":"text","text":""}`)
 							contentPart, _ = sjson.SetBytes(contentPart, "text", text)
 							message, _ = sjson.SetRawBytes(message, "content.-1", contentPart)
+							hasRenderableContent = true
 						case "input_image":
 							imageURL := contentItem.Get("image_url").String()
 							contentPart := []byte(`{"type":"image_url","image_url":{"url":""}}`)
 							contentPart, _ = sjson.SetBytes(contentPart, "image_url.url", imageURL)
 							message, _ = sjson.SetRawBytes(message, "content.-1", contentPart)
+							hasRenderableContent = true
+						case "reasoning":
+							reasoningStr := strings.TrimSpace(contentItem.Get("text").String())
+							if reasoningStr == "" {
+								reasoningStr = strings.TrimSpace(contentItem.Get("summary.0.text").String())
+							}
+							if reasoningStr == "" {
+								reasoningStr = "[reasoning unavailable]"
+							}
+							reasoningContent = reasoningStr
 						}
 						return true
 					})
@@ -166,11 +183,40 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 					if len(toolCalls) > 0 {
 						message, _ = sjson.SetBytes(message, "tool_calls", toolCalls)
 					}
+
+					if reasoningContent != "" {
+						if !hasRenderableContent {
+							message, _ = sjson.SetBytes(message, "content", "")
+						}
+						message, _ = sjson.SetBytes(message, "reasoning_content", reasoningContent)
+					}
+
+					if role == "assistant" && isDeepSeekModel && !gjson.GetBytes(message, "reasoning_content").Exists() {
+						if !hasRenderableContent {
+							message, _ = sjson.SetBytes(message, "content", "")
+						}
+						message, _ = sjson.SetBytes(message, "reasoning_content", "")
+					}
 				} else if content.Type == gjson.String {
 					message, _ = sjson.SetBytes(message, "content", content.String())
+					if role == "assistant" && isDeepSeekModel {
+						message, _ = sjson.SetBytes(message, "reasoning_content", "")
+					}
 				}
 
 				appendRegularMessage(message)
+
+			case "reasoning":
+				reasoningStr := strings.TrimSpace(item.Get("text").String())
+				if reasoningStr == "" {
+					reasoningStr = strings.TrimSpace(item.Get("summary.0.text").String())
+				}
+				if reasoningStr == "" {
+					reasoningStr = "[reasoning unavailable]"
+				}
+				reasoningMessage := []byte(`{"role":"assistant","content":"","reasoning_content":""}`)
+				reasoningMessage, _ = sjson.SetBytes(reasoningMessage, "reasoning_content", reasoningStr)
+				appendRegularMessage(reasoningMessage)
 
 			case "function_call":
 				// Buffer consecutive function calls and emit them as one assistant message.

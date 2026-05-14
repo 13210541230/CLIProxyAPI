@@ -596,6 +596,33 @@ func TestConvertClaudeRequestToOpenAI_ToolResultURLImageOnly(t *testing.T) {
 	}
 }
 
+func TestConvertClaudeRequestToOpenAI_DeepSeekToolUseKeepsReasoningField(t *testing.T) {
+	input := `{
+		"model": "claude-3-opus",
+		"messages": [{
+			"role": "assistant",
+			"content": [
+				{"type":"tool_use","id":"call_1","name":"do_work","input":{"x":1}}
+			]
+		}]
+	}`
+
+	out := ConvertClaudeRequestToOpenAI("deepseek-chat", []byte(input), false)
+
+	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "assistant" {
+		t.Fatalf("messages.0.role = %q, want %q", got, "assistant")
+	}
+	if !gjson.GetBytes(out, "messages.0.reasoning_content").Exists() {
+		t.Fatalf("messages.0.reasoning_content should exist for DeepSeek tool-follow-up compatibility")
+	}
+	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "" {
+		t.Fatalf("messages.0.reasoning_content = %q, want empty string", got)
+	}
+	if got := len(gjson.GetBytes(out, "messages.0.tool_calls").Array()); got != 1 {
+		t.Fatalf("messages.0.tool_calls length = %d, want %d", got, 1)
+	}
+}
+
 func TestConvertClaudeRequestToOpenAI_AssistantTextToolUseTextOrder(t *testing.T) {
 	inputJSON := `{
 		"model": "claude-3-opus",

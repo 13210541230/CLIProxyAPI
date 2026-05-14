@@ -122,3 +122,119 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DefersMessageUntil
 		t.Fatalf("messages.3.content = %q, want %q", got, "next")
 	}
 }
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesReasoningContent(t *testing.T) {
+	raw := []byte(`{
+		"input": [{
+			"type": "message",
+			"role": "assistant",
+			"content": [
+				{"type":"reasoning","text":"step-by-step trace"}
+			]
+		}]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-chat", raw, false)
+
+	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "assistant" {
+		t.Fatalf("messages.0.role = %q, want %q", got, "assistant")
+	}
+	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "step-by-step trace" {
+		t.Fatalf("messages.0.reasoning_content = %q, want %q", got, "step-by-step trace")
+	}
+	if got := gjson.GetBytes(out, "messages.0.content").String(); got != "" {
+		t.Fatalf("messages.0.content = %q, want empty string", got)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_ReasoningContentFallbackPlaceholder(t *testing.T) {
+	raw := []byte(`{
+		"input": [{
+			"type": "message",
+			"role": "assistant",
+			"content": [
+				{"type":"reasoning","text":""}
+			]
+		}]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-chat", raw, false)
+
+	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "[reasoning unavailable]" {
+		t.Fatalf("messages.0.reasoning_content = %q, want %q", got, "[reasoning unavailable]")
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_TopLevelReasoningItem(t *testing.T) {
+	raw := []byte(`{
+		"input": [
+			{"type":"reasoning","text":"top-level chain of thought"}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-chat", raw, false)
+
+	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "assistant" {
+		t.Fatalf("messages.0.role = %q, want %q", got, "assistant")
+	}
+	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "top-level chain of thought" {
+		t.Fatalf("messages.0.reasoning_content = %q, want %q", got, "top-level chain of thought")
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_TopLevelReasoningPlaceholder(t *testing.T) {
+	raw := []byte(`{
+		"input": [
+			{"type":"reasoning","text":""}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-chat", raw, false)
+
+	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "[reasoning unavailable]" {
+		t.Fatalf("messages.0.reasoning_content = %q, want %q", got, "[reasoning unavailable]")
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DeepSeekAssistantFallbackReasoningContent(t *testing.T) {
+	raw := []byte(`{
+		"input": [{
+			"type":"message",
+			"role":"assistant",
+			"content":"tool follow-up without explicit reasoning"
+		}]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-v4-flash", raw, true)
+
+	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "assistant" {
+		t.Fatalf("messages.0.role = %q, want %q", got, "assistant")
+	}
+	if !gjson.GetBytes(out, "messages.0.reasoning_content").Exists() {
+		t.Fatalf("messages.0.reasoning_content should exist for deepseek assistant fallback")
+	}
+	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "" {
+		t.Fatalf("messages.0.reasoning_content = %q, want empty string", got)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DeepSeekFunctionCallAssistantHasReasoningContent(t *testing.T) {
+	raw := []byte(`{
+		"input": [
+			{"type":"function_call","call_id":"call_1","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"},
+			{"type":"function_call_output","call_id":"call_1","output":"ok"}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-v4-flash", raw, true)
+
+	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "assistant" {
+		t.Fatalf("messages.0.role = %q, want %q", got, "assistant")
+	}
+	if !gjson.GetBytes(out, "messages.0.reasoning_content").Exists() {
+		t.Fatalf("messages.0.reasoning_content should exist for deepseek function_call assistant message")
+	}
+	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "" {
+		t.Fatalf("messages.0.reasoning_content = %q, want empty string", got)
+	}
+}
