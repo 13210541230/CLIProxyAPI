@@ -822,12 +822,7 @@ func (r *ModelRegistry) buildAvailableModelsLocked(handlerType string, now time.
 		}
 
 		if effectiveClients > 0 || (availableClients > 0 && (expiredClients > 0 || cooldownSuspended > 0) && otherSuspended == 0) {
-			modelInfo := registration.Info
-			if infoByProvider := registration.InfoByProvider; infoByProvider != nil {
-				if providerInfo, ok := infoByProvider[handlerType]; ok && providerInfo != nil {
-					modelInfo = providerInfo
-				}
-			}
+			modelInfo := mergedModelInfoForHandler(registration, handlerType)
 			model := r.convertModelToMap(modelInfo, handlerType)
 			if model != nil {
 				models = append(models, model)
@@ -836,6 +831,108 @@ func (r *ModelRegistry) buildAvailableModelsLocked(handlerType string, now time.
 	}
 
 	return models, expiresAt
+}
+
+func mergedModelInfoForHandler(registration *ModelRegistration, handlerType string) *ModelInfo {
+	if registration == nil {
+		return nil
+	}
+	base := registration.Info
+	if registration.InfoByProvider == nil {
+		return base
+	}
+	providerInfo, ok := registration.InfoByProvider[handlerType]
+	if !ok || providerInfo == nil {
+		return base
+	}
+	if base == nil {
+		return providerInfo
+	}
+
+	merged := cloneModelInfo(providerInfo)
+	if merged == nil {
+		return base
+	}
+
+	if merged.ID == "" {
+		merged.ID = base.ID
+	}
+	if merged.Object == "" {
+		merged.Object = base.Object
+	}
+	if merged.Created == 0 {
+		merged.Created = base.Created
+	}
+	if merged.OwnedBy == "" {
+		merged.OwnedBy = base.OwnedBy
+	}
+	if merged.Type == "" {
+		merged.Type = base.Type
+	}
+	if merged.DisplayName == "" {
+		merged.DisplayName = base.DisplayName
+	}
+	if merged.Name == "" {
+		merged.Name = base.Name
+	}
+	if merged.Version == "" {
+		merged.Version = base.Version
+	}
+	if merged.Description == "" {
+		merged.Description = base.Description
+	}
+	if merged.InputTokenLimit == 0 {
+		merged.InputTokenLimit = base.InputTokenLimit
+	}
+	if merged.OutputTokenLimit == 0 {
+		merged.OutputTokenLimit = base.OutputTokenLimit
+	}
+	if len(merged.SupportedGenerationMethods) == 0 && len(base.SupportedGenerationMethods) > 0 {
+		merged.SupportedGenerationMethods = append([]string(nil), base.SupportedGenerationMethods...)
+	}
+	if merged.ContextLength == 0 {
+		merged.ContextLength = base.ContextLength
+	}
+	if merged.MaxCompletionTokens == 0 {
+		merged.MaxCompletionTokens = base.MaxCompletionTokens
+	}
+	if merged.ContextLength == 0 {
+		for _, candidate := range registration.InfoByProvider {
+			if candidate != nil && candidate.ContextLength > 0 {
+				merged.ContextLength = candidate.ContextLength
+				break
+			}
+		}
+	}
+	if merged.MaxCompletionTokens == 0 {
+		for _, candidate := range registration.InfoByProvider {
+			if candidate != nil && candidate.MaxCompletionTokens > 0 {
+				merged.MaxCompletionTokens = candidate.MaxCompletionTokens
+				break
+			}
+		}
+	}
+	if len(merged.SupportedParameters) == 0 && len(base.SupportedParameters) > 0 {
+		merged.SupportedParameters = append([]string(nil), base.SupportedParameters...)
+	}
+	if len(merged.SupportedInputModalities) == 0 && len(base.SupportedInputModalities) > 0 {
+		merged.SupportedInputModalities = append([]string(nil), base.SupportedInputModalities...)
+	}
+	if len(merged.SupportedOutputModalities) == 0 && len(base.SupportedOutputModalities) > 0 {
+		merged.SupportedOutputModalities = append([]string(nil), base.SupportedOutputModalities...)
+	}
+	if merged.Thinking == nil && base.Thinking != nil {
+		clonedThinking := *base.Thinking
+		if len(base.Thinking.Levels) > 0 {
+			clonedThinking.Levels = append([]string(nil), base.Thinking.Levels...)
+		}
+		merged.Thinking = &clonedThinking
+	}
+	if !merged.UserDefined && base.UserDefined {
+		merged.UserDefined = true
+	}
+
+	return merged
 }
 
 func cloneModelMaps(models []map[string]any) []map[string]any {

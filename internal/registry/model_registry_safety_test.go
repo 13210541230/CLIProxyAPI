@@ -222,6 +222,57 @@ func TestGetAvailableModelsMapsOpenAIMetadataForCodex(t *testing.T) {
 	}
 }
 
+func TestGetAvailableModelsOpenAIFallsBackContextWindowWhenProviderMetadataSparse(t *testing.T) {
+	r := newTestModelRegistry()
+	r.RegisterClient("rich-openai", "openai", []*ModelInfo{{
+		ID:                  "deepseek-v4-flash",
+		OwnedBy:             "DeepSeek",
+		ContextLength:       262144,
+		MaxCompletionTokens: 8192,
+	}})
+	r.RegisterClient("sparse-compat", "openai-compatibility", []*ModelInfo{{
+		ID:          "deepseek-v4-flash",
+		OwnedBy:     "DeepSeek",
+		DisplayName: "deepseek-v4-flash",
+	}})
+
+	models := r.GetAvailableModels("openai")
+	if len(models) != 1 {
+		t.Fatalf("expected one model, got %d", len(models))
+	}
+	if got := models[0]["context_window"]; got != 262144 {
+		t.Fatalf("expected context_window fallback 262144, got %#v", got)
+	}
+	if got := models[0]["auto_compact_token_limit"]; got != 8192 {
+		t.Fatalf("expected auto_compact_token_limit fallback 8192, got %#v", got)
+	}
+}
+
+func TestGetAvailableModelsClaudeFallsBackMaxInputWhenProviderMetadataSparse(t *testing.T) {
+	r := newTestModelRegistry()
+	r.RegisterClient("rich-openai", "openai", []*ModelInfo{{
+		ID:                  "deepseek-v4-flash",
+		OwnedBy:             "DeepSeek",
+		ContextLength:       262144,
+		MaxCompletionTokens: 8192,
+	}})
+	r.RegisterClient("sparse-claude", "claude", []*ModelInfo{{
+		ID:      "deepseek-v4-flash",
+		OwnedBy: "DeepSeek",
+	}})
+
+	models := r.GetAvailableModels("claude")
+	if len(models) != 1 {
+		t.Fatalf("expected one model, got %d", len(models))
+	}
+	if got := models[0]["max_input_tokens"]; got != 262144 {
+		t.Fatalf("expected max_input_tokens fallback 262144, got %#v", got)
+	}
+	if got := models[0]["max_tokens"]; got != 8192 {
+		t.Fatalf("expected max_tokens fallback 8192, got %#v", got)
+	}
+}
+
 func TestLookupModelInfoReturnsCloneForStaticDefinitions(t *testing.T) {
 	first := LookupModelInfo("claude-sonnet-4-6")
 	if first == nil || first.Thinking == nil || len(first.Thinking.Levels) == 0 {
