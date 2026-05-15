@@ -66,6 +66,10 @@ CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-fo
 
 请参见 [MANAGEMENT_API_CN.md](https://help.router-for.me/cn/management/api)
 
+## 内置管理面板发布说明
+
+- 从 `v7.0.7` 开始，官方 Windows 发布包支持内置来自 CPA Management Center 的预构建管理面板（`static/management.html`），开箱即可本地访问管理界面。
+
 ## 使用量统计
 
 自v6.10.0版本以后，CLIProxyAPI及 [CPAMC](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) 项目不再预置数据统计功能，如果有数据统计需求的请使用以下项目：
