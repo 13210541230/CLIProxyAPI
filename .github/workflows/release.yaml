@@ -1,42 +1,130 @@
-name: goreleaser
+name: unified-release
 
 on:
   push:
-    # run only against tags
     tags:
-      - '*'
+      - 'v*'
 
 permissions:
   contents: write
 
 jobs:
-  goreleaser:
+  build-packages:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows
+            arch: amd64
+          - os: linux
+            arch: amd64
+          - os: linux
+            arch: arm64
+          - os: darwin
+            arch: amd64
+          - os: darwin
+            arch: arm64
+
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Refresh models catalog
         run: |
           git fetch --depth 1 https://github.com/router-for-me/models.git main
           git show FETCH_HEAD:models.json > internal/registry/models/models.json
-      - run: git fetch --force --tags
-      - uses: actions/setup-go@v4
+
+      - uses: actions/setup-go@v5
         with:
-          go-version: '>=1.26.0'
-          cache: true
-      - name: Generate Build Metadata
+          go-version: '1.26.x'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Build management center
         run: |
-          echo "VERSION=${GITHUB_REF_NAME}" >> $GITHUB_ENV
-          echo COMMIT=`git rev-parse --short HEAD` >> $GITHUB_ENV
-          echo BUILD_DATE=`date -u +%Y-%m-%dT%H:%M:%SZ` >> $GITHUB_ENV
-      - uses: goreleaser/goreleaser-action@v4
-        with:
-          distribution: goreleaser
-          version: latest
-          args: release --clean --skip=validate
+          git clone --depth 1 https://github.com/13210541230/Cli-Proxy-API-Management-Center.git /tmp/mc
+          cd /tmp/mc
+          npm ci
+          VERSION=${GITHUB_REF_NAME} npm run build
+          test -f dist/index.html
+
+      - name: Build cli-proxy-api
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ env.VERSION }}
-          COMMIT: ${{ env.COMMIT }}
-          BUILD_DATE: ${{ env.BUILD_DATE }}
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p dist/bin
+          ext=""
+          if [ "${GOOS}" = "windows" ]; then ext=".exe"; fi
+          go build -ldflags "-s -w -X main.Version=${GITHUB_REF_NAME} -X main.Commit=$(git rev-parse --short HEAD) -X main.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "dist/bin/cli-proxy-api${ext}" ./cmd/server
+
+      - name: Build usage-service
+        id: build_usage
+        continue-on-error: true
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p dist/bin
+          ext=""
+          if [ "${GOOS}" = "windows" ]; then ext=".exe"; fi
+          if [ -d "./cmd/usage-service" ]; then
+            go build -ldflags "-s -w -X main.Version=${GITHUB_REF_NAME}" -o "dist/bin/usage-service${ext}" ./cmd/usage-service
+          else
+            echo "usage-service cmd not found, skip packaging usage-service binary"
+          fi
+
+      - name: Package unified artifact
+        run: |
+          chmod +x release/package-unified.sh
+          ext=""
+          if [ "${{ matrix.os }}" = "windows" ]; then ext=".exe"; fi
+          usage_arg=""
+          if [ -f "dist/bin/usage-service${ext}" ]; then
+            usage_arg="--usage-bin dist/bin/usage-service${ext}"
+          fi
+          release/package-unified.sh \
+            --version "${GITHUB_REF_NAME}" \
+            --os "${{ matrix.os }}" \
+            --arch "${{ matrix.arch }}" \
+            --server-bin "dist/bin/cli-proxy-api${ext}" \
+            ${usage_arg} \
+            --management-html "/tmp/mc/dist/index.html" \
+            --output-dir "dist/release"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            dist/release/*.zip
+            dist/release/*.tar.gz
+
+  publish-release:
+    runs-on: ubuntu-latest
+    needs: build-packages
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/all-assets
+
+      - name: Generate checksums
+        run: |
+          find dist/all-assets -type f \( -name "*.zip" -o -name "*.tar.gz" \) -print0 | sort -z | xargs -0 sha256sum > checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/all-assets/**/*.zip
+            dist/all-assets/**/*.tar.gz
+            checksums.txt

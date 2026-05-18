@@ -69,6 +69,7 @@ CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-fo
 ## 内置管理面板发布说明
 
 - 从 `v7.0.7` 开始，官方 Windows 发布包支持内置来自 CPA Management Center 的预构建管理面板（`static/management.html`），开箱即可本地访问管理界面。
+- 从统一发布流程开始，`CLIProxyAPI` 仓库会在同一个 GitHub Release 下产出多平台安装包，并统一内置后端服务与 `static/management.html`（管理中心构建产物）。
 
 ## 使用量统计
 
