@@ -17,6 +17,8 @@ jobs:
         include:
           - os: windows
             arch: amd64
+          - os: windows
+            arch: arm64
           - os: linux
             arch: amd64
           - os: linux
