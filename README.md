@@ -66,8 +66,10 @@ CLIProxyAPI Guides: [https://help.router-for.me/](https://help.router-for.me/)
 
 see [MANAGEMENT_API.md](https://help.router-for.me/management/api)
 
-## Bundled Management Panel Release`r`n`r`n- Unified release workflow doc: `docs/unified-release.md``r`n`r`n- Starting from `v7.0.7`, official Windows release packages can bundle a prebuilt management panel (`static/management.html`) from CPA Management Center for out-of-the-box local management access.
+## Bundled Management Panel Release
 
+- Unified release workflow doc: `release/unified-release.md`
+- Starting from `v7.0.7`, official Windows release packages can bundle a prebuilt management panel (`static/management.html`) from CPA Management Center for out-of-the-box local management access.
 ## Usage Statistics
 
 Since v6.10.0, CLIProxyAPI and [CPAMC](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) no longer ship built-in usage statistics. If you need usage statistics, use:
@@ -228,5 +230,6 @@ A public CLIProxyAPI-compatible fork and bundled management panel. It keeps upst
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
 
 
