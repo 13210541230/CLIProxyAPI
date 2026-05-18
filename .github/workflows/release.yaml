@@ -52,6 +52,19 @@ jobs:
           VERSION=${GITHUB_REF_NAME} npm run build
           test -f dist/index.html
 
+      - name: Build usage-service from management center
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: 0
+        run: |
+          cd /tmp/mc/usage-service
+          mkdir -p /tmp/mc/dist/bin
+          ext=""
+          if [ "${GOOS}" = "windows" ]; then ext=".exe"; fi
+          go build -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o "/tmp/mc/dist/bin/usage-service${ext}" .
+          test -f "/tmp/mc/dist/bin/usage-service${ext}"
+
       - name: Build cli-proxy-api
         env:
           GOOS: ${{ matrix.os }}
@@ -63,38 +76,17 @@ jobs:
           if [ "${GOOS}" = "windows" ]; then ext=".exe"; fi
           go build -ldflags "-s -w -X main.Version=${GITHUB_REF_NAME} -X main.Commit=$(git rev-parse --short HEAD) -X main.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "dist/bin/cli-proxy-api${ext}" ./cmd/server
 
-      - name: Build usage-service
-        id: build_usage
-        continue-on-error: true
-        env:
-          GOOS: ${{ matrix.os }}
-          GOARCH: ${{ matrix.arch }}
-          CGO_ENABLED: 0
-        run: |
-          mkdir -p dist/bin
-          ext=""
-          if [ "${GOOS}" = "windows" ]; then ext=".exe"; fi
-          if [ -d "./cmd/usage-service" ]; then
-            go build -ldflags "-s -w -X main.Version=${GITHUB_REF_NAME}" -o "dist/bin/usage-service${ext}" ./cmd/usage-service
-          else
-            echo "usage-service cmd not found, skip packaging usage-service binary"
-          fi
-
       - name: Package unified artifact
         run: |
           chmod +x release/package-unified.sh
           ext=""
           if [ "${{ matrix.os }}" = "windows" ]; then ext=".exe"; fi
-          usage_arg=""
-          if [ -f "dist/bin/usage-service${ext}" ]; then
-            usage_arg="--usage-bin dist/bin/usage-service${ext}"
-          fi
           release/package-unified.sh \
             --version "${GITHUB_REF_NAME}" \
             --os "${{ matrix.os }}" \
             --arch "${{ matrix.arch }}" \
             --server-bin "dist/bin/cli-proxy-api${ext}" \
-            ${usage_arg} \
+            --usage-bin "/tmp/mc/dist/bin/usage-service${ext}" \
             --management-html "/tmp/mc/dist/index.html" \
             --output-dir "dist/release"
 
