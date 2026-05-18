@@ -62,7 +62,7 @@ jobs:
           mkdir -p /tmp/mc/dist/bin
           ext=""
           if [ "${GOOS}" = "windows" ]; then ext=".exe"; fi
-          go build -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o "/tmp/mc/dist/bin/usage-service${ext}" .
+          go build -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o "/tmp/mc/dist/bin/usage-service${ext}" ./cmd/cpa-manager
           test -f "/tmp/mc/dist/bin/usage-service${ext}"
 
       - name: Build cli-proxy-api
