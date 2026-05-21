@@ -1,4 +1,4 @@
-package helps
+﻿package helps
 
 import (
 	"bytes"
@@ -386,7 +386,7 @@ func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
 	if detail.CachedTokens == 0 {
 		detail.CachedTokens = detail.CacheCreationTokens
 	}
-	detail.TotalTokens = detail.InputTokens + detail.OutputTokens
+	detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.CacheReadTokens
 	return detail
 }
 
@@ -399,7 +399,7 @@ func parseGeminiFamilyUsageDetail(node gjson.Result) usage.Detail {
 		CachedTokens:    node.Get("cachedContentTokenCount").Int(),
 	}
 	if detail.TotalTokens == 0 {
-		detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
+		detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.CacheReadTokens + detail.ReasoningTokens
 	}
 	return detail
 }
@@ -691,3 +691,4 @@ func jsonPayload(line []byte) []byte {
 	}
 	return trimmed
 }
+
