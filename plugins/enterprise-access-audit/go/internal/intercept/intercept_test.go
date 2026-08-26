@@ -229,6 +229,68 @@ func TestCompletionOutcomesAreNotSuccess(t *testing.T) {
 	}
 }
 
+func TestCompletionCyberPolicySignalUsesExplicitUpstreamCode(t *testing.T) {
+	handler, manager := newTestHandler(t)
+	metadata := map[string]any{RequestPathMetadataKey: "/v1/responses", KeyHashMetadataKey: "deadbeef"}
+	request := Request{RequestID: "cyber-policy", SourceFormat: "openai-response", RequestedModel: "model", Body: []byte(`{"input":"security test"}`), Metadata: metadata}
+	if _, err := handler.Intercept(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := handler.Complete(context.Background(), Completion{
+		RequestID: request.RequestID, SourceFormat: request.SourceFormat, RequestedModel: request.RequestedModel,
+		Outcome: "failed", StatusCode: 400, Error: `{"error":{"code":"cyber_policy","message":"blocked"}}`, Metadata: metadata,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := readRecord(manager, request.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Outcome != "failed" || record.SecuritySignal != "cyber_policy" {
+		t.Fatalf("cyber policy record = %#v", record)
+	}
+
+	genericID := "generic-error"
+	genericRequest := request
+	genericRequest.RequestID = genericID
+	if _, err := handler.Intercept(context.Background(), genericRequest); err != nil {
+		t.Fatal(err)
+	}
+	if err := handler.Complete(context.Background(), Completion{
+		RequestID: genericID, SourceFormat: request.SourceFormat, RequestedModel: request.RequestedModel,
+		Outcome: "failed", StatusCode: 400, Error: `{"error":{"code":"invalid_request"}}`, Metadata: metadata,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	genericRecord, err := readRecord(manager, genericID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if genericRecord.SecuritySignal != "" {
+		t.Fatalf("generic error was classified as cyber policy: %#v", genericRecord)
+	}
+
+	successID := "successful-response"
+	successRequest := request
+	successRequest.RequestID = successID
+	if _, err := handler.Intercept(context.Background(), successRequest); err != nil {
+		t.Fatal(err)
+	}
+	if err := handler.Complete(context.Background(), Completion{
+		RequestID: successID, SourceFormat: request.SourceFormat, RequestedModel: request.RequestedModel,
+		Outcome: "succeeded", StatusCode: 200, Error: `{"error":{"code":"cyber_policy"}}`, Metadata: metadata,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	successRecord, err := readRecord(manager, successID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if successRecord.SecuritySignal != "" {
+		t.Fatalf("successful response was classified as cyber policy: %#v", successRecord)
+	}
+}
+
 func readRecord(manager *state.Manager, requestID string) (record store.AuditRecord, err error) {
 	err = manager.WithStore(context.Background(), func(active *store.Store) error {
 		var readErr error

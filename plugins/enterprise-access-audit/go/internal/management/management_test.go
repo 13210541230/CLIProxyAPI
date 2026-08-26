@@ -167,11 +167,11 @@ func TestAuditFiltersPaginationDetailAndNumericSerialization(t *testing.T) {
 		t.Fatalf("insert text record = %v", err)
 	}
 	if err := manager.WithStore(ctx, func(active *store.Store) error {
-		return active.InsertAudit(ctx, store.AuditRecord{KeyHash: "abcdef12", CreatedAt: now, Model: "model-b", SourceFormat: "openai", RequestID: "two", Outcome: "failed", StatusCode: 500, Text: "", TextAvailable: false, TextUnavailableReason: "numeric_prompt"})
+		return active.InsertAudit(ctx, store.AuditRecord{KeyHash: "abcdef12", CreatedAt: now, Model: "model-b", SourceFormat: "openai", RequestID: "two", Outcome: "failed", StatusCode: 500, Text: "", TextAvailable: false, TextUnavailableReason: "numeric_prompt", SecuritySignal: "cyber_policy"})
 	}); err != nil {
 		t.Fatalf("insert numeric record = %v", err)
 	}
-	response := handler.Handle(ctx, ManagementRequest{Method: http.MethodGet, Path: AuditPath, Query: url.Values{"model": {"MODEL-B"}, "outcome": {"failed"}, "page_size": {"1"}}})
+	response := handler.Handle(ctx, ManagementRequest{Method: http.MethodGet, Path: AuditPath, Query: url.Values{"model": {"MODEL-B"}, "outcome": {"failed"}, "security_signal": {"cyber_policy"}, "page_size": {"1"}}})
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("audit list status = %d %s", response.StatusCode, response.Body)
 	}
@@ -182,7 +182,7 @@ func TestAuditFiltersPaginationDetailAndNumericSerialization(t *testing.T) {
 		} `json:"pagination"`
 	}
 	decodeResponse(t, response, &page)
-	if len(page.Records) != 1 || page.Pagination.Total != 1 || page.Records[0].Text != "" || page.Records[0].TextAvailable || page.Records[0].TextUnavailableReason != "numeric_prompt" {
+	if len(page.Records) != 1 || page.Pagination.Total != 1 || page.Records[0].Text != "" || page.Records[0].TextAvailable || page.Records[0].TextUnavailableReason != "numeric_prompt" || page.Records[0].SecuritySignal != "cyber_policy" {
 		t.Fatalf("numeric response = %+v", page)
 	}
 	id := page.Records[0].ID

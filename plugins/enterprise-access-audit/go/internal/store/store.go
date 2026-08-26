@@ -45,16 +45,18 @@ type AuditRecord struct {
 	TextAvailable         bool
 	TextUnavailableReason string
 	TextTruncated         bool
+	SecuritySignal        string
 }
 
 // AuditFilter contains normalized bounded filters for management queries.
 type AuditFilter struct {
-	From         *time.Time
-	To           *time.Time
-	KeyHash      string
-	Model        string
-	SourceFormat string
-	Outcome      string
+	From           *time.Time
+	To             *time.Time
+	KeyHash        string
+	Model          string
+	SourceFormat   string
+	Outcome        string
+	SecuritySignal string
 }
 
 // AuditPage is a deterministic bounded page of audit records.
@@ -131,6 +133,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		 CREATE INDEX IF NOT EXISTS idx_audit_records_key_hash ON audit_records(key_hash);
 		 CREATE INDEX IF NOT EXISTS idx_audit_records_model ON audit_records(model);`,
 		`ALTER TABLE audit_records ADD COLUMN text_truncated INTEGER NOT NULL DEFAULT 0 CHECK (text_truncated IN (0, 1));`,
+		`ALTER TABLE audit_records ADD COLUMN security_signal TEXT NOT NULL DEFAULT '';
+			 CREATE INDEX IF NOT EXISTS idx_audit_records_security_signal ON audit_records(security_signal);`,
 	}
 	for version, migration := range migrations {
 		var applied int
@@ -544,7 +548,7 @@ func (s *Store) upsertAudit(ctx context.Context, record AuditRecord, byRequestID
 			if existingAvailable != 0 && !record.TextAvailable {
 				return nil
 			}
-			_, errUpdate := s.db.ExecContext(ctx, `UPDATE audit_records SET model=COALESCE(NULLIF(?, ''), model), source_format=COALESCE(NULLIF(?, ''), source_format), text=?, text_available=?, text_unavailable_reason=?, text_truncated=? WHERE id=?`, record.Model, record.SourceFormat, record.Text, boolInt(record.TextAvailable), record.TextUnavailableReason, boolInt(record.TextTruncated), existingID)
+			_, errUpdate := s.db.ExecContext(ctx, `UPDATE audit_records SET model=COALESCE(NULLIF(?, ''), model), source_format=COALESCE(NULLIF(?, ''), source_format), text=?, text_available=?, text_unavailable_reason=?, text_truncated=?, security_signal=COALESCE(NULLIF(?, ''), security_signal) WHERE id=?`, record.Model, record.SourceFormat, record.Text, boolInt(record.TextAvailable), record.TextUnavailableReason, boolInt(record.TextTruncated), record.SecuritySignal, existingID)
 			if errUpdate != nil {
 				return fmt.Errorf("update audit draft %s: %w", record.RequestID, errUpdate)
 			}
@@ -553,7 +557,7 @@ func (s *Store) upsertAudit(ctx context.Context, record AuditRecord, byRequestID
 			return fmt.Errorf("find audit draft %s: %w", record.RequestID, errQuery)
 		}
 	}
-	_, errExec := s.db.ExecContext(ctx, `INSERT INTO audit_records(key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason, text_truncated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, record.KeyHash, record.CreatedAt.Unix(), record.Model, record.SourceFormat, record.RequestID, record.Outcome, record.StatusCode, record.Text, boolInt(record.TextAvailable), record.TextUnavailableReason, boolInt(record.TextTruncated))
+	_, errExec := s.db.ExecContext(ctx, `INSERT INTO audit_records(key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason, text_truncated, security_signal) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, record.KeyHash, record.CreatedAt.Unix(), record.Model, record.SourceFormat, record.RequestID, record.Outcome, record.StatusCode, record.Text, boolInt(record.TextAvailable), record.TextUnavailableReason, boolInt(record.TextTruncated), record.SecuritySignal)
 	if errExec != nil {
 		return fmt.Errorf("insert audit record: %w", errExec)
 	}
@@ -585,7 +589,7 @@ func (s *Store) FinalizeAudit(ctx context.Context, record AuditRecord, allowInse
 		if existingOutcome == "rejected" {
 			return nil
 		}
-		_, errUpdate := s.db.ExecContext(ctx, `UPDATE audit_records SET outcome=?, status_code=?, model=COALESCE(NULLIF(?, ''), model), source_format=COALESCE(NULLIF(?, ''), source_format) WHERE id=?`, record.Outcome, record.StatusCode, record.Model, record.SourceFormat, id)
+		_, errUpdate := s.db.ExecContext(ctx, `UPDATE audit_records SET outcome=?, status_code=?, model=COALESCE(NULLIF(?, ''), model), source_format=COALESCE(NULLIF(?, ''), source_format), security_signal=COALESCE(NULLIF(?, ''), security_signal) WHERE id=?`, record.Outcome, record.StatusCode, record.Model, record.SourceFormat, record.SecuritySignal, id)
 		if errUpdate != nil {
 			return fmt.Errorf("finalize audit request %s: %w", record.RequestID, errUpdate)
 		}
@@ -603,7 +607,7 @@ func (s *Store) FinalizeAudit(ctx context.Context, record AuditRecord, allowInse
 	if record.TextUnavailableReason == "" {
 		record.TextUnavailableReason = "request_body_unavailable"
 	}
-	_, errInsert := s.db.ExecContext(ctx, `INSERT INTO audit_records(key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason, text_truncated) VALUES (?, ?, ?, ?, ?, ?, ?, '', 0, ?, 0)`, keyHash, time.Now().Unix(), record.Model, record.SourceFormat, record.RequestID, record.Outcome, record.StatusCode, record.TextUnavailableReason)
+	_, errInsert := s.db.ExecContext(ctx, `INSERT INTO audit_records(key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason, text_truncated, security_signal) VALUES (?, ?, ?, ?, ?, ?, ?, '', 0, ?, 0, ?)`, keyHash, time.Now().Unix(), record.Model, record.SourceFormat, record.RequestID, record.Outcome, record.StatusCode, record.TextUnavailableReason, record.SecuritySignal)
 	if errInsert != nil {
 		return fmt.Errorf("insert completion audit request %s: %w", record.RequestID, errInsert)
 	}
@@ -617,7 +621,7 @@ func (s *Store) GetAuditByRequestID(ctx context.Context, requestID string) (Audi
 	if s.closed {
 		return AuditRecord{}, ErrClosed
 	}
-	return scanAuditRecord(s.db.QueryRowContext(ctx, `SELECT id, key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason, text_truncated FROM audit_records WHERE request_id = ? ORDER BY id DESC LIMIT 1`, requestID))
+	return scanAuditRecord(s.db.QueryRowContext(ctx, `SELECT id, key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason, text_truncated, security_signal FROM audit_records WHERE request_id = ? ORDER BY id DESC LIMIT 1`, requestID))
 }
 
 // GetAuditByID returns one bounded audit record for the management detail endpoint.
@@ -627,7 +631,7 @@ func (s *Store) GetAuditByID(ctx context.Context, id int64) (AuditRecord, error)
 	if s.closed {
 		return AuditRecord{}, ErrClosed
 	}
-	return scanAuditRecord(s.db.QueryRowContext(ctx, `SELECT id, key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason, text_truncated FROM audit_records WHERE id = ?`, id))
+	return scanAuditRecord(s.db.QueryRowContext(ctx, `SELECT id, key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason, text_truncated, security_signal FROM audit_records WHERE id = ?`, id))
 }
 
 // ListAudit returns deterministic pages ordered by newest creation time and ID.
@@ -670,6 +674,10 @@ func (s *Store) ListAudit(ctx context.Context, filter AuditFilter, page, pageSiz
 		where = append(where, "outcome = ?")
 		args = append(args, filter.Outcome)
 	}
+	if filter.SecuritySignal != "" {
+		where = append(where, "security_signal = ?")
+		args = append(args, filter.SecuritySignal)
+	}
 	whereSQL := ""
 	if len(where) > 0 {
 		whereSQL = " WHERE " + strings.Join(where, " AND ")
@@ -679,7 +687,7 @@ func (s *Store) ListAudit(ctx context.Context, filter AuditFilter, page, pageSiz
 		return AuditPage{}, fmt.Errorf("count audit records: %w", errCount)
 	}
 	queryArgs := append(append([]any(nil), args...), pageSize+1, offset)
-	rows, errQuery := s.db.QueryContext(ctx, "SELECT id, key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason, text_truncated FROM audit_records"+whereSQL+" ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?", queryArgs...)
+	rows, errQuery := s.db.QueryContext(ctx, "SELECT id, key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason, text_truncated, security_signal FROM audit_records"+whereSQL+" ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?", queryArgs...)
 	if errQuery != nil {
 		return AuditPage{}, fmt.Errorf("list audit records: %w", errQuery)
 	}
@@ -706,7 +714,7 @@ func scanAuditRecord(scanner interface{ Scan(...any) error }) (AuditRecord, erro
 	var record AuditRecord
 	var createdAt int64
 	var available, truncated int
-	if errScan := scanner.Scan(&record.ID, &record.KeyHash, &createdAt, &record.Model, &record.SourceFormat, &record.RequestID, &record.Outcome, &record.StatusCode, &record.Text, &available, &record.TextUnavailableReason, &truncated); errScan != nil {
+	if errScan := scanner.Scan(&record.ID, &record.KeyHash, &createdAt, &record.Model, &record.SourceFormat, &record.RequestID, &record.Outcome, &record.StatusCode, &record.Text, &available, &record.TextUnavailableReason, &truncated, &record.SecuritySignal); errScan != nil {
 		return AuditRecord{}, errScan
 	}
 	record.CreatedAt = time.Unix(createdAt, 0)

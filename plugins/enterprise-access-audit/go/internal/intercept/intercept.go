@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/cyberpolicy"
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/extract"
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/model"
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/state"
@@ -149,6 +150,10 @@ func (h *Handler) Complete(ctx context.Context, completion Completion) error {
 	if !validOutcome(completion.Outcome) {
 		return fmt.Errorf("unsupported request completion outcome %q", completion.Outcome)
 	}
+	securitySignal := ""
+	if completion.Outcome != "succeeded" && completion.Outcome != "rejected" && cyberpolicy.Detect(completion.Error) {
+		securitySignal = cyberpolicy.UpstreamCyberPolicyCode
+	}
 	return h.state.WithStore(ctx, func(active *store.Store) error {
 		settings, errSettings := active.GetSettings(ctx, store.SettingsFromConfig(h.cfg))
 		if errSettings != nil {
@@ -159,12 +164,13 @@ func (h *Handler) Complete(ctx context.Context, completion Completion) error {
 			return fmt.Errorf("load policy for completion: %w", errPolicy)
 		}
 		return active.FinalizeAudit(ctx, store.AuditRecord{
-			KeyHash:      keyHash,
-			Model:        firstModel(completion.Model, completion.RequestedModel),
-			SourceFormat: completion.SourceFormat,
-			RequestID:    completion.RequestID,
-			Outcome:      completion.Outcome,
-			StatusCode:   completion.StatusCode,
+			KeyHash:        keyHash,
+			Model:          firstModel(completion.Model, completion.RequestedModel),
+			SourceFormat:   completion.SourceFormat,
+			RequestID:      completion.RequestID,
+			Outcome:        completion.Outcome,
+			StatusCode:     completion.StatusCode,
+			SecuritySignal: securitySignal,
 		}, policy.AuditEnabled)
 	})
 }

@@ -419,6 +419,7 @@ type auditResponse struct {
 	TextAvailable         bool   `json:"text_available"`
 	TextUnavailableReason string `json:"text_unavailable_reason,omitempty"`
 	TextTruncated         bool   `json:"text_truncated"`
+	SecuritySignal        string `json:"security_signal,omitempty"`
 }
 
 func auditJSON(record store.AuditRecord, maxTextBytes int) auditResponse {
@@ -427,7 +428,7 @@ func auditJSON(record store.AuditRecord, maxTextBytes int) auditResponse {
 		text = string([]byte(text)[:maxTextBytes])
 		record.TextTruncated = true
 	}
-	return auditResponse{ID: record.ID, KeyHash: record.KeyHash, CreatedAt: record.CreatedAt.UTC().Format(time.RFC3339), Model: record.Model, SourceFormat: record.SourceFormat, RequestID: record.RequestID, Outcome: record.Outcome, StatusCode: record.StatusCode, Text: text, TextAvailable: record.TextAvailable, TextUnavailableReason: record.TextUnavailableReason, TextTruncated: record.TextTruncated}
+	return auditResponse{ID: record.ID, KeyHash: record.KeyHash, CreatedAt: record.CreatedAt.UTC().Format(time.RFC3339), Model: record.Model, SourceFormat: record.SourceFormat, RequestID: record.RequestID, Outcome: record.Outcome, StatusCode: record.StatusCode, Text: text, TextAvailable: record.TextAvailable, TextUnavailableReason: record.TextUnavailableReason, TextTruncated: record.TextTruncated, SecuritySignal: record.SecuritySignal}
 }
 
 func queryHashes(query url.Values, name string) ([]string, error) {
@@ -547,6 +548,10 @@ func parseAuditQuery(query url.Values) (store.AuditFilter, int, int, error) {
 	filter.Outcome = strings.ToLower(strings.TrimSpace(query.Get("outcome")))
 	if filter.Outcome != "" && !allowedOutcomes[filter.Outcome] {
 		return filter, 0, 0, fmt.Errorf("invalid outcome")
+	}
+	filter.SecuritySignal = strings.ToLower(strings.TrimSpace(query.Get("security_signal")))
+	if filter.SecuritySignal != "" && filter.SecuritySignal != "cyber_policy" {
+		return filter, 0, 0, fmt.Errorf("invalid security_signal")
 	}
 	page, errPage := boundedQueryInt(query.Get("page"), 1, maxPage, 1)
 	if errPage != nil {
