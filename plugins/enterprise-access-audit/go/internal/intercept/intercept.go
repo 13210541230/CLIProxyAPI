@@ -151,8 +151,13 @@ func (h *Handler) Complete(ctx context.Context, completion Completion) error {
 		return fmt.Errorf("unsupported request completion outcome %q", completion.Outcome)
 	}
 	securitySignal := ""
-	if completion.Outcome != "succeeded" && completion.Outcome != "rejected" && cyberpolicy.Detect(completion.Error) {
-		securitySignal = cyberpolicy.UpstreamCyberPolicyCode
+	securityMessage := ""
+	if completion.Outcome != "succeeded" && completion.Outcome != "rejected" {
+		var detected bool
+		securityMessage, detected = cyberpolicy.Extract(completion.Error)
+		if detected {
+			securitySignal = cyberpolicy.UpstreamCyberPolicyCode
+		}
 	}
 	return h.state.WithStore(ctx, func(active *store.Store) error {
 		settings, errSettings := active.GetSettings(ctx, store.SettingsFromConfig(h.cfg))
@@ -164,13 +169,14 @@ func (h *Handler) Complete(ctx context.Context, completion Completion) error {
 			return fmt.Errorf("load policy for completion: %w", errPolicy)
 		}
 		return active.FinalizeAudit(ctx, store.AuditRecord{
-			KeyHash:        keyHash,
-			Model:          firstModel(completion.Model, completion.RequestedModel),
-			SourceFormat:   completion.SourceFormat,
-			RequestID:      completion.RequestID,
-			Outcome:        completion.Outcome,
-			StatusCode:     completion.StatusCode,
-			SecuritySignal: securitySignal,
+			KeyHash:         keyHash,
+			Model:           firstModel(completion.Model, completion.RequestedModel),
+			SourceFormat:    completion.SourceFormat,
+			RequestID:       completion.RequestID,
+			Outcome:         completion.Outcome,
+			StatusCode:      completion.StatusCode,
+			SecuritySignal:  securitySignal,
+			SecurityMessage: securityMessage,
 		}, policy.AuditEnabled)
 	})
 }

@@ -246,7 +246,7 @@ func TestCompletionCyberPolicySignalUsesExplicitUpstreamCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.Outcome != "failed" || record.SecuritySignal != "cyber_policy" {
+	if record.Outcome != "failed" || record.SecuritySignal != "cyber_policy" || record.SecurityMessage != "blocked" {
 		t.Fatalf("cyber policy record = %#v", record)
 	}
 

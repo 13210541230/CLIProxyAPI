@@ -167,7 +167,7 @@ func TestAuditFiltersPaginationDetailAndNumericSerialization(t *testing.T) {
 		t.Fatalf("insert text record = %v", err)
 	}
 	if err := manager.WithStore(ctx, func(active *store.Store) error {
-		return active.InsertAudit(ctx, store.AuditRecord{KeyHash: "abcdef12", CreatedAt: now, Model: "model-b", SourceFormat: "openai", RequestID: "two", Outcome: "failed", StatusCode: 500, Text: "", TextAvailable: false, TextUnavailableReason: "numeric_prompt", SecuritySignal: "cyber_policy"})
+		return active.InsertAudit(ctx, store.AuditRecord{KeyHash: "abcdef12", CreatedAt: now, Model: "model-b", SourceFormat: "openai", RequestID: "two", Outcome: "failed", StatusCode: 500, Text: "", TextAvailable: false, TextUnavailableReason: "numeric_prompt", SecuritySignal: "cyber_policy", SecurityMessage: "blocked"})
 	}); err != nil {
 		t.Fatalf("insert numeric record = %v", err)
 	}
@@ -182,7 +182,7 @@ func TestAuditFiltersPaginationDetailAndNumericSerialization(t *testing.T) {
 		} `json:"pagination"`
 	}
 	decodeResponse(t, response, &page)
-	if len(page.Records) != 1 || page.Pagination.Total != 1 || page.Records[0].Text != "" || page.Records[0].TextAvailable || page.Records[0].TextUnavailableReason != "numeric_prompt" || page.Records[0].SecuritySignal != "cyber_policy" {
+	if len(page.Records) != 1 || page.Pagination.Total != 1 || page.Records[0].Text != "" || page.Records[0].TextAvailable || page.Records[0].TextUnavailableReason != "numeric_prompt" || page.Records[0].SecuritySignal != "cyber_policy" || page.Records[0].SecurityMessage != "blocked" {
 		t.Fatalf("numeric response = %+v", page)
 	}
 	id := page.Records[0].ID

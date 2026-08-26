@@ -93,11 +93,11 @@ Included paths:
 | Claude Messages | `/v1/messages` |
 | Gemini text | `/v1beta/models/{model}:generateContent` and `:streamGenerateContent` |
 
-Audit records contain the valid Key hash, joined user identity metadata when available, timestamp, model, source format, request ID, outcome, known status code, and only bounded allowlisted user text. Successful, failed, and policy-rejected requests are represented. When the upstream error payload explicitly contains `error.code` or `response.error.code` equal to `cyber_policy`, the failed record is additionally marked with `security_signal: cyber_policy`; generic HTTP 4xx/5xx responses are never inferred as cyber-policy events. Numeric-token legacy prompts are metadata-only with `text_available: false` and `text_unavailable_reason: numeric_prompt`.
+Audit records contain the valid Key hash, joined user identity metadata when available, timestamp, model, source format, request ID, outcome, known status code, and only bounded allowlisted user text. Successful, failed, and policy-rejected requests are represented. When the upstream error payload explicitly contains `error.code` or `response.error.code` equal to `cyber_policy`, the failed record is additionally marked with `security_signal: cyber_policy` and may include a bounded, control-character-free `security_message`; generic HTTP 4xx/5xx responses are never inferred as cyber-policy events. Numeric-token legacy prompts are metadata-only with `text_available: false` and `text_unavailable_reason: numeric_prompt`.
 
 The following are explicitly excluded and neither enforce policy nor persist user text: Realtime/WebSocket executions, any request with `execution_session_id`, `/v1/messages/count_tokens`, Gemini `:countTokens`, Responses compact paths, model-list paths, image/video/audio payloads, and every other non-matrix path. System/developer/assistant history, tool parameters, token IDs, media payloads, and raw request JSON are never persisted or returned. A missing or malformed Key hash is outside enterprise-Key scope and is allowed without text persistence.
 
-Audit is observational and manual only. The plugin does not proactively classify content, scan keywords, automatically block suspicious text, suspend accounts, hide model catalog entries, or change provider availability. Operators can filter `security_signal=cyber_policy` to review requests that the upstream explicitly rejected for that policy, then use the explicit per-Key model deny policy when a restriction is needed.
+Audit is observational and manual only. The plugin does not proactively classify content, scan keywords, automatically block suspicious text, suspend accounts, hide model catalog entries, or change provider availability. Operators can filter `security_signal=cyber_policy` to review requests that the upstream explicitly rejected for that policy, inspect the sanitized upstream policy message, and then use the explicit per-Key model deny policy when a restriction is needed.
 
 ## Authenticated Management API
 
@@ -121,7 +121,7 @@ Example request bodies use hashes/placeholders only:
 {"retention_days":30,"default_audit_enabled":true,"max_text_bytes":32768}
 ```
 
-`audit_enabled: null` or omitted fields preserve the existing value according to the endpoint contract. Audit responses are bounded text-only records ordered by `created_at DESC, id DESC`, with deterministic pagination and filters for time, hash, model, source format, outcome, and the explicit `security_signal=cyber_policy` marker. Invalid input, missing details, and unavailable storage use stable 400, 404, and 503 responses.
+`audit_enabled: null` or omitted fields preserve the existing value according to the endpoint contract. Audit responses are bounded text-only records ordered by `created_at DESC, id DESC`, with deterministic pagination and filters for time, hash, model, source format, outcome, and the explicit `security_signal=cyber_policy` marker. A `security_message` field, when present, contains only the bounded sanitized upstream message, never the raw upstream response body. Invalid input, missing details, and unavailable storage use stable 400, 404, and 503 responses.
 
 The Management Center audit page joins hashes to the hash-only usage-service projection:
 

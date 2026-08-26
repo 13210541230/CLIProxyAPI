@@ -1,6 +1,9 @@
 package cyberpolicy
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestDetect(t *testing.T) {
 	tests := []struct {
@@ -23,5 +26,17 @@ func TestDetect(t *testing.T) {
 				t.Fatalf("Detect(%q) = %v, want %v", test.text, got, test.want)
 			}
 		})
+	}
+}
+
+func TestExtractSanitizesAndBoundsMessage(t *testing.T) {
+	message, detected := Extract(`{"error":{"code":"cyber_policy","message":"line1\nline2"}}`)
+	if !detected || message != "line1 line2" {
+		t.Fatalf("Extract() = (%q, %v)", message, detected)
+	}
+	longMessage := strings.Repeat("x", MaxMessageBytes+100)
+	message, detected = Extract(`{"error":{"code":"cyber_policy","message":"` + longMessage + `"}}`)
+	if !detected || len([]byte(message)) != MaxMessageBytes {
+		t.Fatalf("bounded Extract() = (%d, %v)", len([]byte(message)), detected)
 	}
 }
