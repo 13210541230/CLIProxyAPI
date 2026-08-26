@@ -40,16 +40,13 @@ func Extract(errorText string) (string, bool) {
 	if err := decoder.Decode(&envelope); err != nil {
 		return "", false
 	}
-	var object *errorObject
-	if envelope.Error != nil {
-		object = envelope.Error
-	} else if envelope.Response != nil {
-		object = envelope.Response.Error
+	if envelope.Error != nil && envelope.Error.Code == UpstreamCyberPolicyCode {
+		return sanitizeMessage(envelope.Error.Message), true
 	}
-	if object == nil || !strings.EqualFold(strings.TrimSpace(object.Code), UpstreamCyberPolicyCode) {
-		return "", false
+	if envelope.Response != nil && envelope.Response.Error != nil && envelope.Response.Error.Code == UpstreamCyberPolicyCode {
+		return sanitizeMessage(envelope.Response.Error.Message), true
 	}
-	return sanitizeMessage(object.Message), true
+	return "", false
 }
 
 // Detect reports whether the upstream error explicitly contains cyber_policy.
