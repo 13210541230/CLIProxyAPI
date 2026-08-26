@@ -49,6 +49,30 @@ func TestStorePersistsPolicyAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestReplacePoliciesAbsentRowInheritsPersistedDefaultAudit(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, testConfig(t))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+	defaultAudit := false
+	if err := store.UpdateSettings(ctx, SettingsPatch{DefaultAuditEnabled: &defaultAudit}); err != nil {
+		t.Fatalf("UpdateSettings() error = %v", err)
+	}
+	models := []string{"model-a"}
+	if err := store.ReplacePolicies(ctx, []model.PolicyPatch{{KeyHash: "abcdef12", DeniedModels: &models}}); err != nil {
+		t.Fatalf("ReplacePolicies() error = %v", err)
+	}
+	policy, err := store.GetPolicy(ctx, "abcdef12")
+	if err != nil {
+		t.Fatalf("GetPolicy() error = %v", err)
+	}
+	if policy.AuditEnabled || len(policy.DeniedModels) != 1 || policy.DeniedModels[0] != "model-a" {
+		t.Fatalf("absent policy did not inherit persisted default: %+v", policy)
+	}
+}
+
 func TestBatchReplacementIsAtomicAndPreservesOmittedFields(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, testConfig(t))

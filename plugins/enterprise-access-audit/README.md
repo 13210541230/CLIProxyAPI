@@ -49,4 +49,16 @@ A valid eight-character API-key hash in `quota_key_hash` selects the per-Key exa
 
 Audit drafts and lifecycle finals are correlated by `RequestID`. Only allowlisted user text is stored, bounded by `max_text_bytes`; system/developer/assistant/tool/media values and raw JSON are never persisted. Numeric-token legacy completion prompts produce a metadata-only record with `text_unavailable_reason=numeric_prompt`. Completion outcomes are `succeeded`, `failed`, `rejected`, or `canceled`.
 
-Management API business routes remain intentionally reserved for T3.
+## Authenticated Management API
+
+The host registers these fixed literal routes below `/v0/management`; Management API authentication remains owned by the host. No route contains a dynamic path parameter. Policy identifiers are canonical eight-character API-key hashes only.
+
+- `GET /enterprise-access-audit/policies?key_hash=abcdef12&key_hash=abcdef13`
+- `PUT /enterprise-access-audit/policies/batch` with `{"key_hashes":["abcdef12"],"denied_models":["gpt-4"],"audit_enabled":null}`; `null` preserves each existing audit switch.
+- `PUT /enterprise-access-audit/policy` with `{"key_hash":"abcdef12","audit_enabled":false}`; omitted fields are preserved.
+- `GET /enterprise-access-audit/audit?model=gpt-4&outcome=failed&page=1&page_size=50`
+- `GET /enterprise-access-audit/audit/detail?id=42`
+- `GET /enterprise-access-audit/settings`
+- `PUT /enterprise-access-audit/settings` with `{"retention_days":30,"default_audit_enabled":true,"max_text_bytes":32768}`.
+
+Audit responses are bounded text-only records ordered by `created_at DESC, id DESC`. Numeric-token prompts return `text:""`, `text_available:false`, and `text_unavailable_reason:"numeric_prompt"`; token IDs, raw request JSON, and media/tool payloads are never returned. Invalid input, missing details, and unavailable storage use stable JSON error codes with HTTP 400, 404, and 503 respectively.

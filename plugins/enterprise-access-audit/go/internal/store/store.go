@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,6 +45,25 @@ type AuditRecord struct {
 	TextAvailable         bool
 	TextUnavailableReason string
 	TextTruncated         bool
+}
+
+// AuditFilter contains normalized bounded filters for management queries.
+type AuditFilter struct {
+	From         *time.Time
+	To           *time.Time
+	KeyHash      string
+	Model        string
+	SourceFormat string
+	Outcome      string
+}
+
+// AuditPage is a deterministic bounded page of audit records.
+type AuditPage struct {
+	Records  []AuditRecord
+	Page     int
+	PageSize int
+	Total    int
+	HasNext  bool
 }
 
 // Store owns one SQLite handle and serializes operations on that handle.
@@ -251,8 +271,12 @@ func (s *Store) ReplacePolicies(ctx context.Context, patches []model.PolicyPatch
 		_ = tx.Rollback()
 		return err
 	}
+	defaultAuditEnabled, errDefault := getDefaultAuditEnabledTx(ctx, tx)
+	if errDefault != nil {
+		return rollback(errDefault)
+	}
 	for _, patch := range normalized {
-		current, errCurrent := getPolicyTx(ctx, tx, patch.KeyHash)
+		current, errCurrent := getPolicyTx(ctx, tx, patch.KeyHash, defaultAuditEnabled)
 		if errCurrent != nil {
 			return rollback(errCurrent)
 		}
@@ -277,13 +301,27 @@ func (s *Store) ReplacePolicies(ctx context.Context, patches []model.PolicyPatch
 	return nil
 }
 
-func getPolicyTx(ctx context.Context, tx *sql.Tx, keyHash string) (model.Policy, error) {
+func getDefaultAuditEnabledTx(ctx context.Context, tx *sql.Tx) (bool, error) {
+	var value string
+	errQuery := tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE name = 'default_audit_enabled'`).Scan(&value)
+	if errors.Is(errQuery, sql.ErrNoRows) {
+		return true, nil
+	}
+	if errQuery != nil {
+		return false, fmt.Errorf("read default audit setting in policy transaction: %w", errQuery)
+	}
+	return value == "1", nil
+}
+
+func getPolicyTx(ctx context.Context, tx *sql.Tx, keyHash string, defaultAuditEnabled bool) (model.Policy, error) {
 	var rawModels string
 	var auditEnabled int
 	var updatedAt int64
 	errQuery := tx.QueryRowContext(ctx, `SELECT denied_models, audit_enabled, updated_at FROM policies WHERE key_hash = ?`, keyHash).Scan(&rawModels, &auditEnabled, &updatedAt)
 	if errors.Is(errQuery, sql.ErrNoRows) {
-		return model.DefaultPolicy(keyHash), nil
+		policy := model.DefaultPolicy(keyHash)
+		policy.AuditEnabled = defaultAuditEnabled
+		return policy, nil
 	}
 	if errQuery != nil {
 		return model.Policy{}, fmt.Errorf("read policy for %s in transaction: %w", keyHash, errQuery)
@@ -301,6 +339,11 @@ func getPolicyTx(ctx context.Context, tx *sql.Tx, keyHash string) (model.Policy,
 
 // ListPolicies returns deterministic policies for the requested hashes.
 func (s *Store) ListPolicies(ctx context.Context, hashes []string) ([]model.Policy, error) {
+	return s.ListPoliciesWithDefault(ctx, hashes, true)
+}
+
+// ListPoliciesWithDefault applies the supplied audit default to absent rows.
+func (s *Store) ListPoliciesWithDefault(ctx context.Context, hashes []string, defaultAuditEnabled bool) ([]model.Policy, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -325,7 +368,9 @@ func (s *Store) ListPolicies(ctx context.Context, hashes []string) ([]model.Poli
 		var updatedAt int64
 		errQuery := s.db.QueryRowContext(ctx, `SELECT denied_models, audit_enabled, updated_at FROM policies WHERE key_hash = ?`, keyHash).Scan(&rawModels, &auditEnabled, &updatedAt)
 		if errors.Is(errQuery, sql.ErrNoRows) {
-			result = append(result, model.DefaultPolicy(keyHash))
+			policy := model.DefaultPolicy(keyHash)
+			policy.AuditEnabled = defaultAuditEnabled
+			result = append(result, policy)
 			continue
 		}
 		if errQuery != nil {
@@ -573,6 +618,88 @@ func (s *Store) GetAuditByRequestID(ctx context.Context, requestID string) (Audi
 		return AuditRecord{}, ErrClosed
 	}
 	return scanAuditRecord(s.db.QueryRowContext(ctx, `SELECT id, key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason, text_truncated FROM audit_records WHERE request_id = ? ORDER BY id DESC LIMIT 1`, requestID))
+}
+
+// GetAuditByID returns one bounded audit record for the management detail endpoint.
+func (s *Store) GetAuditByID(ctx context.Context, id int64) (AuditRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return AuditRecord{}, ErrClosed
+	}
+	return scanAuditRecord(s.db.QueryRowContext(ctx, `SELECT id, key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason, text_truncated FROM audit_records WHERE id = ?`, id))
+}
+
+// ListAudit returns deterministic pages ordered by newest creation time and ID.
+func (s *Store) ListAudit(ctx context.Context, filter AuditFilter, page, pageSize int) (AuditPage, error) {
+	if page < 1 || pageSize < 1 {
+		return AuditPage{}, fmt.Errorf("page and page_size must be positive")
+	}
+	offset := (page - 1) * pageSize
+	if offset < 0 || offset > 100000000 {
+		return AuditPage{}, fmt.Errorf("page is too large")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return AuditPage{}, ErrClosed
+	}
+	where := make([]string, 0, 6)
+	args := make([]any, 0, 6)
+	if filter.From != nil {
+		where = append(where, "created_at >= ?")
+		args = append(args, filter.From.Unix())
+	}
+	if filter.To != nil {
+		where = append(where, "created_at <= ?")
+		args = append(args, filter.To.Unix())
+	}
+	if filter.KeyHash != "" {
+		where = append(where, "key_hash = ?")
+		args = append(args, filter.KeyHash)
+	}
+	if filter.Model != "" {
+		where = append(where, "model = ?")
+		args = append(args, filter.Model)
+	}
+	if filter.SourceFormat != "" {
+		where = append(where, "source_format = ?")
+		args = append(args, filter.SourceFormat)
+	}
+	if filter.Outcome != "" {
+		where = append(where, "outcome = ?")
+		args = append(args, filter.Outcome)
+	}
+	whereSQL := ""
+	if len(where) > 0 {
+		whereSQL = " WHERE " + strings.Join(where, " AND ")
+	}
+	var total int
+	if errCount := s.db.QueryRowContext(ctx, "SELECT COUNT(1) FROM audit_records"+whereSQL, args...).Scan(&total); errCount != nil {
+		return AuditPage{}, fmt.Errorf("count audit records: %w", errCount)
+	}
+	queryArgs := append(append([]any(nil), args...), pageSize+1, offset)
+	rows, errQuery := s.db.QueryContext(ctx, "SELECT id, key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason, text_truncated FROM audit_records"+whereSQL+" ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?", queryArgs...)
+	if errQuery != nil {
+		return AuditPage{}, fmt.Errorf("list audit records: %w", errQuery)
+	}
+	defer rows.Close()
+	records := make([]AuditRecord, 0, pageSize)
+	for rows.Next() {
+		record, errScan := scanAuditRecord(rows)
+		if errScan != nil {
+			return AuditPage{}, fmt.Errorf("scan audit record: %w", errScan)
+		}
+		records = append(records, record)
+	}
+	if errRows := rows.Err(); errRows != nil {
+		return AuditPage{}, fmt.Errorf("iterate audit records: %w", errRows)
+	}
+	hasNext := len(records) > pageSize
+	if hasNext {
+		records = records[:pageSize]
+	}
+	return AuditPage{Records: records, Page: page, PageSize: pageSize, Total: total, HasNext: hasNext}, nil
 }
 
 func scanAuditRecord(scanner interface{ Scan(...any) error }) (AuditRecord, error) {

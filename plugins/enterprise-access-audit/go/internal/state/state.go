@@ -52,6 +52,10 @@ func (m *Manager) Configure(ctx context.Context, cfg config.Config) error {
 	if errOpen != nil {
 		return fmt.Errorf("open enterprise access audit state: %w", errOpen)
 	}
+	if _, errCleanup := newStore.CleanupExpired(ctx, time.Now()); errCleanup != nil {
+		_ = newStore.Close()
+		return fmt.Errorf("cleanup expired enterprise access audit records on startup: %w", errCleanup)
+	}
 	newState := &activeState{store: newStore, stop: make(chan struct{}), cleanupDone: make(chan struct{}), interval: cfg.CleanupInterval}
 
 	m.mu.RLock()

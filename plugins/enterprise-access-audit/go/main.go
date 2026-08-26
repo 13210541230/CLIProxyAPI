@@ -37,12 +37,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"sync"
 	"unsafe"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/intercept"
+	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/management"
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/state"
 )
 
@@ -52,9 +55,10 @@ const (
 )
 
 var (
-	pluginState = state.New()
-	handlerMu   sync.RWMutex
-	handler     *intercept.Handler
+	pluginState       = state.New()
+	handlerMu         sync.RWMutex
+	handler           *intercept.Handler
+	managementHandler *management.Handler
 )
 
 type envelope struct {
@@ -97,6 +101,25 @@ type configField struct {
 type registrationCapability struct {
 	RequestInterceptor     bool `json:"request_interceptor"`
 	RequestLifecyclePlugin bool `json:"request_lifecycle_plugin"`
+	ManagementAPI          bool `json:"management_api"`
+}
+
+type managementRegistrationRequest struct {
+	BasePath string `json:"BasePath"`
+}
+
+type managementRequest struct {
+	Method  string
+	Path    string
+	Headers http.Header
+	Query   url.Values
+	Body    []byte
+}
+
+type managementResponse struct {
+	StatusCode int         `json:"StatusCode"`
+	Headers    http.Header `json:"Headers"`
+	Body       []byte      `json:"Body"`
 }
 
 func main() {}
@@ -148,6 +171,7 @@ func cliproxyPluginFree(ptr unsafe.Pointer, length C.size_t) {
 func cliproxyPluginShutdown() {
 	handlerMu.Lock()
 	handler = nil
+	managementHandler = nil
 	handlerMu.Unlock()
 	_ = pluginState.Shutdown()
 }
@@ -164,6 +188,16 @@ func handleMethod(method string, raw []byte) ([]byte, error) {
 			return nil, errShutdown
 		}
 		return okEnvelope(struct{}{})
+	case "management.register":
+		var request managementRegistrationRequest
+		if len(raw) > 0 {
+			if errUnmarshal := json.Unmarshal(raw, &request); errUnmarshal != nil {
+				return nil, fmt.Errorf("decode management registration request: %w", errUnmarshal)
+			}
+		}
+		return okEnvelope(management.Routes(request.BasePath))
+	case "management.handle":
+		return handleManagement(raw)
 	case "request.intercept_before", "request.intercept_after":
 		return interceptRequest(raw)
 	case "request.complete":
@@ -196,6 +230,7 @@ func configure(raw []byte) error {
 	}
 	handlerMu.Lock()
 	handler = intercept.New(pluginState, cfg)
+	managementHandler = management.New(pluginState, cfg)
 	handlerMu.Unlock()
 	return nil
 }
@@ -218,7 +253,7 @@ func pluginRegistration() registration {
 				{Name: "cleanup_interval_seconds", Type: "integer", Description: "Automatic cleanup interval in seconds."},
 			},
 		},
-		Capabilities: registrationCapability{RequestInterceptor: true, RequestLifecyclePlugin: true},
+		Capabilities: registrationCapability{RequestInterceptor: true, RequestLifecyclePlugin: true, ManagementAPI: true},
 	}
 }
 
@@ -238,6 +273,23 @@ func interceptRequest(raw []byte) ([]byte, error) {
 		return nil, errIntercept
 	}
 	return okEnvelope(result)
+}
+
+func handleManagement(raw []byte) ([]byte, error) {
+	var request managementRequest
+	if len(raw) > 0 {
+		if errUnmarshal := json.Unmarshal(raw, &request); errUnmarshal != nil {
+			return nil, fmt.Errorf("decode management request: %w", errUnmarshal)
+		}
+	}
+	handlerMu.RLock()
+	active := managementHandler
+	handlerMu.RUnlock()
+	if active == nil {
+		return okEnvelope(managementResponse{StatusCode: 503, Headers: http.Header{"Content-Type": []string{"application/json"}}, Body: []byte(`{"error":{"code":"storage_unavailable","message":"plugin storage is unavailable"}}`)})
+	}
+	response := active.Handle(context.Background(), management.ManagementRequest{Method: request.Method, Path: request.Path, Headers: request.Headers, Query: request.Query, Body: request.Body})
+	return okEnvelope(managementResponse{StatusCode: response.StatusCode, Headers: response.Headers, Body: response.Body})
 }
 
 func complete(raw []byte) ([]byte, error) {

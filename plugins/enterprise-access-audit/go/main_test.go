@@ -10,6 +10,7 @@ import (
 
 func TestJSONDispatchWiresInterceptAndCompletion(t *testing.T) {
 	root := t.TempDir()
+	t.Cleanup(func() { _, _ = handleMethod("plugin.shutdown", nil) })
 	yaml := "data_dir: " + filepath.ToSlash(root) + "\ndatabase_path: " + filepath.ToSlash(filepath.Join(root, "audit.sqlite")) + "\n"
 	configYAML := base64.StdEncoding.EncodeToString([]byte(yaml))
 	registrationRaw, err := handleMethod("plugin.register", []byte(`{"schema_version":2,"config_yaml":"`+configYAML+`"}`))
@@ -19,6 +20,22 @@ func TestJSONDispatchWiresInterceptAndCompletion(t *testing.T) {
 	var registrationEnvelope envelope
 	if err := json.Unmarshal(registrationRaw, &registrationEnvelope); err != nil || !registrationEnvelope.OK {
 		t.Fatalf("registration envelope = %s, error=%v", registrationRaw, err)
+	}
+	managementRaw, err := handleMethod("management.register", []byte(`{"BasePath":"/v0/management"}`))
+	if err != nil || !strings.Contains(string(managementRaw), `enterprise-access-audit/policies`) || strings.Contains(string(managementRaw), `:id`) {
+		t.Fatalf("management registration = %s, error=%v", managementRaw, err)
+	}
+	managementRequest := `{"Method":"GET","Path":"/v0/management/enterprise-access-audit/settings","Query":{},"Body":null}`
+	managementResponseRaw, err := handleMethod("management.handle", []byte(managementRequest))
+	var managementEnvelope struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			StatusCode int    `json:"StatusCode"`
+			Body       []byte `json:"Body"`
+		} `json:"result"`
+	}
+	if err != nil || json.Unmarshal(managementResponseRaw, &managementEnvelope) != nil || !managementEnvelope.OK || managementEnvelope.Result.StatusCode != 200 || !strings.Contains(string(managementEnvelope.Result.Body), `retention_days`) {
+		t.Fatalf("management dispatch = %s, error=%v", managementResponseRaw, err)
 	}
 	request := `{"RequestID":"dispatch-1","SourceFormat":"openai","RequestedModel":"allowed","Body":"eyJtZXNzYWdlcyI6W3sicm9sZSI6InVzZXIiLCJjb250ZW50IjoiaGkifV19","Metadata":{"request_path":"/v1/chat/completions","quota_key_hash":"deadbeef"}}`
 	interceptRaw, err := handleMethod("request.intercept_before", []byte(request))
