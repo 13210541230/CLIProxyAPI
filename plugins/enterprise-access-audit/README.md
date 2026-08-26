@@ -41,4 +41,12 @@ Policy rows are keyed only by the canonical eight-character lower-case API-key h
 
 SQLite migrations create the policy, settings, audit, and migration tables plus indexes. Policy batch replacement uses one transaction and preserves fields omitted by a patch. Lifecycle state uses a read/write lease so reconfiguration and shutdown close retired databases only after all operations release their read lease.
 
-Request interception, request-text extraction, and Management API business routes are intentionally left for T2 and T3.
+## Phase-1 request enforcement and audit
+
+The plugin now intercepts `request.intercept_before` and `request.intercept_after` using both `request_path` and `SourceFormat`. It accepts only standard text execution paths: OpenAI chat/completions/responses, Codex responses, Claude messages, and Gemini generate/streamGenerateContent. Any `execution_session_id`, count-token path, compact path, model-list path, media path, or other path is ignored.
+
+A valid eight-character API-key hash in `quota_key_hash` selects the per-Key exact normalized deny list. The requested and resolved models are both checked; a match returns HTTP 403 with `model_not_allowed` before upstream execution. Missing or malformed hashes pass through without storing user text.
+
+Audit drafts and lifecycle finals are correlated by `RequestID`. Only allowlisted user text is stored, bounded by `max_text_bytes`; system/developer/assistant/tool/media values and raw JSON are never persisted. Numeric-token legacy completion prompts produce a metadata-only record with `text_unavailable_reason=numeric_prompt`. Completion outcomes are `succeeded`, `failed`, `rejected`, or `canceled`.
+
+Management API business routes remain intentionally reserved for T3.

@@ -38,11 +38,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"unsafe"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/intercept"
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/state"
-	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/store"
 )
 
 const (
@@ -50,7 +51,11 @@ const (
 	schemaVersion = 3
 )
 
-var pluginState = state.New()
+var (
+	pluginState = state.New()
+	handlerMu   sync.RWMutex
+	handler     *intercept.Handler
+)
 
 type envelope struct {
 	OK     bool            `json:"ok"`
@@ -92,15 +97,6 @@ type configField struct {
 type registrationCapability struct {
 	RequestInterceptor     bool `json:"request_interceptor"`
 	RequestLifecyclePlugin bool `json:"request_lifecycle_plugin"`
-}
-
-type lifecycleRequestData struct {
-	RequestID string `json:"RequestID"`
-}
-
-type interceptResponse struct {
-	Headers map[string][]string `json:"Headers"`
-	Body    []byte              `json:"Body"`
 }
 
 func main() {}
@@ -150,6 +146,9 @@ func cliproxyPluginFree(ptr unsafe.Pointer, length C.size_t) {
 
 //export cliproxyPluginShutdown
 func cliproxyPluginShutdown() {
+	handlerMu.Lock()
+	handler = nil
+	handlerMu.Unlock()
 	_ = pluginState.Shutdown()
 }
 
@@ -166,7 +165,7 @@ func handleMethod(method string, raw []byte) ([]byte, error) {
 		}
 		return okEnvelope(struct{}{})
 	case "request.intercept_before", "request.intercept_after":
-		return passThrough(raw)
+		return interceptRequest(raw)
 	case "request.complete":
 		return complete(raw)
 	default:
@@ -192,7 +191,13 @@ func configure(raw []byte) error {
 	if errConfig != nil {
 		return errConfig
 	}
-	return pluginState.Configure(context.Background(), cfg)
+	if errConfigure := pluginState.Configure(context.Background(), cfg); errConfigure != nil {
+		return errConfigure
+	}
+	handlerMu.Lock()
+	handler = intercept.New(pluginState, cfg)
+	handlerMu.Unlock()
+	return nil
 }
 
 func pluginRegistration() registration {
@@ -217,29 +222,39 @@ func pluginRegistration() registration {
 	}
 }
 
-func passThrough(raw []byte) ([]byte, error) {
-	var request struct {
-		Headers map[string][]string `json:"Headers"`
-		Body    []byte              `json:"Body"`
-	}
+func interceptRequest(raw []byte) ([]byte, error) {
+	var request intercept.Request
 	if errUnmarshal := json.Unmarshal(raw, &request); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode intercept request: %w", errUnmarshal)
 	}
-	if errAvailable := pluginState.WithStore(context.Background(), func(_ *store.Store) error { return nil }); errAvailable != nil {
-		return nil, errAvailable
+	handlerMu.RLock()
+	active := handler
+	handlerMu.RUnlock()
+	if active == nil {
+		return nil, state.ErrUnavailable
 	}
-	return okEnvelope(interceptResponse{Headers: request.Headers, Body: request.Body})
+	result, errIntercept := active.Intercept(context.Background(), request)
+	if errIntercept != nil {
+		return nil, errIntercept
+	}
+	return okEnvelope(result)
 }
 
 func complete(raw []byte) ([]byte, error) {
-	var request lifecycleRequestData
+	var request intercept.Completion
 	if len(raw) > 0 {
 		if errUnmarshal := json.Unmarshal(raw, &request); errUnmarshal != nil {
 			return nil, fmt.Errorf("decode completion request: %w", errUnmarshal)
 		}
 	}
-	if errAvailable := pluginState.WithStore(context.Background(), func(_ *store.Store) error { return nil }); errAvailable != nil {
-		return nil, errAvailable
+	handlerMu.RLock()
+	active := handler
+	handlerMu.RUnlock()
+	if active == nil {
+		return nil, state.ErrUnavailable
+	}
+	if errComplete := active.Complete(context.Background(), request); errComplete != nil {
+		return nil, errComplete
 	}
 	return okEnvelope(struct{}{})
 }

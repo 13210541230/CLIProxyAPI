@@ -43,6 +43,7 @@ type AuditRecord struct {
 	Text                  string
 	TextAvailable         bool
 	TextUnavailableReason string
+	TextTruncated         bool
 }
 
 // Store owns one SQLite handle and serializes operations on that handle.
@@ -109,6 +110,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_audit_records_created_at ON audit_records(created_at DESC, id DESC);
 		 CREATE INDEX IF NOT EXISTS idx_audit_records_key_hash ON audit_records(key_hash);
 		 CREATE INDEX IF NOT EXISTS idx_audit_records_model ON audit_records(model);`,
+		`ALTER TABLE audit_records ADD COLUMN text_truncated INTEGER NOT NULL DEFAULT 0 CHECK (text_truncated IN (0, 1));`,
 	}
 	for version, migration := range migrations {
 		var applied int
@@ -171,8 +173,13 @@ func (s *Store) Close() error {
 	return nil
 }
 
-// GetPolicy returns a stored policy or the default policy for an absent key.
+// GetPolicy returns a stored policy or the T1 default policy for an absent key.
 func (s *Store) GetPolicy(ctx context.Context, keyHash string) (model.Policy, error) {
+	return s.GetPolicyWithDefault(ctx, keyHash, true)
+}
+
+// GetPolicyWithDefault applies the persisted default-audit setting only when the key has no row.
+func (s *Store) GetPolicyWithDefault(ctx context.Context, keyHash string, defaultAuditEnabled bool) (model.Policy, error) {
 	keyHash, errHash := model.NormalizeKeyHash(keyHash)
 	if errHash != nil {
 		return model.Policy{}, errHash
@@ -187,7 +194,9 @@ func (s *Store) GetPolicy(ctx context.Context, keyHash string) (model.Policy, er
 	var updatedAt int64
 	errQuery := s.db.QueryRowContext(ctx, `SELECT denied_models, audit_enabled, updated_at FROM policies WHERE key_hash = ?`, keyHash).Scan(&rawModels, &auditEnabled, &updatedAt)
 	if errors.Is(errQuery, sql.ErrNoRows) {
-		return model.DefaultPolicy(keyHash), nil
+		policy := model.DefaultPolicy(keyHash)
+		policy.AuditEnabled = defaultAuditEnabled
+		return policy, nil
 	}
 	if errQuery != nil {
 		return model.Policy{}, fmt.Errorf("read policy for %s: %w", keyHash, errQuery)
@@ -368,6 +377,10 @@ func (s *Store) GetSettings(ctx context.Context, fallback Settings) (Settings, e
 	if s.closed {
 		return Settings{}, ErrClosed
 	}
+	return s.getSettingsLocked(ctx, fallback)
+}
+
+func (s *Store) getSettingsLocked(ctx context.Context, fallback Settings) (Settings, error) {
 	result := fallback
 	rows, errQuery := s.db.QueryContext(ctx, `SELECT name, value FROM settings`)
 	if errQuery != nil {
@@ -442,6 +455,15 @@ func (s *Store) UpdateSettings(ctx context.Context, patch SettingsPatch) error {
 
 // InsertAudit persists only a bounded audit record identified by a canonical hash.
 func (s *Store) InsertAudit(ctx context.Context, record AuditRecord) error {
+	return s.upsertAudit(ctx, record, false)
+}
+
+// UpsertAuditDraft inserts or refreshes one request draft without storing raw payloads.
+func (s *Store) UpsertAuditDraft(ctx context.Context, record AuditRecord) error {
+	return s.upsertAudit(ctx, record, true)
+}
+
+func (s *Store) upsertAudit(ctx context.Context, record AuditRecord, byRequestID bool) error {
 	keyHash, errHash := model.NormalizeKeyHash(record.KeyHash)
 	if errHash != nil {
 		return errHash
@@ -456,24 +478,114 @@ func (s *Store) InsertAudit(ctx context.Context, record AuditRecord) error {
 			return errModel
 		}
 	}
-	settings, errSettings := s.GetSettings(ctx, Settings{RetentionDays: config.DefaultRetentionDays, DefaultAuditEnabled: true, MaxTextBytes: config.DefaultMaxTextBytes})
-	if errSettings != nil {
-		return errSettings
-	}
-	if len([]byte(record.Text)) > settings.MaxTextBytes {
-		record.Text = string([]byte(record.Text)[:settings.MaxTextBytes])
-	}
 	record.KeyHash = keyHash
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return ErrClosed
 	}
-	_, errExec := s.db.ExecContext(ctx, `INSERT INTO audit_records(key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, record.KeyHash, record.CreatedAt.Unix(), record.Model, record.SourceFormat, record.RequestID, record.Outcome, record.StatusCode, record.Text, boolInt(record.TextAvailable), record.TextUnavailableReason)
+	settings, errSettings := s.getSettingsLocked(ctx, Settings{RetentionDays: config.DefaultRetentionDays, DefaultAuditEnabled: true, MaxTextBytes: config.DefaultMaxTextBytes})
+	if errSettings != nil {
+		return errSettings
+	}
+	if len([]byte(record.Text)) > settings.MaxTextBytes {
+		record.Text = string([]byte(record.Text)[:settings.MaxTextBytes])
+		record.TextTruncated = true
+	}
+	if byRequestID && record.RequestID != "" {
+		var existingID int64
+		var existingAvailable int
+		if errQuery := s.db.QueryRowContext(ctx, `SELECT id, text_available FROM audit_records WHERE request_id = ? ORDER BY id DESC LIMIT 1`, record.RequestID).Scan(&existingID, &existingAvailable); errQuery == nil {
+			if existingAvailable != 0 && !record.TextAvailable {
+				return nil
+			}
+			_, errUpdate := s.db.ExecContext(ctx, `UPDATE audit_records SET model=COALESCE(NULLIF(?, ''), model), source_format=COALESCE(NULLIF(?, ''), source_format), text=?, text_available=?, text_unavailable_reason=?, text_truncated=? WHERE id=?`, record.Model, record.SourceFormat, record.Text, boolInt(record.TextAvailable), record.TextUnavailableReason, boolInt(record.TextTruncated), existingID)
+			if errUpdate != nil {
+				return fmt.Errorf("update audit draft %s: %w", record.RequestID, errUpdate)
+			}
+			return nil
+		} else if !errors.Is(errQuery, sql.ErrNoRows) {
+			return fmt.Errorf("find audit draft %s: %w", record.RequestID, errQuery)
+		}
+	}
+	_, errExec := s.db.ExecContext(ctx, `INSERT INTO audit_records(key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason, text_truncated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, record.KeyHash, record.CreatedAt.Unix(), record.Model, record.SourceFormat, record.RequestID, record.Outcome, record.StatusCode, record.Text, boolInt(record.TextAvailable), record.TextUnavailableReason, boolInt(record.TextTruncated))
 	if errExec != nil {
 		return fmt.Errorf("insert audit record: %w", errExec)
 	}
 	return nil
+}
+
+// FinalizeAudit updates a correlated draft and can create a metadata-only row when no draft exists.
+func (s *Store) FinalizeAudit(ctx context.Context, record AuditRecord, allowInsert bool) error {
+	keyHash, errHash := model.NormalizeKeyHash(record.KeyHash)
+	if errHash != nil {
+		return errHash
+	}
+	if record.Model != "" {
+		var errModel error
+		record.Model, errModel = model.NormalizeModelID(record.Model)
+		if errModel != nil {
+			return errModel
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return ErrClosed
+	}
+	var id int64
+	var existingOutcome string
+	errQuery := s.db.QueryRowContext(ctx, `SELECT id, outcome FROM audit_records WHERE request_id = ? ORDER BY id DESC LIMIT 1`, record.RequestID).Scan(&id, &existingOutcome)
+	if errQuery == nil {
+		if existingOutcome == "rejected" {
+			return nil
+		}
+		_, errUpdate := s.db.ExecContext(ctx, `UPDATE audit_records SET outcome=?, status_code=?, model=COALESCE(NULLIF(?, ''), model), source_format=COALESCE(NULLIF(?, ''), source_format) WHERE id=?`, record.Outcome, record.StatusCode, record.Model, record.SourceFormat, id)
+		if errUpdate != nil {
+			return fmt.Errorf("finalize audit request %s: %w", record.RequestID, errUpdate)
+		}
+		return nil
+	}
+	if !errors.Is(errQuery, sql.ErrNoRows) {
+		return fmt.Errorf("find audit request %s: %w", record.RequestID, errQuery)
+	}
+	if !allowInsert {
+		return nil
+	}
+	record.KeyHash = keyHash
+	record.Text = ""
+	record.TextAvailable = false
+	if record.TextUnavailableReason == "" {
+		record.TextUnavailableReason = "request_body_unavailable"
+	}
+	_, errInsert := s.db.ExecContext(ctx, `INSERT INTO audit_records(key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason, text_truncated) VALUES (?, ?, ?, ?, ?, ?, ?, '', 0, ?, 0)`, keyHash, time.Now().Unix(), record.Model, record.SourceFormat, record.RequestID, record.Outcome, record.StatusCode, record.TextUnavailableReason)
+	if errInsert != nil {
+		return fmt.Errorf("insert completion audit request %s: %w", record.RequestID, errInsert)
+	}
+	return nil
+}
+
+// GetAuditByRequestID returns one bounded record for lifecycle correlation tests and diagnostics.
+func (s *Store) GetAuditByRequestID(ctx context.Context, requestID string) (AuditRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return AuditRecord{}, ErrClosed
+	}
+	return scanAuditRecord(s.db.QueryRowContext(ctx, `SELECT id, key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason, text_truncated FROM audit_records WHERE request_id = ? ORDER BY id DESC LIMIT 1`, requestID))
+}
+
+func scanAuditRecord(scanner interface{ Scan(...any) error }) (AuditRecord, error) {
+	var record AuditRecord
+	var createdAt int64
+	var available, truncated int
+	if errScan := scanner.Scan(&record.ID, &record.KeyHash, &createdAt, &record.Model, &record.SourceFormat, &record.RequestID, &record.Outcome, &record.StatusCode, &record.Text, &available, &record.TextUnavailableReason, &truncated); errScan != nil {
+		return AuditRecord{}, errScan
+	}
+	record.CreatedAt = time.Unix(createdAt, 0)
+	record.TextAvailable = available != 0
+	record.TextTruncated = truncated != 0
+	return record, nil
 }
 
 // CleanupExpired removes audit records older than the persisted retention period.
