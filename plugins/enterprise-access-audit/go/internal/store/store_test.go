@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,6 +105,81 @@ func TestBatchReplacementIsAtomicAndPreservesOmittedFields(t *testing.T) {
 	policy, err = store.GetPolicy(ctx, "abcdef12")
 	if err != nil || policy.AuditEnabled || policy.DeniedModels[0] != "model-b" {
 		t.Fatalf("omitted audit field was not preserved: %+v, %v", policy, err)
+	}
+}
+
+func TestStoreRetiresLegacySQLiteAuditRowsWithBackup(t *testing.T) {
+	ctx := context.Background()
+	cfg := testConfig(t)
+	legacy, err := sql.Open("sqlite", "file:"+cfg.DatabasePath)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	_, err = legacy.ExecContext(ctx, `
+		CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
+		CREATE TABLE policies (key_hash TEXT PRIMARY KEY NOT NULL, denied_models TEXT NOT NULL DEFAULT '[]', audit_enabled INTEGER NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL);
+		CREATE TABLE settings (name TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+		CREATE TABLE audit_records (id INTEGER PRIMARY KEY AUTOINCREMENT, key_hash TEXT NOT NULL, created_at INTEGER NOT NULL, model TEXT NOT NULL, source_format TEXT NOT NULL, request_id TEXT NOT NULL, outcome TEXT NOT NULL, status_code INTEGER NOT NULL DEFAULT 0, text TEXT NOT NULL DEFAULT '', text_available INTEGER NOT NULL DEFAULT 1, text_unavailable_reason TEXT NOT NULL DEFAULT '', text_truncated INTEGER NOT NULL DEFAULT 0, security_signal TEXT NOT NULL DEFAULT '', security_message TEXT NOT NULL DEFAULT '');
+		INSERT INTO schema_migrations(version, applied_at) VALUES (1, 1), (2, 1), (3, 1), (4, 1), (5, 1);
+		INSERT INTO audit_records(key_hash, created_at, model, source_format, request_id, outcome, text) VALUES ('abcdef12', 1, 'model', 'openai', 'legacy-request', 'succeeded', 'legacy text');
+	`)
+	if err != nil {
+		_ = legacy.Close()
+		t.Fatalf("create legacy database: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+
+	store, err := Open(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+	var activeAuditTables int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'audit_records'`).Scan(&activeAuditTables); err != nil {
+		t.Fatalf("active audit table query: %v", err)
+	}
+	if activeAuditTables != 0 {
+		t.Fatalf("active SQLite audit table count = %d, want 0", activeAuditTables)
+	}
+	backups, err := filepath.Glob(cfg.DatabasePath + ".legacy-*.sqlite")
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("legacy backups = %v, error = %v", backups, err)
+	}
+	backup, err := sql.Open("sqlite", "file:"+backups[0])
+	if err != nil {
+		t.Fatalf("open backup: %v", err)
+	}
+	defer backup.Close()
+	var legacyRows int
+	if err := backup.QueryRowContext(ctx, `SELECT COUNT(1) FROM audit_records`).Scan(&legacyRows); err != nil || legacyRows != 1 {
+		t.Fatalf("backup legacy rows = %d, error = %v", legacyRows, err)
+	}
+}
+
+func TestStoreWritesAuditTextToJSONLAndKeepsSQLiteForPolicyState(t *testing.T) {
+	ctx := context.Background()
+	cfg := testConfig(t)
+	store, err := Open(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+	if err := store.InsertAudit(ctx, AuditRecord{KeyHash: "abcdef12", RequestID: "request-1", Model: "model", Text: "user text", TextAvailable: true}); err != nil {
+		t.Fatalf("InsertAudit() error = %v", err)
+	}
+	logPath := filepath.Join(cfg.DataDir, "key-abcdef12.jsonl")
+	content, err := os.ReadFile(logPath)
+	if err != nil || !strings.Contains(string(content), `"text":"user text"`) {
+		t.Fatalf("JSONL content = %q, error = %v", content, err)
+	}
+	var auditTableCount int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'audit_records'`).Scan(&auditTableCount); err != nil {
+		t.Fatalf("audit table query error = %v", err)
+	}
+	if auditTableCount != 0 {
+		t.Fatalf("SQLite audit table count = %d, want 0", auditTableCount)
 	}
 }
 

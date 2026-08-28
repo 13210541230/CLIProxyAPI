@@ -41,15 +41,15 @@ func Extract(sourceFormat, requestPath string, body []byte) (Result, error) {
 }
 
 func chat(root map[string]any) Result {
-	var parts []string
-	for _, item := range array(root["messages"]) {
-		message, ok := item.(map[string]any)
+	messages := array(root["messages"])
+	for index := len(messages) - 1; index >= 0; index-- {
+		message, ok := messages[index].(map[string]any)
 		if !ok || strings.ToLower(stringValue(message["role"])) != "user" {
 			continue
 		}
-		parts = append(parts, contentText(message["content"], "text")...)
+		return textResult(contentText(message["content"], "text"))
 	}
-	return textResult(parts)
+	return Result{TextUnavailableReason: "no_user_text"}
 }
 
 func completions(root map[string]any) Result {
@@ -65,15 +65,11 @@ func completions(root map[string]any) Result {
 		return Result{TextUnavailableReason: "unsupported_prompt"}
 	}
 	if len(items) == 0 {
-		return textResult(nil)
+		return Result{TextUnavailableReason: "no_user_text"}
 	}
-	parts := make([]string, 0, len(items))
 	allNumbers := true
 	for _, item := range items {
 		switch value := item.(type) {
-		case string:
-			allNumbers = false
-			parts = append(parts, value)
 		case float64:
 			if value != float64(int64(value)) {
 				allNumbers = false
@@ -89,7 +85,12 @@ func completions(root map[string]any) Result {
 	if allNumbers {
 		return Result{TextUnavailableReason: "numeric_prompt"}
 	}
-	return textResult(parts)
+	for index := len(items) - 1; index >= 0; index-- {
+		if prompt, ok := items[index].(string); ok {
+			return textResult([]string{prompt})
+		}
+	}
+	return Result{TextUnavailableReason: "no_user_text"}
 }
 
 func responses(root map[string]any) Result {
@@ -100,46 +101,43 @@ func responses(root map[string]any) Result {
 	if input, ok := value.(string); ok {
 		return textResult([]string{input})
 	}
-	var parts []string
-	for _, item := range array(value) {
-		message, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		role := strings.ToLower(stringValue(message["role"]))
-		if role != "user" {
+	items := array(value)
+	for index := len(items) - 1; index >= 0; index-- {
+		message, ok := items[index].(map[string]any)
+		if !ok || strings.ToLower(stringValue(message["role"])) != "user" {
 			continue
 		}
 		if stringValue(message["type"]) == "input_text" {
 			if text, isString := message["text"].(string); isString {
-				parts = append(parts, text)
+				return textResult([]string{text})
 			}
-			continue
+			return Result{TextUnavailableReason: "no_user_text"}
 		}
-		parts = append(parts, contentText(message["content"], "input_text")...)
+		return textResult(contentText(message["content"], "input_text"))
 	}
-	return textResult(parts)
+	return Result{TextUnavailableReason: "no_user_text"}
 }
 
 func claude(root map[string]any) Result {
-	var parts []string
-	for _, item := range array(root["messages"]) {
-		message, ok := item.(map[string]any)
+	messages := array(root["messages"])
+	for index := len(messages) - 1; index >= 0; index-- {
+		message, ok := messages[index].(map[string]any)
 		if !ok || strings.ToLower(stringValue(message["role"])) != "user" {
 			continue
 		}
-		parts = append(parts, contentText(message["content"], "text")...)
+		return textResult(contentText(message["content"], "text"))
 	}
-	return textResult(parts)
+	return Result{TextUnavailableReason: "no_user_text"}
 }
 
 func gemini(root map[string]any) Result {
-	var parts []string
-	for _, item := range array(root["contents"]) {
-		content, ok := item.(map[string]any)
+	contents := array(root["contents"])
+	for index := len(contents) - 1; index >= 0; index-- {
+		content, ok := contents[index].(map[string]any)
 		if !ok || strings.ToLower(stringValue(content["role"])) != "user" {
 			continue
 		}
+		var parts []string
 		for _, part := range array(content["parts"]) {
 			partObject, ok := part.(map[string]any)
 			if !ok {
@@ -152,8 +150,9 @@ func gemini(root map[string]any) Result {
 				parts = append(parts, text)
 			}
 		}
+		return textResult(parts)
 	}
-	return textResult(parts)
+	return Result{TextUnavailableReason: "no_user_text"}
 }
 
 func contentText(value any, expectedType string) []string {
@@ -163,10 +162,7 @@ func contentText(value any, expectedType string) []string {
 	var result []string
 	for _, item := range array(value) {
 		block, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		if stringValue(block["type"]) != expectedType {
+		if !ok || stringValue(block["type"]) != expectedType {
 			continue
 		}
 		if text, ok := block["text"].(string); ok {

@@ -62,7 +62,7 @@ Cross-compilation is not assumed. It requires a compatible target C compiler and
 
 CPA accepts `.so` on Linux/FreeBSD, `.dylib` on macOS, and `.dll` on Windows. Standard dynamic-library plugins are trusted in-process code. Install only artifacts whose source and build toolchain are trusted as much as the CPA service binary.
 
-## Configuration and SQLite data
+## Configuration, policy SQLite, and JSONL audit data
 
 The plugin configuration fields are:
 
@@ -75,7 +75,7 @@ The plugin configuration fields are:
 | `max_text_bytes` | `32768` | Maximum persisted user-text size. Valid range is 1–1048576 bytes; truncation is recorded as metadata. |
 | `cleanup_interval_seconds` | `3600` | Periodic expiry cleanup interval. |
 
-The deterministic default database is `.cli-proxy-api/plugins/enterprise-access-audit/enterprise-access-audit.sqlite` below the CPA working directory. SQLite migrations create policy, settings, audit, and migration tables plus indexes. Back up this database using the operator's normal protected storage process; do not copy API Keys into backup names, notes, or logs.
+The deterministic default database is `.cli-proxy-api/plugins/enterprise-access-audit/enterprise-access-audit.sqlite` below the CPA working directory. SQLite stores only policies, settings, and migration bookkeeping; audit text is appended to one protected `key-<api-key-hash>.jsonl` file per canonical Key hash under `data_dir`. The files are JSON Lines so they can be rotated and compacted independently. On first startup after this storage change, an existing SQLite `audit_records` table is backed up beside the database with a `.legacy-*.sqlite` suffix and removed from the active database; its old records are intentionally not imported into the new logs. Back up these files using the operator's normal protected storage process; do not copy API Keys into backup names, notes, or logs.
 
 Policy rows use only the canonical eight-character lower-case API-key hash supplied in execution metadata. Raw API Keys are never accepted, derived, stored, logged, or returned. Model IDs are trimmed, reject whitespace/control characters, ASCII lower-cased, deduplicated, sorted, and matched exactly. An empty deny list allows every model; a new/absent policy is all-model-open with audit enabled by default.
 
@@ -93,7 +93,7 @@ Included paths:
 | Claude Messages | `/v1/messages` |
 | Gemini text | `/v1beta/models/{model}:generateContent` and `:streamGenerateContent` |
 
-Audit records contain the valid Key hash, joined user identity metadata when available, timestamp, model, source format, request ID, outcome, known status code, and only bounded allowlisted user text. Successful, failed, and policy-rejected requests are represented. When the upstream error payload explicitly contains `error.code` or `response.error.code` equal to `cyber_policy`, the failed record is additionally marked with `security_signal: cyber_policy` and may include a bounded, control-character-free `security_message`; generic HTTP 4xx/5xx responses are never inferred as cyber-policy events. Numeric-token legacy prompts are metadata-only with `text_available: false` and `text_unavailable_reason: numeric_prompt`.
+Audit records contain the valid Key hash, timestamp, model, source format, request ID, outcome, known status code, and only bounded allowlisted user text. User identity is joined by the Management Center from the separate hash-only metadata projection; it is not copied into the plugin log file. For multi-turn requests, only the latest explicit `role: user` message is retained. Earlier user history, assistant messages, system/developer messages, tools, and media are excluded. Successful, failed, and policy-rejected requests are represented. When the upstream error payload explicitly contains `error.code` or `response.error.code` equal to `cyber_policy`, the failed record is additionally marked with `security_signal: cyber_policy` and may include a bounded, control-character-free `security_message`; generic HTTP 4xx/5xx responses are never inferred as cyber-policy events. Numeric-token legacy prompts are metadata-only with `text_available: false` and `text_unavailable_reason: numeric_prompt`.
 
 The following are explicitly excluded and neither enforce policy nor persist user text: Realtime/WebSocket executions, any request with `execution_session_id`, `/v1/messages/count_tokens`, Gemini `:countTokens`, Responses compact paths, model-list paths, image/video/audio payloads, and every other non-matrix path. System/developer/assistant history, tool parameters, token IDs, media payloads, and raw request JSON are never persisted or returned. A missing or malformed Key hash is outside enterprise-Key scope and is allowed without text persistence.
 
@@ -134,7 +134,7 @@ That projection returns only `apiKeyHash`, username, department ID, and email. T
 ## Operations and privacy checklist
 
 - Keep the CPA management bearer authentication and Management Center session protected; the plugin adds no second authentication system.
-- Treat the SQLite file and audit text as sensitive operational data. Restrict filesystem permissions, back it up through approved storage, and verify retention cleanup after changing `retention_days`.
+- Treat the SQLite policy database and per-Key JSONL audit files as sensitive operational data. Restrict filesystem permissions, back them up through approved storage, and verify retention cleanup after changing `retention_days`.
 - Audit is enabled by default for observed enterprise Keys, but a per-Key disable switch prevents new text records. Existing records remain subject to retention cleanup.
 - An empty deny list means all models are allowed. A failed plugin load or unavailable database must be investigated rather than interpreted as that default.
 - Audit text is bounded and may be truncated; the response exposes truncation metadata. Do not put raw request bodies, authorization headers, or API Keys into issue reports or test output.

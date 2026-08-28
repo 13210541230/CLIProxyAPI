@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
+	"os"
 	"sync"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/auditlog"
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/model"
 	_ "modernc.org/sqlite"
@@ -73,11 +74,18 @@ type AuditPage struct {
 type Store struct {
 	mu     sync.Mutex
 	db     *sql.DB
+	audit  *auditlog.Log
 	closed bool
 }
 
 // Open creates or migrates the plugin database deterministically.
 func Open(ctx context.Context, cfg config.Config) (*Store, error) {
+	databaseExists := false
+	if _, errStat := os.Stat(cfg.DatabasePath); errStat == nil {
+		databaseExists = true
+	} else if !errors.Is(errStat, os.ErrNotExist) {
+		return nil, fmt.Errorf("inspect plugin database: %w", errStat)
+	}
 	db, errOpen := sql.Open("sqlite", "file:"+cfg.DatabasePath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
 	if errOpen != nil {
 		return nil, fmt.Errorf("open sqlite database: %w", errOpen)
@@ -90,7 +98,18 @@ func Open(ctx context.Context, cfg config.Config) (*Store, error) {
 		_ = db.Close()
 		return nil, errMigrate
 	}
+	if errRetire := store.retireLegacyAudit(ctx, cfg.DatabasePath, databaseExists); errRetire != nil {
+		_ = db.Close()
+		return nil, errRetire
+	}
+	audit, errAudit := auditlog.Open(ctx, cfg.DataDir)
+	if errAudit != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("open JSONL audit log: %w", errAudit)
+	}
+	store.audit = audit
 	if errSettings := store.initializeSettings(ctx, SettingsFromConfig(cfg)); errSettings != nil {
+		_ = audit.Close()
 		_ = db.Close()
 		return nil, errSettings
 	}
@@ -190,6 +209,11 @@ func (s *Store) Close() error {
 		return nil
 	}
 	s.closed = true
+	if s.audit != nil {
+		if errClose := s.audit.Close(); errClose != nil {
+			return fmt.Errorf("close JSONL audit log: %w", errClose)
+		}
+	}
 	if s.db == nil {
 		return nil
 	}
@@ -502,250 +526,6 @@ func (s *Store) UpdateSettings(ctx context.Context, patch SettingsPatch) error {
 		return fmt.Errorf("commit settings update: %w", errCommit)
 	}
 	return nil
-}
-
-// InsertAudit persists only a bounded audit record identified by a canonical hash.
-func (s *Store) InsertAudit(ctx context.Context, record AuditRecord) error {
-	return s.upsertAudit(ctx, record, false)
-}
-
-// UpsertAuditDraft inserts or refreshes one request draft without storing raw payloads.
-func (s *Store) UpsertAuditDraft(ctx context.Context, record AuditRecord) error {
-	return s.upsertAudit(ctx, record, true)
-}
-
-func (s *Store) upsertAudit(ctx context.Context, record AuditRecord, byRequestID bool) error {
-	keyHash, errHash := model.NormalizeKeyHash(record.KeyHash)
-	if errHash != nil {
-		return errHash
-	}
-	if record.CreatedAt.IsZero() {
-		record.CreatedAt = time.Now()
-	}
-	if record.Model != "" {
-		var errModel error
-		record.Model, errModel = model.NormalizeModelID(record.Model)
-		if errModel != nil {
-			return errModel
-		}
-	}
-	record.KeyHash = keyHash
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return ErrClosed
-	}
-	settings, errSettings := s.getSettingsLocked(ctx, Settings{RetentionDays: config.DefaultRetentionDays, DefaultAuditEnabled: true, MaxTextBytes: config.DefaultMaxTextBytes})
-	if errSettings != nil {
-		return errSettings
-	}
-	if len([]byte(record.Text)) > settings.MaxTextBytes {
-		record.Text = string([]byte(record.Text)[:settings.MaxTextBytes])
-		record.TextTruncated = true
-	}
-	if byRequestID && record.RequestID != "" {
-		var existingID int64
-		var existingAvailable int
-		if errQuery := s.db.QueryRowContext(ctx, `SELECT id, text_available FROM audit_records WHERE request_id = ? ORDER BY id DESC LIMIT 1`, record.RequestID).Scan(&existingID, &existingAvailable); errQuery == nil {
-			if existingAvailable != 0 && !record.TextAvailable {
-				return nil
-			}
-			_, errUpdate := s.db.ExecContext(ctx, `UPDATE audit_records SET model=COALESCE(NULLIF(?, ''), model), source_format=COALESCE(NULLIF(?, ''), source_format), text=?, text_available=?, text_unavailable_reason=?, text_truncated=?, security_signal=COALESCE(NULLIF(?, ''), security_signal), security_message=COALESCE(NULLIF(?, ''), security_message) WHERE id=?`, record.Model, record.SourceFormat, record.Text, boolInt(record.TextAvailable), record.TextUnavailableReason, boolInt(record.TextTruncated), record.SecuritySignal, record.SecurityMessage, existingID)
-			if errUpdate != nil {
-				return fmt.Errorf("update audit draft %s: %w", record.RequestID, errUpdate)
-			}
-			return nil
-		} else if !errors.Is(errQuery, sql.ErrNoRows) {
-			return fmt.Errorf("find audit draft %s: %w", record.RequestID, errQuery)
-		}
-	}
-	_, errExec := s.db.ExecContext(ctx, `INSERT INTO audit_records(key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason, text_truncated, security_signal, security_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, record.KeyHash, record.CreatedAt.Unix(), record.Model, record.SourceFormat, record.RequestID, record.Outcome, record.StatusCode, record.Text, boolInt(record.TextAvailable), record.TextUnavailableReason, boolInt(record.TextTruncated), record.SecuritySignal, record.SecurityMessage)
-	if errExec != nil {
-		return fmt.Errorf("insert audit record: %w", errExec)
-	}
-	return nil
-}
-
-// FinalizeAudit updates a correlated draft and can create a metadata-only row when no draft exists.
-func (s *Store) FinalizeAudit(ctx context.Context, record AuditRecord, allowInsert bool) error {
-	keyHash, errHash := model.NormalizeKeyHash(record.KeyHash)
-	if errHash != nil {
-		return errHash
-	}
-	if record.Model != "" {
-		var errModel error
-		record.Model, errModel = model.NormalizeModelID(record.Model)
-		if errModel != nil {
-			return errModel
-		}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return ErrClosed
-	}
-	var id int64
-	var existingOutcome string
-	errQuery := s.db.QueryRowContext(ctx, `SELECT id, outcome FROM audit_records WHERE request_id = ? ORDER BY id DESC LIMIT 1`, record.RequestID).Scan(&id, &existingOutcome)
-	if errQuery == nil {
-		if existingOutcome == "rejected" {
-			return nil
-		}
-		_, errUpdate := s.db.ExecContext(ctx, `UPDATE audit_records SET outcome=?, status_code=?, model=COALESCE(NULLIF(?, ''), model), source_format=COALESCE(NULLIF(?, ''), source_format), security_signal=COALESCE(NULLIF(?, ''), security_signal), security_message=COALESCE(NULLIF(?, ''), security_message) WHERE id=?`, record.Outcome, record.StatusCode, record.Model, record.SourceFormat, record.SecuritySignal, record.SecurityMessage, id)
-		if errUpdate != nil {
-			return fmt.Errorf("finalize audit request %s: %w", record.RequestID, errUpdate)
-		}
-		return nil
-	}
-	if !errors.Is(errQuery, sql.ErrNoRows) {
-		return fmt.Errorf("find audit request %s: %w", record.RequestID, errQuery)
-	}
-	if !allowInsert {
-		return nil
-	}
-	record.KeyHash = keyHash
-	record.Text = ""
-	record.TextAvailable = false
-	if record.TextUnavailableReason == "" {
-		record.TextUnavailableReason = "request_body_unavailable"
-	}
-	_, errInsert := s.db.ExecContext(ctx, `INSERT INTO audit_records(key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason, text_truncated, security_signal, security_message) VALUES (?, ?, ?, ?, ?, ?, ?, '', 0, ?, 0, ?, ?)`, keyHash, time.Now().Unix(), record.Model, record.SourceFormat, record.RequestID, record.Outcome, record.StatusCode, record.TextUnavailableReason, record.SecuritySignal, record.SecurityMessage)
-	if errInsert != nil {
-		return fmt.Errorf("insert completion audit request %s: %w", record.RequestID, errInsert)
-	}
-	return nil
-}
-
-// GetAuditByRequestID returns one bounded record for lifecycle correlation tests and diagnostics.
-func (s *Store) GetAuditByRequestID(ctx context.Context, requestID string) (AuditRecord, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return AuditRecord{}, ErrClosed
-	}
-	return scanAuditRecord(s.db.QueryRowContext(ctx, `SELECT id, key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason, text_truncated, security_signal, security_message FROM audit_records WHERE request_id = ? ORDER BY id DESC LIMIT 1`, requestID))
-}
-
-// GetAuditByID returns one bounded audit record for the management detail endpoint.
-func (s *Store) GetAuditByID(ctx context.Context, id int64) (AuditRecord, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return AuditRecord{}, ErrClosed
-	}
-	return scanAuditRecord(s.db.QueryRowContext(ctx, `SELECT id, key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason, text_truncated, security_signal, security_message FROM audit_records WHERE id = ?`, id))
-}
-
-// ListAudit returns deterministic pages ordered by newest creation time and ID.
-func (s *Store) ListAudit(ctx context.Context, filter AuditFilter, page, pageSize int) (AuditPage, error) {
-	if page < 1 || pageSize < 1 {
-		return AuditPage{}, fmt.Errorf("page and page_size must be positive")
-	}
-	offset := (page - 1) * pageSize
-	if offset < 0 || offset > 100000000 {
-		return AuditPage{}, fmt.Errorf("page is too large")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return AuditPage{}, ErrClosed
-	}
-	where := make([]string, 0, 6)
-	args := make([]any, 0, 6)
-	if filter.From != nil {
-		where = append(where, "created_at >= ?")
-		args = append(args, filter.From.Unix())
-	}
-	if filter.To != nil {
-		where = append(where, "created_at <= ?")
-		args = append(args, filter.To.Unix())
-	}
-	if filter.KeyHash != "" {
-		where = append(where, "key_hash = ?")
-		args = append(args, filter.KeyHash)
-	}
-	if filter.Model != "" {
-		where = append(where, "model = ?")
-		args = append(args, filter.Model)
-	}
-	if filter.SourceFormat != "" {
-		where = append(where, "source_format = ?")
-		args = append(args, filter.SourceFormat)
-	}
-	if filter.Outcome != "" {
-		where = append(where, "outcome = ?")
-		args = append(args, filter.Outcome)
-	}
-	if filter.SecuritySignal != "" {
-		where = append(where, "security_signal = ?")
-		args = append(args, filter.SecuritySignal)
-	}
-	whereSQL := ""
-	if len(where) > 0 {
-		whereSQL = " WHERE " + strings.Join(where, " AND ")
-	}
-	var total int
-	if errCount := s.db.QueryRowContext(ctx, "SELECT COUNT(1) FROM audit_records"+whereSQL, args...).Scan(&total); errCount != nil {
-		return AuditPage{}, fmt.Errorf("count audit records: %w", errCount)
-	}
-	queryArgs := append(append([]any(nil), args...), pageSize+1, offset)
-	rows, errQuery := s.db.QueryContext(ctx, "SELECT id, key_hash, created_at, model, source_format, request_id, outcome, status_code, text, text_available, text_unavailable_reason, text_truncated, security_signal, security_message FROM audit_records"+whereSQL+" ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?", queryArgs...)
-	if errQuery != nil {
-		return AuditPage{}, fmt.Errorf("list audit records: %w", errQuery)
-	}
-	defer rows.Close()
-	records := make([]AuditRecord, 0, pageSize)
-	for rows.Next() {
-		record, errScan := scanAuditRecord(rows)
-		if errScan != nil {
-			return AuditPage{}, fmt.Errorf("scan audit record: %w", errScan)
-		}
-		records = append(records, record)
-	}
-	if errRows := rows.Err(); errRows != nil {
-		return AuditPage{}, fmt.Errorf("iterate audit records: %w", errRows)
-	}
-	hasNext := len(records) > pageSize
-	if hasNext {
-		records = records[:pageSize]
-	}
-	return AuditPage{Records: records, Page: page, PageSize: pageSize, Total: total, HasNext: hasNext}, nil
-}
-
-func scanAuditRecord(scanner interface{ Scan(...any) error }) (AuditRecord, error) {
-	var record AuditRecord
-	var createdAt int64
-	var available, truncated int
-	if errScan := scanner.Scan(&record.ID, &record.KeyHash, &createdAt, &record.Model, &record.SourceFormat, &record.RequestID, &record.Outcome, &record.StatusCode, &record.Text, &available, &record.TextUnavailableReason, &truncated, &record.SecuritySignal, &record.SecurityMessage); errScan != nil {
-		return AuditRecord{}, errScan
-	}
-	record.CreatedAt = time.Unix(createdAt, 0)
-	record.TextAvailable = available != 0
-	record.TextTruncated = truncated != 0
-	return record, nil
-}
-
-// CleanupExpired removes audit records older than the persisted retention period.
-func (s *Store) CleanupExpired(ctx context.Context, now time.Time) (int64, error) {
-	settings, errSettings := s.GetSettings(ctx, Settings{RetentionDays: config.DefaultRetentionDays})
-	if errSettings != nil {
-		return 0, errSettings
-	}
-	cutoff := now.Add(-time.Duration(settings.RetentionDays) * 24 * time.Hour).Unix()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return 0, ErrClosed
-	}
-	result, errExec := s.db.ExecContext(ctx, `DELETE FROM audit_records WHERE created_at < ?`, cutoff)
-	if errExec != nil {
-		return 0, fmt.Errorf("cleanup expired audit records: %w", errExec)
-	}
-	count, errCount := result.RowsAffected()
-	if errCount != nil {
-		return 0, fmt.Errorf("count cleaned audit records: %w", errCount)
-	}
-	return count, nil
 }
 
 func boolInt(value bool) int {
