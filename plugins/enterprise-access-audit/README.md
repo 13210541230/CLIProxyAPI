@@ -1,6 +1,6 @@
 # Enterprise Access Audit Plugin
 
-`enterprise-access-audit` is an isolated CPA dynamic-library plugin. It owns per-enterprise-Key model policy, text-only request audit persistence, retention cleanup, and fixed-path Management API handlers. It does not modify CPA core routes, provider routing, translators, `sdk/pluginapi`, or the public plugin ABI.
+`enterprise-access-audit` is an isolated CPA dynamic-library plugin. It owns per-enterprise-Key model policy, text-only request audit persistence, retention cleanup, fixed-path Management API handlers, and its own browser-navigable management resource. The CPA Management Center discovers the resource through plugin metadata and renders it in the generic plugin host; no plugin-specific React page or core-page integration is required. It does not modify CPA core routes, provider routing, translators, `sdk/pluginapi`, or the public plugin ABI.
 
 ## Build and package
 
@@ -123,13 +123,13 @@ Example request bodies use hashes/placeholders only:
 
 `audit_enabled: null` or omitted fields preserve the existing value according to the endpoint contract. Audit responses are bounded text-only records ordered by `created_at DESC, id DESC`, with deterministic pagination and filters for time, hash, model, source format, outcome, and the explicit `security_signal=cyber_policy` marker. A `security_message` field, when present, contains only the bounded sanitized upstream message, never the raw upstream response body. Invalid input, missing details, and unavailable storage use stable 400, 404, and 503 responses.
 
-The Management Center audit page joins hashes to the hash-only usage-service projection:
+The plugin exposes one generic-host resource menu:
 
 ```text
-/v0/management/enterprise/key-bindings/metadata
+GET /v0/resource/plugins/enterprise-access-audit/ui
 ```
 
-That projection returns only `apiKeyHash`, username, department ID, and email. The audit page must not call the full enterprise key-binding endpoint, public model endpoints, or any endpoint that returns raw API Keys. Username/email/department filtering is performed from this non-secret metadata projection when required.
+The resource is a self-contained HTML workspace for audit records, policy rows, and plugin settings. It uses the Management Center's same-origin `postMessage` bridge for authenticated `/v0/management/enterprise-access-audit/...` calls, so the iframe never receives the Management API bearer key. The resource only displays masked Key hashes and must not call any endpoint that returns raw API Keys. If the plugin is disabled or the resource is unavailable, the generic host removes the menu without affecting Enterprise Keys, Quota, or other core pages.
 
 ## Operations and privacy checklist
 

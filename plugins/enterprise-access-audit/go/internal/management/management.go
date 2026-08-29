@@ -3,6 +3,7 @@ package management
 import (
 	"context"
 	"database/sql"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +29,7 @@ const (
 	AuditPath         = Prefix + "/audit"
 	AuditDetailPath   = Prefix + "/audit/detail"
 	SettingsPath      = Prefix + "/settings"
+	ResourceUIPath    = "/ui"
 
 	defaultPageSize = 50
 	maxPageSize     = 100
@@ -37,6 +39,9 @@ const (
 	maxModelBytes   = 256
 	maxBodyBytes    = 1024 * 1024
 )
+
+//go:embed ui/index.html
+var resourceUIHTML []byte
 
 // ManagementRequest is the private JSON-equivalent of pluginapi.ManagementRequest.
 type ManagementRequest struct {
@@ -61,8 +66,15 @@ type Route struct {
 }
 
 // Registration is the fixed route list returned by management.register.
+type Resource struct {
+	Path        string `json:"path"`
+	Menu        string `json:"menu"`
+	Description string `json:"description"`
+}
+
 type Registration struct {
-	Routes []Route `json:"routes,omitempty"`
+	Routes    []Route    `json:"routes,omitempty"`
+	Resources []Resource `json:"resources,omitempty"`
 }
 
 // Handler owns the plugin's authenticated Management API operations.
@@ -77,20 +89,32 @@ func New(manager *state.Manager, cfg config.Config) *Handler {
 }
 
 // Routes returns only literal routes; identifiers are carried in query or JSON bodies.
-func Routes(basePath string) Registration {
+func Routes(basePath, resourceBasePath string) Registration {
 	basePath = strings.TrimRight(strings.TrimSpace(basePath), "/")
 	if basePath == "" {
 		basePath = "/v0/management"
 	}
-	return Registration{Routes: []Route{
-		{Method: http.MethodGet, Path: basePath + PoliciesPath},
-		{Method: http.MethodPut, Path: basePath + BatchPoliciesPath},
-		{Method: http.MethodPut, Path: basePath + PolicyPath},
-		{Method: http.MethodGet, Path: basePath + AuditPath},
-		{Method: http.MethodGet, Path: basePath + AuditDetailPath},
-		{Method: http.MethodGet, Path: basePath + SettingsPath},
-		{Method: http.MethodPut, Path: basePath + SettingsPath},
-	}}
+	resourceBasePath = strings.TrimRight(strings.TrimSpace(resourceBasePath), "/")
+	resourcePath := ResourceUIPath
+	if resourceBasePath != "" {
+		resourcePath = resourceBasePath + ResourceUIPath
+	}
+	return Registration{
+		Routes: []Route{
+			{Method: http.MethodGet, Path: basePath + PoliciesPath},
+			{Method: http.MethodPut, Path: basePath + BatchPoliciesPath},
+			{Method: http.MethodPut, Path: basePath + PolicyPath},
+			{Method: http.MethodGet, Path: basePath + AuditPath},
+			{Method: http.MethodGet, Path: basePath + AuditDetailPath},
+			{Method: http.MethodGet, Path: basePath + SettingsPath},
+			{Method: http.MethodPut, Path: basePath + SettingsPath},
+		},
+		Resources: []Resource{{
+			Path:        resourcePath,
+			Menu:        "Enterprise Access Audit",
+			Description: "Review enterprise request audit records and manage access policies.",
+		}},
+	}
 }
 
 // Handle implements fixed-path dispatch and returns stable JSON errors for all client failures.
@@ -109,6 +133,8 @@ func (h *Handler) Handle(ctx context.Context, req ManagementRequest) ManagementR
 		return errorResponse(http.StatusServiceUnavailable, "storage_unavailable", "plugin storage is unavailable")
 	}
 	switch {
+	case path == ResourceUIPath:
+		return h.resourceUI()
 	case path == PoliciesPath:
 		return h.listPolicies(ctx, req.Query)
 	case path == BatchPoliciesPath:
@@ -132,13 +158,15 @@ func normalizePath(path string) string {
 	path = strings.TrimSpace(path)
 	if strings.HasPrefix(path, "/v0/management/") {
 		path = strings.TrimPrefix(path, "/v0/management")
+	} else if strings.HasPrefix(path, "/v0/resource/plugins/enterprise-access-audit/") {
+		path = strings.TrimPrefix(path, "/v0/resource/plugins/enterprise-access-audit")
 	}
 	return strings.TrimRight(path, "/")
 }
 
 func isKnownPath(path string) bool {
 	switch path {
-	case PoliciesPath, BatchPoliciesPath, PolicyPath, AuditPath, AuditDetailPath, SettingsPath:
+	case ResourceUIPath, PoliciesPath, BatchPoliciesPath, PolicyPath, AuditPath, AuditDetailPath, SettingsPath:
 		return true
 	default:
 		return false
@@ -146,13 +174,16 @@ func isKnownPath(path string) bool {
 }
 
 func methodAllowed(path, method string) bool {
-	if path == PoliciesPath || path == AuditPath || path == AuditDetailPath {
+	if path == ResourceUIPath || path == PoliciesPath || path == AuditPath || path == AuditDetailPath {
 		return method == http.MethodGet
 	}
 	return method == http.MethodPut || (path == SettingsPath && method == http.MethodGet)
 }
 
 func allowedMethods(path string) string {
+	if path == ResourceUIPath {
+		return http.MethodGet
+	}
 	if path == SettingsPath {
 		return http.MethodGet + ", " + http.MethodPut
 	}
@@ -167,6 +198,14 @@ type policyResponse struct {
 	DeniedModels []string `json:"denied_models"`
 	AuditEnabled bool     `json:"audit_enabled"`
 	UpdatedAt    int64    `json:"updated_at"`
+}
+
+func (h *Handler) resourceUI() ManagementResponse {
+	return ManagementResponse{
+		StatusCode: http.StatusOK,
+		Headers:    http.Header{"Content-Type": []string{"text/html; charset=utf-8"}, "Cache-Control": []string{"no-store"}},
+		Body:       append([]byte(nil), resourceUIHTML...),
+	}
 }
 
 func (h *Handler) listPolicies(ctx context.Context, query url.Values) ManagementResponse {

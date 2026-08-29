@@ -105,7 +105,8 @@ type registrationCapability struct {
 }
 
 type managementRegistrationRequest struct {
-	BasePath string `json:"BasePath"`
+	BasePath         string `json:"BasePath"`
+	ResourceBasePath string `json:"ResourceBasePath"`
 }
 
 type managementRequest struct {
@@ -195,7 +196,7 @@ func handleMethod(method string, raw []byte) ([]byte, error) {
 				return nil, fmt.Errorf("decode management registration request: %w", errUnmarshal)
 			}
 		}
-		return okEnvelope(management.Routes(request.BasePath))
+		return okEnvelope(management.Routes(request.BasePath, request.ResourceBasePath))
 	case "management.handle":
 		return handleManagement(raw)
 	case "request.intercept_before", "request.intercept_after":

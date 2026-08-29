@@ -39,9 +39,12 @@ func decodeResponse(t *testing.T, response ManagementResponse, target any) {
 }
 
 func TestRoutesAreFixedLiteralPaths(t *testing.T) {
-	registration := Routes("/v0/management")
+	registration := Routes("/v0/management", "/v0/resource/plugins/enterprise-access-audit")
 	if len(registration.Routes) != 7 {
 		t.Fatalf("route count = %d", len(registration.Routes))
+	}
+	if len(registration.Resources) != 1 || registration.Resources[0].Path != "/v0/resource/plugins/enterprise-access-audit/ui" {
+		t.Fatalf("resource registration = %+v", registration.Resources)
 	}
 	for _, route := range registration.Routes {
 		if route.Path == "" || route.Path[0] != '/' {
@@ -52,6 +55,20 @@ func TestRoutesAreFixedLiteralPaths(t *testing.T) {
 				t.Fatalf("route %q contains forbidden %q", route.Path, forbidden)
 			}
 		}
+	}
+}
+
+func TestResourceUIIsServedByPluginHandler(t *testing.T) {
+	handler, _ := newTestHandler(t)
+	response := handler.Handle(context.Background(), ManagementRequest{Method: http.MethodGet, Path: "/v0/resource/plugins/enterprise-access-audit/ui"})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("resource status = %d", response.StatusCode)
+	}
+	if got := response.Headers.Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Fatalf("resource content type = %q", got)
+	}
+	if !strings.Contains(string(response.Body), "cpa-plugin-api-request") {
+		t.Fatal("resource UI does not contain the host bridge contract")
 	}
 }
 
