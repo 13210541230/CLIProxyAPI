@@ -14,7 +14,8 @@ func TestOpenCleansFrameworkRecordsAndMarkers(t *testing.T) {
 	path := filepath.Join(dir, "key-abcdef12.jsonl")
 	content := strings.Join([]string{
 		`{"id":1,"key_hash":"abcdef12","created_at":"2026-08-30T00:00:00Z","request_id":"framework","text":"<system-reminder>internal</system-reminder>","text_available":true}`,
-		`{"id":2,"key_hash":"abcdef12","created_at":"2026-08-30T00:00:01Z","request_id":"human","text":"§1689§ <!-- +2h --> actual prompt\n<ctx-search-hint>internal</ctx-search-hint>","text_available":true}`,
+		`{"id":2,"key_hash":"abcdef12","created_at":"2026-08-30T00:00:01Z","request_id":"human-old","text":"§1689§ <!-- +2h --> actual prompt\n<ctx-search-hint>internal</ctx-search-hint>","text_available":true}`,
+		`{"id":3,"key_hash":"abcdef12","created_at":"2026-08-30T00:00:02Z","request_id":"human-new","text":"§1689§ actual prompt","text_available":true}`,
 	}, "\n") + "\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
@@ -28,7 +29,7 @@ func TestOpenCleansFrameworkRecordsAndMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
-	if len(page.Records) != 1 || page.Records[0].Text != "actual prompt" {
+	if len(page.Records) != 1 || page.Records[0].Text != "actual prompt" || page.Records[0].RequestID != "human-new" {
 		t.Fatalf("cleaned records = %+v", page.Records)
 	}
 }

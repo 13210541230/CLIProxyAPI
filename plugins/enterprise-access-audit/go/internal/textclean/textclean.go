@@ -39,6 +39,41 @@ func Clean(value string) (string, bool) {
 	return text, true
 }
 
+// IsFrameworkMessage reports whether value contains only harness-generated content.
+// It applies the same marker and markup normalization as Clean without treating
+// a real prompt followed by a framework suffix as framework-only.
+func IsFrameworkMessage(value string) bool {
+	text := normalizeWhitespace(value)
+	text = decodeFrameworkMarkup(text)
+	if strings.HasPrefix(text, "§") {
+		if cleaned, ok := stripSectionMarker(text); ok {
+			text = cleaned
+		}
+	}
+	text = stripLeadingElapsedComment(text)
+	text = stripFrameworkSuffix(text)
+	return isFrameworkMessage(strings.TrimSpace(text))
+}
+
+// SectionMarker returns the harness section marker when value starts with one.
+// The marker is used only for safe cleanup of repeated materialized prompts.
+func SectionMarker(value string) (string, bool) {
+	text := decodeFrameworkMarkup(normalizeWhitespace(value))
+	if !strings.HasPrefix(text, "§") {
+		return "", false
+	}
+	closingOffset := strings.Index(text[len("§"):], "§")
+	if closingOffset <= 0 {
+		return "", false
+	}
+	for _, character := range text[len("§") : len("§")+closingOffset] {
+		if character < '0' || character > '9' {
+			return "", false
+		}
+	}
+	return text[:len("§")+closingOffset+len("§")], true
+}
+
 func normalizeWhitespace(value string) string {
 	return strings.TrimSpace(strings.ReplaceAll(value, "\r\n", "\n"))
 }

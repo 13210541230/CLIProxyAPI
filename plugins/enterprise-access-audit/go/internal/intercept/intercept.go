@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/cyberpolicy"
@@ -65,13 +66,15 @@ type Response struct {
 
 // Handler applies phase-1 scope, policy enforcement, extraction, and lifecycle correlation.
 type Handler struct {
-	state *state.Manager
-	cfg   config.Config
+	state   *state.Manager
+	cfg     config.Config
+	skipMu  sync.Mutex
+	skipped map[string]struct{}
 }
 
 // New creates a request handler using T1's validated defaults.
 func New(manager *state.Manager, cfg config.Config) *Handler {
-	return &Handler{state: manager, cfg: cfg}
+	return &Handler{state: manager, cfg: cfg, skipped: make(map[string]struct{})}
 }
 
 // Intercept performs the same policy check at both before-auth and after-auth stages.
@@ -106,6 +109,10 @@ func (h *Handler) Intercept(ctx context.Context, req Request) (Response, error) 
 			return fmt.Errorf("load policy: %w", errPolicy)
 		}
 		denied = deniedModel(policy, req.RequestedModel) || deniedModel(policy, req.Model)
+		if text.TextUnavailableReason == "no_new_user_turn" {
+			h.markAuditSkipped(req.RequestID)
+			return nil
+		}
 		if !policy.AuditEnabled {
 			return nil
 		}
@@ -150,6 +157,9 @@ func (h *Handler) Complete(ctx context.Context, completion Completion) error {
 	if !validOutcome(completion.Outcome) {
 		return fmt.Errorf("unsupported request completion outcome %q", completion.Outcome)
 	}
+	if h.consumeAuditSkipped(completion.RequestID) {
+		return nil
+	}
 	securitySignal := ""
 	securityMessage := ""
 	if completion.Outcome != "succeeded" && completion.Outcome != "rejected" {
@@ -179,6 +189,25 @@ func (h *Handler) Complete(ctx context.Context, completion Completion) error {
 			SecurityMessage: securityMessage,
 		}, policy.AuditEnabled)
 	})
+}
+
+func (h *Handler) markAuditSkipped(requestID string) {
+	if requestID == "" {
+		return
+	}
+	h.skipMu.Lock()
+	defer h.skipMu.Unlock()
+	h.skipped[requestID] = struct{}{}
+}
+
+func (h *Handler) consumeAuditSkipped(requestID string) bool {
+	h.skipMu.Lock()
+	defer h.skipMu.Unlock()
+	if _, ok := h.skipped[requestID]; !ok {
+		return false
+	}
+	delete(h.skipped, requestID)
+	return true
 }
 
 func phaseOnePath(sourceFormat string, metadata map[string]any) (string, bool) {

@@ -43,18 +43,9 @@ func Extract(sourceFormat, requestPath string, body []byte) (Result, error) {
 }
 
 func chat(root map[string]any) Result {
-	messages := array(root["messages"])
-	for index := len(messages) - 1; index >= 0; index-- {
-		message, ok := messages[index].(map[string]any)
-		if !ok || strings.ToLower(stringValue(message["role"])) != "user" {
-			continue
-		}
-		candidate := textResult(contentText(message["content"], "text"))
-		if candidate.TextAvailable {
-			return candidate
-		}
-	}
-	return Result{TextUnavailableReason: "no_user_text"}
+	return latestRoleUser(array(root["messages"]), func(message map[string]any) []string {
+		return contentText(message["content"], "text")
+	})
 }
 
 func completions(root map[string]any) Result {
@@ -106,50 +97,25 @@ func responses(root map[string]any) Result {
 	if input, ok := value.(string); ok {
 		return textResult([]string{input})
 	}
-	items := array(value)
-	for index := len(items) - 1; index >= 0; index-- {
-		message, ok := items[index].(map[string]any)
-		if !ok || strings.ToLower(stringValue(message["role"])) != "user" {
-			continue
-		}
-		var candidate Result
-		if stringValue(message["type"]) == "input_text" {
-			if text, isString := message["text"].(string); isString {
-				candidate = textResult([]string{text})
-			} else {
-				candidate = Result{TextUnavailableReason: "no_user_text"}
-			}
-		} else {
-			candidate = textResult(contentText(message["content"], "input_text"))
-		}
-		if candidate.TextAvailable {
-			return candidate
-		}
-	}
-	return Result{TextUnavailableReason: "no_user_text"}
+	return latestResponsesUser(array(value))
 }
 
 func claude(root map[string]any) Result {
-	messages := array(root["messages"])
-	for index := len(messages) - 1; index >= 0; index-- {
-		message, ok := messages[index].(map[string]any)
-		if !ok || strings.ToLower(stringValue(message["role"])) != "user" {
-			continue
-		}
-		candidate := textResult(contentText(message["content"], "text"))
-		if candidate.TextAvailable {
-			return candidate
-		}
-	}
-	return Result{TextUnavailableReason: "no_user_text"}
+	return latestRoleUser(array(root["messages"]), func(message map[string]any) []string {
+		return contentText(message["content"], "text")
+	})
 }
 
 func gemini(root map[string]any) Result {
 	contents := array(root["contents"])
+	frameworkTail := false
 	for index := len(contents) - 1; index >= 0; index-- {
 		content, ok := contents[index].(map[string]any)
 		if !ok || strings.ToLower(stringValue(content["role"])) != "user" {
-			continue
+			if frameworkTail {
+				return Result{TextUnavailableReason: "no_new_user_turn"}
+			}
+			return Result{TextUnavailableReason: "no_new_user_turn"}
 		}
 		var parts []string
 		for _, part := range array(content["parts"]) {
@@ -164,12 +130,80 @@ func gemini(root map[string]any) Result {
 				parts = append(parts, text)
 			}
 		}
-		candidate := textResult(parts)
-		if candidate.TextAvailable {
-			return candidate
+		candidate, framework := cleanedTextResult(parts)
+		if framework {
+			frameworkTail = true
+			continue
 		}
+		if frameworkTail {
+			return Result{TextUnavailableReason: "no_new_user_turn"}
+		}
+		return candidate
 	}
-	return Result{TextUnavailableReason: "no_user_text"}
+	return Result{TextUnavailableReason: "no_new_user_turn"}
+}
+
+func latestRoleUser(messages []any, parts func(map[string]any) []string) Result {
+	frameworkTail := false
+	for index := len(messages) - 1; index >= 0; index-- {
+		message, ok := messages[index].(map[string]any)
+		if !ok || strings.ToLower(stringValue(message["role"])) != "user" {
+			return Result{TextUnavailableReason: "no_new_user_turn"}
+		}
+		candidate, framework := cleanedTextResult(parts(message))
+		if framework {
+			frameworkTail = true
+			continue
+		}
+		if frameworkTail {
+			return Result{TextUnavailableReason: "no_new_user_turn"}
+		}
+		return candidate
+	}
+	return Result{TextUnavailableReason: "no_new_user_turn"}
+}
+
+func latestResponsesUser(items []any) Result {
+	frameworkTail := false
+	for index := len(items) - 1; index >= 0; index-- {
+		item, ok := items[index].(map[string]any)
+		if !ok || strings.ToLower(stringValue(item["role"])) != "user" {
+			return Result{TextUnavailableReason: "no_new_user_turn"}
+		}
+		var parts []string
+		if stringValue(item["type"]) == "input_text" {
+			if text, isString := item["text"].(string); isString {
+				parts = []string{text}
+			}
+		} else {
+			parts = contentText(item["content"], "input_text")
+		}
+		candidate, framework := cleanedTextResult(parts)
+		if framework {
+			frameworkTail = true
+			continue
+		}
+		if frameworkTail {
+			return Result{TextUnavailableReason: "no_new_user_turn"}
+		}
+		return candidate
+	}
+	return Result{TextUnavailableReason: "no_new_user_turn"}
+}
+
+func cleanedTextResult(parts []string) (Result, bool) {
+	if len(parts) == 0 {
+		return Result{TextUnavailableReason: "no_user_text"}, false
+	}
+	raw := strings.Join(parts, "\n")
+	text, ok := textclean.Clean(raw)
+	if !ok {
+		if textclean.IsFrameworkMessage(raw) {
+			return Result{TextUnavailableReason: "no_new_user_turn"}, true
+		}
+		return Result{TextUnavailableReason: "no_user_text"}, false
+	}
+	return Result{Text: text, TextAvailable: true}, false
 }
 
 func contentText(value any, expectedType string) []string {
@@ -190,14 +224,8 @@ func contentText(value any, expectedType string) []string {
 }
 
 func textResult(parts []string) Result {
-	if len(parts) == 0 {
-		return Result{TextUnavailableReason: "no_user_text"}
-	}
-	text, ok := textclean.Clean(strings.Join(parts, "\n"))
-	if !ok {
-		return Result{TextUnavailableReason: "non_user_message"}
-	}
-	return Result{Text: text, TextAvailable: true}
+	result, _ := cleanedTextResult(parts)
+	return result
 }
 
 func array(value any) []any {

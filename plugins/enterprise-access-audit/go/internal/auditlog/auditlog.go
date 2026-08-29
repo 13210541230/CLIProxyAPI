@@ -104,13 +104,15 @@ func (l *Log) sanitizeExistingRecords(ctx context.Context) error {
 			return err
 		}
 		cleaned := make([]Record, 0, len(records))
+		markerIndexes := make(map[string]int)
 		changed := false
 		for _, record := range records {
 			if !record.TextAvailable || record.Text == "" {
 				cleaned = append(cleaned, record)
 				continue
 			}
-			text, ok := textclean.Clean(record.Text)
+			rawText := record.Text
+			text, ok := textclean.Clean(rawText)
 			if !ok {
 				changed = true
 				continue
@@ -118,6 +120,16 @@ func (l *Log) sanitizeExistingRecords(ctx context.Context) error {
 			if text != record.Text {
 				record.Text = text
 				changed = true
+			}
+			if marker, hasMarker := textclean.SectionMarker(rawText); hasMarker {
+				if index, exists := markerIndexes[marker]; exists {
+					// Repeated materialized prompts are the same harness turn. Keep
+					// the newest terminal outcome without retaining every iteration.
+					cleaned[index] = record
+					changed = true
+					continue
+				}
+				markerIndexes[marker] = len(cleaned)
 			}
 			cleaned = append(cleaned, record)
 		}

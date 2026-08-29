@@ -124,6 +124,31 @@ func TestAllowedPassThroughAndLifecycleCorrelation(t *testing.T) {
 	}
 }
 
+func TestAgentIterationWithoutNewUserTurnIsNotAudited(t *testing.T) {
+	handler, manager := newTestHandler(t)
+	metadata := map[string]any{RequestPathMetadataKey: "/v1/responses", KeyHashMetadataKey: "deadbeef"}
+	request := Request{
+		RequestID:      "iteration",
+		SourceFormat:   "openai-response",
+		RequestedModel: "model",
+		Model:          "model",
+		Body:           []byte(`{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"original user request"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"agent output"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"<system-reminder>iteration metadata</system-reminder>"}]}]}`),
+		Metadata:       metadata,
+	}
+	if _, err := handler.Intercept(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := handler.Complete(context.Background(), Completion{
+		RequestID: request.RequestID, SourceFormat: request.SourceFormat, RequestedModel: request.RequestedModel,
+		Model: request.Model, Outcome: "failed", StatusCode: 500, Error: `{"error":{"code":"invalid_request"}}`, Metadata: metadata,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRecord(manager, request.RequestID); err == nil {
+		t.Fatal("agent iteration without a new user turn produced an audit record")
+	}
+}
+
 func TestMissingInvalidIdentityAndExcludedPathsDoNotAuditOrEnforce(t *testing.T) {
 	handler, manager := newTestHandler(t)
 	setDeny(t, manager, "deadbeef", []string{"blocked"})
@@ -187,11 +212,12 @@ func TestAdversarialExcludedTextIsNotPersisted(t *testing.T) {
 	handler, manager := newTestHandler(t)
 	tests := []struct {
 		name, source, path, body string
+		wantAudit                bool
 	}{
-		{"responses assistant", "openai-response", "/v1/responses", `{"input":[{"type":"input_text","role":"assistant","text":"assistant secret"}]}`},
-		{"responses missing role", "openai-response", "/v1/responses", `{"input":[{"type":"input_text","text":"missing role secret"}]}`},
-		{"chat missing type", "openai", "/v1/chat/completions", `{"messages":[{"role":"user","content":[{"text":"missing type secret"}]}]}`},
-		{"claude media text", "claude", "/v1/messages", `{"messages":[{"role":"user","content":[{"type":"image","text":"image secret"}]}]}`},
+		{"responses assistant", "openai-response", "/v1/responses", `{"input":[{"type":"input_text","role":"assistant","text":"assistant secret"}]}`, false},
+		{"responses missing role", "openai-response", "/v1/responses", `{"input":[{"type":"input_text","text":"missing role secret"}]}`, false},
+		{"chat missing type", "openai", "/v1/chat/completions", `{"messages":[{"role":"user","content":[{"text":"missing type secret"}]}]}`, true},
+		{"claude media text", "claude", "/v1/messages", `{"messages":[{"role":"user","content":[{"type":"image","text":"image secret"}]}]}`, true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -201,6 +227,12 @@ func TestAdversarialExcludedTextIsNotPersisted(t *testing.T) {
 				t.Fatal(err)
 			}
 			record, err := readRecord(manager, id)
+			if !test.wantAudit {
+				if err == nil {
+					t.Fatal("non-user request produced an audit record")
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
