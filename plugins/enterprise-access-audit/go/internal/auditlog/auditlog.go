@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/textclean"
 )
 
 var ErrClosed = errors.New("enterprise audit log is closed")
@@ -75,6 +77,9 @@ func Open(ctx context.Context, dir string) (*Log, error) {
 	if err := log.initializeNextID(ctx); err != nil {
 		return nil, err
 	}
+	if err := log.sanitizeExistingRecords(ctx); err != nil {
+		return nil, err
+	}
 	return log, nil
 }
 
@@ -87,6 +92,42 @@ func (l *Log) initializeNextID(ctx context.Context) error {
 		}
 		return nil
 	})
+}
+
+func (l *Log) sanitizeExistingRecords(ctx context.Context) error {
+	for _, path := range l.filePathsLocked() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		records, err := readRecords(path)
+		if err != nil {
+			return err
+		}
+		cleaned := make([]Record, 0, len(records))
+		changed := false
+		for _, record := range records {
+			if !record.TextAvailable || record.Text == "" {
+				cleaned = append(cleaned, record)
+				continue
+			}
+			text, ok := textclean.Clean(record.Text)
+			if !ok {
+				changed = true
+				continue
+			}
+			if text != record.Text {
+				record.Text = text
+				changed = true
+			}
+			cleaned = append(cleaned, record)
+		}
+		if changed {
+			if err := rewriteFile(path, cleaned); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (l *Log) Close() error {

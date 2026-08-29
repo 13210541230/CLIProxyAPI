@@ -9,6 +9,30 @@ import (
 	"time"
 )
 
+func TestOpenCleansFrameworkRecordsAndMarkers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "key-abcdef12.jsonl")
+	content := strings.Join([]string{
+		`{"id":1,"key_hash":"abcdef12","created_at":"2026-08-30T00:00:00Z","request_id":"framework","text":"<system-reminder>internal</system-reminder>","text_available":true}`,
+		`{"id":2,"key_hash":"abcdef12","created_at":"2026-08-30T00:00:01Z","request_id":"human","text":"§1689§ <!-- +2h --> actual prompt\n<ctx-search-hint>internal</ctx-search-hint>","text_available":true}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	log, err := Open(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer log.Close()
+	page, err := log.List(context.Background(), Filter{}, 1, 10)
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(page.Records) != 1 || page.Records[0].Text != "actual prompt" {
+		t.Fatalf("cleaned records = %+v", page.Records)
+	}
+}
+
 func TestLogStoresOneJSONLFilePerKeyAndFinalizesDraft(t *testing.T) {
 	log, err := Open(context.Background(), t.TempDir())
 	if err != nil {

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/textclean"
 )
 
 // Result is the allowlisted, text-only representation of one request body.
@@ -47,7 +49,10 @@ func chat(root map[string]any) Result {
 		if !ok || strings.ToLower(stringValue(message["role"])) != "user" {
 			continue
 		}
-		return textResult(contentText(message["content"], "text"))
+		candidate := textResult(contentText(message["content"], "text"))
+		if candidate.TextAvailable {
+			return candidate
+		}
 	}
 	return Result{TextUnavailableReason: "no_user_text"}
 }
@@ -107,13 +112,19 @@ func responses(root map[string]any) Result {
 		if !ok || strings.ToLower(stringValue(message["role"])) != "user" {
 			continue
 		}
+		var candidate Result
 		if stringValue(message["type"]) == "input_text" {
 			if text, isString := message["text"].(string); isString {
-				return textResult([]string{text})
+				candidate = textResult([]string{text})
+			} else {
+				candidate = Result{TextUnavailableReason: "no_user_text"}
 			}
-			return Result{TextUnavailableReason: "no_user_text"}
+		} else {
+			candidate = textResult(contentText(message["content"], "input_text"))
 		}
-		return textResult(contentText(message["content"], "input_text"))
+		if candidate.TextAvailable {
+			return candidate
+		}
 	}
 	return Result{TextUnavailableReason: "no_user_text"}
 }
@@ -125,7 +136,10 @@ func claude(root map[string]any) Result {
 		if !ok || strings.ToLower(stringValue(message["role"])) != "user" {
 			continue
 		}
-		return textResult(contentText(message["content"], "text"))
+		candidate := textResult(contentText(message["content"], "text"))
+		if candidate.TextAvailable {
+			return candidate
+		}
 	}
 	return Result{TextUnavailableReason: "no_user_text"}
 }
@@ -150,7 +164,10 @@ func gemini(root map[string]any) Result {
 				parts = append(parts, text)
 			}
 		}
-		return textResult(parts)
+		candidate := textResult(parts)
+		if candidate.TextAvailable {
+			return candidate
+		}
 	}
 	return Result{TextUnavailableReason: "no_user_text"}
 }
@@ -176,7 +193,11 @@ func textResult(parts []string) Result {
 	if len(parts) == 0 {
 		return Result{TextUnavailableReason: "no_user_text"}
 	}
-	return Result{Text: strings.Join(parts, "\n"), TextAvailable: true}
+	text, ok := textclean.Clean(strings.Join(parts, "\n"))
+	if !ok {
+		return Result{TextUnavailableReason: "non_user_message"}
+	}
+	return Result{Text: text, TextAvailable: true}
 }
 
 func array(value any) []any {
