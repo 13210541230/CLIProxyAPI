@@ -82,7 +82,10 @@
         try { state.settings = await callHost('PUT', API + '/settings', {retention_days:retention, max_text_bytes:maxText, default_audit_enabled:defaultAudit}); showToast('设置已保存'); render(); } catch (error) { showToast(error.message || '设置保存失败'); }
       };
       const detail = async (id) => { try { state.detail = await callHost('GET', API + '/audit/detail?id=' + encodeURIComponent(id)); render(); } catch (error) { showToast(error.message || '详情加载失败'); } };
-      const renderError = (message) => { $('#app').innerHTML = '<div class="shell"><div class="error"><strong>Enterprise Access Audit 暂不可用</strong><div>' + escapeHTML(message) + '</div><button class="small" data-action="reload" style="margin-top:12px">重新加载</button></div></div>'; };
+      const renderError = (message) => {
+        $('#app').innerHTML = '<div class="shell"><div class="error"><strong>Enterprise Access Audit 暂不可用</strong><div>' + escapeHTML(message) + '</div><button class="small" data-action="reload" style="margin-top:12px">重新加载</button></div></div>';
+        bindEvents();
+      };
       const render = () => {
         if (state.loading) { $('#app').innerHTML = '<div class="shell"><div class="loading">正在加载插件数据…</div></div>'; return; }
         const enabledPolicies = state.policies.filter((item) => item.audit_enabled !== false).length;
