@@ -16,6 +16,9 @@
     (() => {
       'use strict';
       const API = '/v0/management/enterprise-access-audit';
+      const hostOrigin = (() => {
+        try { return document.referrer ? new URL(document.referrer).origin : '*'; } catch (_) { return '*'; }
+      })();
       const pending = new Map();
       let sequence = 0;
       const state = { tab:'audit', records:[], policies:[], settings:null, pagination:{page:1,page_size:25,total:0,has_next:false}, filters:{key_hash:'',model:'',source_format:'',outcome:'',security_signal:''}, detail:null, loading:false };
@@ -27,10 +30,10 @@
         const id = 'audit-' + (++sequence);
         const timer = window.setTimeout(() => { pending.delete(id); reject(new Error('管理接口请求超时')); }, 15000);
         pending.set(id, {resolve, reject, timer});
-        window.parent.postMessage({type:'cpa-plugin-api-request', id, method, path, body}, window.location.origin);
+        window.parent.postMessage({type:'cpa-plugin-api-request', id, method, path, body}, hostOrigin);
       });
       window.addEventListener('message', (event) => {
-        if (event.source !== window.parent || !event.data || event.data.type !== 'cpa-plugin-api-response') return;
+        if (event.source !== window.parent || (hostOrigin !== '*' && event.origin !== hostOrigin) || !event.data || event.data.type !== 'cpa-plugin-api-response') return;
         const item = pending.get(String(event.data.id || ''));
         if (!item) return;
         pending.delete(String(event.data.id));

@@ -67,8 +67,11 @@ func TestResourceUIIsServedByPluginHandler(t *testing.T) {
 	if got := response.Headers.Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
 		t.Fatalf("resource content type = %q", got)
 	}
-	if !strings.Contains(string(response.Body), "cpa-plugin-api-request") {
-		t.Fatal("resource UI does not contain the host bridge contract")
+	body := string(response.Body)
+	if !strings.Contains(body, "cpa-plugin-api-request") ||
+		!strings.Contains(body, "document.referrer") ||
+		!strings.Contains(body, "}, hostOrigin)") {
+		t.Fatal("resource UI does not contain the cross-origin host bridge contract")
 	}
 }
 
