@@ -17,7 +17,11 @@
       'use strict';
       const API = '/v0/management/enterprise-access-audit';
       const hostOrigin = (() => {
-        try { return document.referrer ? new URL(document.referrer).origin : '*'; } catch (_) { return '*'; }
+        try {
+          const explicit = new URLSearchParams(window.location.search).get('cpa_plugin_host_origin');
+          if (explicit && new URL(explicit).origin === explicit) return explicit;
+          return document.referrer ? new URL(document.referrer).origin : '*';
+        } catch (_) { return '*'; }
       })();
       const pending = new Map();
       let sequence = 0;
