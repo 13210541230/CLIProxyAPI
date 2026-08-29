@@ -11,6 +11,7 @@ func TestExtractPhaseOneFixtures(t *testing.T) {
 		{"chat latest user only", "openai", "/v1/chat/completions", `{"messages":[{"role":"user","content":"old user"},{"role":"assistant","content":"old answer"},{"role":"user","content":"latest user"}]}`, "latest user", "", true},
 		{"chat skips harness iteration and keeps marked prompt", "openai", "/v1/chat/completions", `{"messages":[{"role":"user","content":"§1689§ 用户真正输入\n<ctx-search-hint>内部提示</ctx-search-hint>"},{"role":"assistant","content":"answer"},{"role":"user","content":"<system-reminder>iteration metadata</system-reminder>"}]}`, "用户真正输入", "", true},
 		{"chat skips escaped framework notification", "openai", "/v1/chat/completions", `{"messages":[{"role":"user","content":"&lt;background-task-notification&gt;&lt;status&gt;failed&lt;/status&gt;&lt;/background-task-notification&gt;"}]}`, "", "no_user_text", false},
+		{"chat strips unmarked framework suffix", "openai", "/v1/chat/completions", `{"messages":[{"role":"user","content":"actual question\n<system-reminder>iteration metadata</system-reminder>"}]}`, "actual question", "", true},
 		{"completion array", "openai", "/v1/completions", `{"prompt":["first","second"]}`, "second", "", true},
 		{"numeric prompt", "openai", "/v1/completions", `{"prompt":[12,13],"secret":"do not persist"}`, "", "numeric_prompt", false},
 		{"responses string input", "openai-response", "/v1/responses", `{"input":"question"}`, "question", "", true},

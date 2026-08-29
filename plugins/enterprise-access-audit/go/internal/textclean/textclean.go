@@ -25,17 +25,13 @@ var frameworkPrefixes = []string{
 func Clean(value string) (string, bool) {
 	text := normalizeWhitespace(value)
 	text = decodeFrameworkMarkup(text)
-	marked := false
 	if strings.HasPrefix(text, "§") {
 		if cleaned, ok := stripSectionMarker(text); ok {
 			text = cleaned
-			marked = true
 		}
 	}
-	if marked {
-		text = stripLeadingElapsedComment(text)
-		text = stripFrameworkSuffix(text)
-	}
+	text = stripLeadingElapsedComment(text)
+	text = stripFrameworkSuffix(text)
 	text = strings.TrimSpace(text)
 	if text == "" || isFrameworkMessage(text) {
 		return "", false
