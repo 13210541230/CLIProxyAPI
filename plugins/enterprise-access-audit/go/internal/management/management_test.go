@@ -70,7 +70,10 @@ func TestResourceUIIsServedByPluginHandler(t *testing.T) {
 	body := string(response.Body)
 	if !strings.Contains(body, "cpa-plugin-api-request") ||
 		!strings.Contains(body, "document.referrer") ||
-		!strings.Contains(body, "}, hostOrigin)") {
+		!strings.Contains(body, "}, hostOrigin)") ||
+		!strings.Contains(body, "setInterval") ||
+		!strings.Contains(body, "formatTimestamp") ||
+		!strings.Contains(body, "toLocaleString") {
 		t.Fatal("resource UI does not contain the cross-origin host bridge contract")
 	}
 }
