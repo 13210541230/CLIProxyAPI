@@ -166,10 +166,11 @@ func TestStoreWritesAuditTextToJSONLAndKeepsSQLiteForPolicyState(t *testing.T) {
 		t.Fatalf("Open() error = %v", err)
 	}
 	defer store.Close()
-	if err := store.InsertAudit(ctx, AuditRecord{KeyHash: "abcdef12", RequestID: "request-1", Model: "model", Text: "user text", TextAvailable: true}); err != nil {
+	createdAt := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	if err := store.InsertAudit(ctx, AuditRecord{KeyHash: "abcdef12", CreatedAt: createdAt, RequestID: "request-1", Model: "model", Text: "user text", TextAvailable: true}); err != nil {
 		t.Fatalf("InsertAudit() error = %v", err)
 	}
-	logPath := filepath.Join(cfg.DataDir, "key-abcdef12.jsonl")
+	logPath := filepath.Join(cfg.DataDir, "key-abcdef12-20260830.jsonl")
 	content, err := os.ReadFile(logPath)
 	if err != nil || !strings.Contains(string(content), `"text":"user text"`) {
 		t.Fatalf("JSONL content = %q, error = %v", content, err)

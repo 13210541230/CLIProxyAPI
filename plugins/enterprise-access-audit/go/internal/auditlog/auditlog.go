@@ -21,6 +21,8 @@ import (
 
 var ErrClosed = errors.New("enterprise audit log is closed")
 
+const auditDateLayout = "20060102"
+
 // Record is one finalized or in-flight audit entry stored as JSONL.
 type Record struct {
 	ID                    int64     `json:"id"`
@@ -57,7 +59,8 @@ type Page struct {
 	HasNext  bool
 }
 
-// Log owns per-key JSONL files and keeps only unfinished requests in memory.
+// Log owns per-key, per-day JSONL files and keeps only unfinished requests in memory.
+// Legacy key-<hash>.jsonl files remain readable while new records use dated files.
 type Log struct {
 	mu      sync.Mutex
 	dir     string
@@ -353,7 +356,7 @@ func (l *Log) prepareLocked(record Record, maxTextBytes int) Record {
 }
 
 func (l *Log) appendLocked(record Record) error {
-	path := filepath.Join(l.dir, "key-"+record.KeyHash+".jsonl")
+	path := datedAuditLogPath(l.dir, record.KeyHash, record.CreatedAt)
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("open audit log %q: %w", path, err)
@@ -417,6 +420,10 @@ func (l *Log) findByRequestIDLocked(ctx context.Context, requestID string) (Reco
 		}
 	}
 	return found, found.ID != 0
+}
+
+func datedAuditLogPath(dir, keyHash string, createdAt time.Time) string {
+	return filepath.Join(dir, "key-"+keyHash+"-"+createdAt.UTC().Format(auditDateLayout)+".jsonl")
 }
 
 func (l *Log) filePathsLocked() []string {
