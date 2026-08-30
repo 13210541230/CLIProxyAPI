@@ -297,7 +297,31 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndFailureAndGinRequestID(t 
 		requireMissingField(t, payload, "user_api_key")
 		requireStringField(t, payload, "request_id", "gin-request-id")
 		requireBoolField(t, payload, "failed", true)
-		requireFailField(t, payload, http.StatusInternalServerError, "upstream failed")
+		requireFailField(t, payload, http.StatusInternalServerError, "")
+		requireMissingField(t, payload, "security_signal")
+	})
+}
+
+func TestUsageQueuePluginMarksExactCyberPolicyFailureWithoutBody(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ctx := internallogging.WithRequestID(context.Background(), "cyber-request-id")
+		ctx = internallogging.WithEndpoint(ctx, "POST /v1/responses")
+		ctx = internallogging.WithResponseStatusHolder(ctx)
+		internallogging.SetResponseStatus(ctx, http.StatusBadRequest)
+
+		(&usageQueuePlugin{}).HandleUsage(ctx, coreusage.Record{
+			Provider: "openai",
+			Model:    "gpt-5.4",
+			Fail: coreusage.Failure{
+				StatusCode: http.StatusBadRequest,
+				Body:       `upstream: {"response":{"error":{"code":"cyber_policy","message":"not persisted"}}}`,
+			},
+		})
+
+		payload := popSinglePayload(t)
+		requireBoolField(t, payload, "failed", true)
+		requireStringField(t, payload, "security_signal", "cyber_policy")
+		requireFailField(t, payload, http.StatusBadRequest, "")
 	})
 }
 
@@ -346,7 +370,8 @@ func TestUsageQueuePluginAsyncIgnoresRecycledGinContext(t *testing.T) {
 		requireMissingField(t, payload, "user_api_key")
 		requireStringField(t, payload, "request_id", "ctx-request-id")
 		requireBoolField(t, payload, "failed", true)
-		requireFailField(t, payload, http.StatusBadGateway, "bad gateway")
+		requireFailField(t, payload, http.StatusBadGateway, "")
+		requireMissingField(t, payload, "security_signal")
 	})
 }
 

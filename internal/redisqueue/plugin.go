@@ -8,6 +8,7 @@ import (
 	"time"
 
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/securitysignal"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
@@ -83,6 +84,11 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		failed = !resolveSuccess(ctx)
 	}
 	fail := resolveFail(ctx, record, failed)
+	securitySignal := ""
+	if failed && securitysignal.Detect(fail.Body) {
+		securitySignal = securitysignal.CyberPolicy
+	}
+	fail.Body = ""
 
 	detail := requestDetail{
 		Timestamp:       timestamp,
@@ -96,6 +102,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		UserAgent:       clientRequestMetadata.UserAgent,
 		Tokens:          tokens,
 		Failed:          failed,
+		SecuritySignal:  securitySignal,
 		Generate:        coreusage.GenerateEnabled(record.Generate),
 		Fail:            fail,
 		ResponseHeaders: record.ResponseHeaders,
@@ -152,6 +159,7 @@ type requestDetail struct {
 	UserAgent       string      `json:"user_agent"`
 	Tokens          tokenStats  `json:"tokens"`
 	Failed          bool        `json:"failed"`
+	SecuritySignal  string      `json:"security_signal,omitempty"`
 	Generate        bool        `json:"generate"`
 	Fail            failDetail  `json:"fail"`
 	ResponseHeaders http.Header `json:"response_headers,omitempty"`
@@ -170,7 +178,7 @@ type tokenStats struct {
 
 type failDetail struct {
 	StatusCode int    `json:"status_code"`
-	Body       string `json:"body"`
+	Body       string `json:"body,omitempty"`
 }
 
 func resolveFail(ctx context.Context, record coreusage.Record, failed bool) failDetail {
