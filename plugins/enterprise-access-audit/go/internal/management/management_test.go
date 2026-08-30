@@ -85,6 +85,9 @@ func TestPolicyEndpointsPreserveOmittedFieldsAndRejectRawKeys(t *testing.T) {
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("absent policy status = %d", response.StatusCode)
 	}
+	if got := response.Headers.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("policy cache-control = %q", got)
+	}
 	var listed struct {
 		Policies []policyResponse `json:"policies"`
 	}

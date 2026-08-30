@@ -656,6 +656,7 @@ func jsonHeaders(contentType bool) http.Header {
 	if contentType {
 		headers.Set("Content-Type", "application/json")
 	}
+	headers.Set("Cache-Control", "no-store")
 	return headers
 }
 
