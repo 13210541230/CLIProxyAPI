@@ -40,6 +40,11 @@ jobs:
           - `CLIProxyAPI_<version>_linux_<arch>.tar.gz` is the default Linux build. It supports dynamic library plugins and is built against a GLIBC 2.17 baseline.
           - `CLIProxyAPI_<version>_linux_<arch>_no-plugin.tar.gz` is the portable Linux build for musl-based or older systems such as OpenWrt. It does not support dynamic library plugins.
 
+          ## Enterprise access-audit plugin
+
+          - Plugin-capable Windows, macOS, and Linux glibc archives include the `enterprise-access-audit` dynamic library under `plugins/<GOOS>/<GOARCH>/`.
+          - The plugin is built with the matching platform toolchain and uses CPA's C-shared plugin ABI. `*_no-plugin` and FreeBSD archives do not include it.
+
           ## FreeBSD release assets
 
           - `CLIProxyAPI_<version>_freebsd_aarch64_no-plugin.tar.gz` is the FreeBSD arm64 build. It is built without CGO and does not support dynamic library plugins.
@@ -173,15 +178,39 @@ jobs:
           rm -rf "dist/${TARGET}"
           mkdir -p "$archive_dir"
 
+          (
+            cd plugins/enterprise-access-audit/go
+            go test ./...
+            go test -race ./...
+            go build ./...
+          )
+
           CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" go build \
             -ldflags="-s -w -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
             -o "$archive_dir/$binary_name" ./cmd/server/
+
+          repo_root="$PWD"
+          plugin_extension=".so"
+          if [[ "$GOOS" == "windows" ]]; then
+            plugin_extension=".dll"
+          elif [[ "$GOOS" == "darwin" ]]; then
+            plugin_extension=".dylib"
+          fi
+          plugin_dir="$archive_dir/plugins/${GOOS}/${GOARCH}"
+          mkdir -p "$plugin_dir" "$archive_dir/plugins/enterprise-access-audit"
+          (
+            cd "$repo_root/plugins/enterprise-access-audit/go"
+            CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" go build -buildvcs=false -buildmode=c-shared \
+              -o "$repo_root/$plugin_dir/enterprise-access-audit${plugin_extension}" .
+          )
+          rm -f "$plugin_dir/enterprise-access-audit.h"
+          cp plugins/enterprise-access-audit/README.md "$archive_dir/plugins/enterprise-access-audit/"
 
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
           if [[ "$ARCHIVE_FORMAT" == "zip" ]]; then
             powershell -NoProfile -Command "Compress-Archive -Path '${archive_dir}/*' -DestinationPath 'dist/${archive_name}' -Force"
           else
-            tar -C "$archive_dir" -czf "dist/$archive_name" "$binary_name" LICENSE README.md README_CN.md config.example.yaml
+            tar -C "$archive_dir" -czf "dist/$archive_name" "$binary_name" LICENSE README.md README_CN.md config.example.yaml plugins
           fi
       - uses: actions/upload-artifact@v4
         with:
@@ -283,8 +312,9 @@ jobs:
 
           archive_dir="dist/${TARGET}/archive"
           archive_name="CLIProxyAPI_${RELEASE_VERSION}_linux_${ASSET_ARCH}.tar.gz"
+          plugin_output_dir="/src/${archive_dir}/plugins/linux/${GOARCH}"
           rm -rf "dist/${TARGET}"
-          mkdir -p "$archive_dir"
+          mkdir -p "$archive_dir/plugins/enterprise-access-audit" "$archive_dir/plugins/linux/${GOARCH}"
 
           docker run --rm \
             -v "$PWD:/src" \
@@ -294,6 +324,7 @@ jobs:
             -e RELEASE_VERSION \
             -e COMMIT \
             -e BUILD_DATE \
+            -e "PLUGIN_OUTPUT_DIR=${plugin_output_dir}" \
             "$MANYLINUX_IMAGE" \
             bash -euo pipefail -c '
               go_archive="go${GO_VERSION}.linux-${GOARCH}.tar.gz"
@@ -302,9 +333,24 @@ jobs:
               tar -C /usr/local -xzf "/tmp/${go_archive}"
               export PATH="/usr/local/go/bin:${PATH}"
 
+              (
+                cd /src/plugins/enterprise-access-audit/go
+                go test ./...
+                go test -race ./...
+                go build ./...
+              )
+
               CGO_ENABLED=1 GOOS=linux GOARCH="${GOARCH}" go build -buildvcs=false \
                 -ldflags="-s -w -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
                 -o "'"$archive_dir"'/cli-proxy-api" ./cmd/server/
+
+              mkdir -p "${PLUGIN_OUTPUT_DIR}"
+              (
+                cd /src/plugins/enterprise-access-audit/go
+                CGO_ENABLED=1 GOOS=linux GOARCH="${GOARCH}" go build -buildvcs=false -buildmode=c-shared \
+                  -o "${PLUGIN_OUTPUT_DIR}/enterprise-access-audit.so" .
+              )
+              rm -f "${PLUGIN_OUTPUT_DIR}/enterprise-access-audit.h"
 
               glibc_versions="$(readelf --version-info "'"$archive_dir"'/cli-proxy-api" | sed -n "s/.*Name: GLIBC_\([0-9.]*\).*/\1/p" | sort -Vu)"
               if [[ -n "${glibc_versions}" ]]; then
@@ -315,10 +361,21 @@ jobs:
                   exit 1
                 fi
               fi
+
+              plugin_glibc_versions="$(readelf --version-info "${PLUGIN_OUTPUT_DIR}/enterprise-access-audit.so" | sed -n "s/.*Name: GLIBC_\([0-9.]*\).*/\1/p" | sort -Vu)"
+              if [[ -n "${plugin_glibc_versions}" ]]; then
+                printf "enterprise-access-audit GLIBC versions:\n%s\n" "${plugin_glibc_versions}"
+                plugin_max_glibc="$(printf "%s\n" "${plugin_glibc_versions}" | sort -V | tail -n 1)"
+                if [[ "$(printf "2.17\n%s\n" "${plugin_max_glibc}" | sort -V | tail -n 1)" != "2.17" ]]; then
+                  printf "enterprise-access-audit linux ${GOARCH} requires GLIBC_%s, expected GLIBC_2.17 or older\n" "${plugin_max_glibc}" >&2
+                  exit 1
+                fi
+              fi
             '
 
+          cp plugins/enterprise-access-audit/README.md "$archive_dir/plugins/enterprise-access-audit/"
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
-          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
+          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml plugins
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}

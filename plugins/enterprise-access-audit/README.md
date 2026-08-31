@@ -30,6 +30,8 @@ The module is pinned independently in `go/go.mod` and does not add a dependency 
 
 Cross-compilation is not assumed. It requires a compatible target C compiler and linker configured for the selected `GOOS`/`GOARCH`; otherwise build on the target platform. The unit-test, race-test, and ordinary package-build commands are portable Go commands, while the dynamic artifact must match the host platform.
 
+Tagged CLIProxyAPI releases build the plugin together with the matching plugin-capable CPA archive for Windows amd64/arm64, macOS amd64/arm64, and Linux glibc amd64/arm64. The archive places the library at `plugins/<GOOS>/<GOARCH>/enterprise-access-audit.<ext>` and includes this README. Linux glibc builds use the same GLIBC 2.17 baseline as the default CPA binary. The portable `*_no-plugin` archives and FreeBSD archives intentionally omit this plugin.
+
 ## Installation and loading
 
 1. Build the artifact and copy it to the configured CPA plugin directory. The default host directory is `plugins`; the host searches these locations in order:
