@@ -42,7 +42,7 @@ jobs:
 
           ## Enterprise access-audit plugin
 
-          - Plugin-capable Windows, macOS, and Linux glibc archives include the `enterprise-access-audit` dynamic library under `plugins/<GOOS>/<GOARCH>/`.
+          - Plugin-capable Windows, macOS, and Linux glibc archives include the `enterprise-access-audit` dynamic library under `plugins/<GOOS>/<GOARCH>/`. Windows ARM64 uses a pinned LLVM MinGW cross-toolchain.
           - The plugin is built with the matching platform toolchain and uses CPA's C-shared plugin ABI. `*_no-plugin` and FreeBSD archives do not include it.
 
           ## FreeBSD release assets
@@ -123,7 +123,7 @@ jobs:
             asset_arch: amd64
             archive_format: zip
           - target: windows-arm64
-            runner: windows-11-arm
+            runner: windows-latest
             goos: windows
             goarch: arm64
             asset_arch: aarch64
@@ -142,6 +142,28 @@ jobs:
       - name: Fetch tags
         shell: bash
         run: git fetch --force --tags
+      - name: Install LLVM MinGW for Windows ARM64
+        if: ${{ matrix.target == 'windows-arm64' }}
+        shell: pwsh
+        run: |
+          $version = '20260826'
+          $archive = "llvm-mingw-$version-ucrt-x86_64.zip"
+          $url = "https://github.com/mstorsjo/llvm-mingw/releases/download/$version/$archive"
+          $zipPath = Join-Path $env:RUNNER_TEMP $archive
+          $extractPath = Join-Path $env:RUNNER_TEMP "llvm-mingw-$version"
+          Invoke-WebRequest -Uri $url -OutFile $zipPath
+          $expected = 'AE601F4E0F72BBDF441AD2DF8BB16F037E2E9251559EA6B37B4057AEF39C06C3'
+          $actual = (Get-FileHash -Algorithm SHA256 -Path $zipPath).Hash
+          if ($actual -ne $expected) {
+            throw "LLVM MinGW checksum mismatch: $actual"
+          }
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $extractPath
+          Expand-Archive -Path $zipPath -DestinationPath $extractPath
+          $compiler = Get-ChildItem -Path $extractPath -Recurse -Filter 'aarch64-w64-mingw32-clang.exe' | Select-Object -First 1
+          if ($null -eq $compiler) {
+            throw 'aarch64-w64-mingw32-clang.exe was not found in LLVM MinGW archive'
+          }
+          "LLVM_MINGW_CC=$($compiler.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - uses: actions/cache@v4
         with:
           path: |
@@ -178,14 +200,28 @@ jobs:
           rm -rf "dist/${TARGET}"
           mkdir -p "$archive_dir"
 
-          (
-            cd plugins/enterprise-access-audit/go
-            go test ./...
-            go test -race ./...
-            go build ./...
-          )
+          if [[ "$GOOS" == "windows" && "$GOARCH" == "arm64" ]]; then
+            (
+              cd plugins/enterprise-access-audit/go
+              unset GOOS GOARCH
+              CC=gcc CGO_ENABLED=1 go test ./...
+              CC=gcc CGO_ENABLED=1 go test -race ./...
+              CC=gcc CGO_ENABLED=1 go build -buildvcs=false ./...
+            )
+          else
+            (
+              cd plugins/enterprise-access-audit/go
+              go test ./...
+              go test -race ./...
+              go build -buildvcs=false ./...
+            )
+          fi
 
-          CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" go build \
+          cgo_enabled=1
+          if [[ "$GOOS" == "windows" && "$GOARCH" == "arm64" ]]; then
+            cgo_enabled=0
+          fi
+          CGO_ENABLED="$cgo_enabled" GOOS="$GOOS" GOARCH="$GOARCH" go build \
             -ldflags="-s -w -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
             -o "$archive_dir/$binary_name" ./cmd/server/
 
@@ -200,8 +236,13 @@ jobs:
           mkdir -p "$plugin_dir" "$archive_dir/plugins/enterprise-access-audit"
           (
             cd "$repo_root/plugins/enterprise-access-audit/go"
-            CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" go build -buildvcs=false -buildmode=c-shared \
-              -o "$repo_root/$plugin_dir/enterprise-access-audit${plugin_extension}" .
+            if [[ "$GOOS" == "windows" && "$GOARCH" == "arm64" ]]; then
+              CGO_ENABLED=1 CC="$LLVM_MINGW_CC" GOOS="$GOOS" GOARCH="$GOARCH" go build -buildvcs=false -buildmode=c-shared \
+                -o "$repo_root/$plugin_dir/enterprise-access-audit${plugin_extension}" .
+            else
+              CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" go build -buildvcs=false -buildmode=c-shared \
+                -o "$repo_root/$plugin_dir/enterprise-access-audit${plugin_extension}" .
+            fi
           )
           rm -f "$plugin_dir/enterprise-access-audit.h"
           cp plugins/enterprise-access-audit/README.md "$archive_dir/plugins/enterprise-access-audit/"
@@ -337,7 +378,7 @@ jobs:
                 cd /src/plugins/enterprise-access-audit/go
                 go test ./...
                 go test -race ./...
-                go build ./...
+                go build -buildvcs=false ./...
               )
 
               CGO_ENABLED=1 GOOS=linux GOARCH="${GOARCH}" go build -buildvcs=false \
