@@ -55,6 +55,7 @@ type AuditFilter struct {
 	From           *time.Time
 	To             *time.Time
 	KeyHash        string
+	KeyHashes      []string
 	Model          string
 	SourceFormat   string
 	Outcome        string

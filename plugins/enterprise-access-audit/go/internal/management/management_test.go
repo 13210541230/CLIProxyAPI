@@ -197,7 +197,23 @@ func TestAuditFiltersPaginationDetailAndNumericSerialization(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert numeric record = %v", err)
 	}
-	response := handler.Handle(ctx, ManagementRequest{Method: http.MethodGet, Path: AuditPath, Query: url.Values{"model": {"MODEL-B"}, "outcome": {"failed"}, "security_signal": {"cyber_policy"}, "page_size": {"1"}}})
+	if err := manager.WithStore(ctx, func(active *store.Store) error {
+		return active.InsertAudit(ctx, store.AuditRecord{KeyHash: "abcdef13", CreatedAt: now.Add(-2 * time.Minute), Model: "model-c", SourceFormat: "openai", RequestID: "three", Outcome: "succeeded", StatusCode: 200, Text: "other user", TextAvailable: true})
+	}); err != nil {
+		t.Fatalf("insert second key record = %v", err)
+	}
+	response := handler.Handle(ctx, ManagementRequest{Method: http.MethodGet, Path: AuditPath, Query: url.Values{"key_hash": {"abcdef12", "abcdef13"}, "page_size": {"10"}}})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("multi-key audit list status = %d %s", response.StatusCode, response.Body)
+	}
+	var multiKeyPage struct {
+		Records []auditResponse `json:"records"`
+	}
+	decodeResponse(t, response, &multiKeyPage)
+	if len(multiKeyPage.Records) != 3 {
+		t.Fatalf("multi-key audit records = %d, want 3", len(multiKeyPage.Records))
+	}
+	response = handler.Handle(ctx, ManagementRequest{Method: http.MethodGet, Path: AuditPath, Query: url.Values{"model": {"MODEL-B"}, "outcome": {"failed"}, "security_signal": {"cyber_policy"}, "page_size": {"1"}}})
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("audit list status = %d %s", response.StatusCode, response.Body)
 	}

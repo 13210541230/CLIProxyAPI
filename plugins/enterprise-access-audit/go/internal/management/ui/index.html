@@ -25,7 +25,7 @@
       })();
       const pending = new Map();
       let sequence = 0;
-      const state = { tab:'audit', records:[], policies:[], settings:null, pagination:{page:1,page_size:25,total:0,has_next:false}, filters:{key_hash:'',model:'',source_format:'',outcome:'',security_signal:''}, detail:null, loading:false };
+      const state = { tab:'audit', records:[], policies:[], settings:null, keyMetadata:[], metadataError:'', pagination:{page:1,page_size:25,total:0,has_next:false}, filters:{user_name:'',key_hash:'',model:'',source_format:'',outcome:'',security_signal:''}, detail:null, loading:false };
       let refreshTimer = 0;
       let auditRefreshBusy = false;
       const $ = (selector) => document.querySelector(selector);
@@ -68,6 +68,39 @@
         return html || '<p class="muted">文本为空</p>';
       };
       const maskHash = (value) => { const text = String(value || ''); return text.length > 12 ? text.slice(0,8) + '…' + text.slice(-4) : text || '-'; };
+      const normalizeKeyHash = (value) => String(value || '').trim().toLowerCase();
+      const metadataForHash = (value) => {
+        const shortHash = normalizeKeyHash(value);
+        if (!shortHash) return [];
+        return state.keyMetadata.filter((item) => {
+          const fullHash = normalizeKeyHash(item && item.apiKeyHash);
+          return fullHash.length >= 8 && fullHash.slice(0, 8) === shortHash;
+        });
+      };
+      const metadataForUser = (value) => {
+        const userName = String(value || '').trim();
+        return state.keyMetadata.filter((item) => String(item && item.userName || '').trim() === userName);
+      };
+      const userLabelForHash = (value) => {
+        const matches = metadataForHash(value);
+        if (matches.length === 1) return String(matches[0].userName || '').trim() || '未命名用户';
+        if (matches.length > 1) return '多个用户（Hash 前缀重复）';
+        return '未关联用户';
+      };
+      const monitoringHashForRecord = (value) => {
+        const matches = metadataForHash(value);
+        if (matches.length === 1) {
+          const fullHash = normalizeKeyHash(matches[0].apiKeyHash);
+          return fullHash.slice(-8) || maskHash(value);
+        }
+        return maskHash(value);
+      };
+      const userOptions = () => {
+        const users = Array.from(new Set(state.keyMetadata.map((item) => String(item && item.userName || '').trim()).filter(Boolean)));
+        users.sort((left, right) => left.localeCompare(right));
+        return users;
+      };
+      const hashesForSelectedUser = () => Array.from(new Set(metadataForUser(state.filters.user_name).map((item) => normalizeKeyHash(item.apiKeyHash).slice(0, 8)).filter((value) => value.length === 8)));
       const formatTimestamp = (value) => { const date = new Date(value); return Number.isNaN(date.getTime()) ? String(value || '-') : date.toLocaleString(undefined, {year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false}); };
       const showToast = (message) => { const node = $('#toast'); node.textContent = message; node.classList.add('show'); window.clearTimeout(showToast.timer); showToast.timer = window.setTimeout(() => node.classList.remove('show'), 2600); };
       const refreshLatestAudit = async () => { if (auditRefreshBusy || state.loading || document.visibilityState === 'hidden') return; auditRefreshBusy = true; try { applyAudit(await loadAudit(state.pagination.page || 1)); render(); } catch (_) { /* Keep the current page when a background refresh is temporarily unavailable. */ } finally { auditRefreshBusy = false; } };
@@ -88,15 +121,30 @@
         if (event.data.ok) item.resolve(event.data.data);
         else item.reject(new Error(event.data.error || ('管理接口请求失败（HTTP ' + (event.data.status || 0) + '）')));
       });
-      const queryString = (values) => Object.entries(values).filter(([, value]) => String(value || '').trim()).map(([key, value]) => encodeURIComponent(key) + '=' + encodeURIComponent(value)).join('&');
+      const queryString = (values) => Object.entries(values).flatMap(([key, value]) => {
+        const items = Array.isArray(value) ? value : [value];
+        return items.filter((item) => String(item || '').trim()).map((item) => encodeURIComponent(key) + '=' + encodeURIComponent(item));
+      }).join('&');
+      const loadKeyMetadata = async () => {
+        try {
+          const payload = await callHost('GET', '/v0/management/enterprise/key-bindings/metadata');
+          state.keyMetadata = Array.isArray(payload && payload.items) ? payload.items : [];
+          state.metadataError = '';
+        } catch (error) {
+          state.keyMetadata = [];
+          state.metadataError = error && error.message ? error.message : '企业 Key 用户信息暂不可用';
+        }
+      };
       const load = async () => {
         state.loading = true; render();
         try {
+          const metadataPromise = loadKeyMetadata();
           const [settings, policies, audit] = await Promise.all([
             callHost('GET', API + '/settings'),
             callHost('GET', API + '/policies'),
             loadAudit(1)
           ]);
+          await metadataPromise;
           state.settings = settings || null;
           state.policies = Array.isArray(policies && policies.policies) ? policies.policies : [];
           if (audit) applyAudit(audit);
@@ -108,7 +156,15 @@
         }
       };
       const loadAudit = async (page) => {
-        const query = queryString(Object.assign({}, state.filters, {page:page || 1, page_size:state.pagination.page_size || 25}));
+        const selectedUser = String(state.filters.user_name || '').trim();
+        const values = Object.assign({}, state.filters, {page:page || 1, page_size:state.pagination.page_size || 25});
+        delete values.user_name;
+        if (selectedUser) {
+          const hashes = hashesForSelectedUser();
+          if (!hashes.length) return {records:[], pagination:{page:page || 1, page_size:state.pagination.page_size || 25, total:0, has_next:false}};
+          values.key_hash = hashes;
+        }
+        const query = queryString(values);
         return callHost('GET', API + '/audit?' + query);
       };
       const applyAudit = (payload) => { state.records = Array.isArray(payload && payload.records) ? payload.records : []; state.pagination = (payload && payload.pagination) || {page:1,page_size:25,total:0,has_next:false}; };
@@ -142,16 +198,21 @@
           '</div>';
         bindEvents();
       };
-      const renderAudit = () => '<section class="panel"><div class="panel-head"><h2>请求审计</h2><span class="muted">第 ' + escapeHTML(state.pagination.page || 1) + ' 页，共 ' + escapeHTML(state.pagination.total || 0) + ' 条</span></div><div class="filters">' +
-        field('key_hash','Key Hash',state.filters.key_hash,'输入完整或部分 Key Hash') + field('model','模型',state.filters.model,'模型名称') + field('source_format','来源',state.filters.source_format,'例如 openai') + field('outcome','结果',state.filters.outcome,'allow / deny / error') + field('security_signal','安全信号',state.filters.security_signal,'过滤安全信号') + '<div class="field"><label>&nbsp;</label><button class="primary" data-action="filter">应用筛选</button></div></div>' +
-        '<div class="table-wrap"><table class="table"><thead><tr><th>时间</th><th>Key Hash</th><th>模型</th><th>来源</th><th>结果</th><th>状态</th><th>安全信号</th><th></th></tr></thead><tbody>' + (state.records.length ? state.records.map((record) => '<tr><td>' + escapeHTML(formatTimestamp(record.created_at)) + '</td><td class="mono">' + escapeHTML(maskHash(record.key_hash)) + '</td><td>' + escapeHTML(record.model || '-') + '</td><td>' + escapeHTML(record.source_format || '-') + '</td><td>' + outcomeBadge(record.outcome) + '</td><td>' + escapeHTML(record.status_code || '-') + '</td><td>' + escapeHTML(record.security_signal || '-') + '</td><td><button class="small" data-action="detail" data-id="' + escapeHTML(record.id) + '">详情</button></td></tr>').join('') : '<tr><td colspan="8" class="empty">暂无审计记录</td></tr>') + '</tbody></table></div><div class="actions" style="justify-content:flex-end;margin-top:14px"><button class="small" data-action="prev" ' + ((state.pagination.page || 1) <= 1 ? 'disabled' : '') + '>上一页</button><button class="small" data-action="next" ' + (!state.pagination.has_next ? 'disabled' : '') + '>下一页</button></div></section>' + (state.detail ? '<section class="panel"><div class="panel-head"><h2>记录详情 #' + escapeHTML(state.detail.id) + '</h2><button class="small" data-action="close-detail">关闭</button></div><div class="split"><div><div class="field"><label>请求文本</label><div class="detail message-markdown">' + renderMarkdown(state.detail.text || (state.detail.text_available === false ? '文本不可用：' + (state.detail.text_unavailable_reason || '未知原因') : '')) + '</div></div></div><div><p><strong>Key Hash：</strong><span class="mono">' + escapeHTML(maskHash(state.detail.key_hash)) + '</span></p><p><strong>请求 ID：</strong>' + escapeHTML(state.detail.request_id || '-') + '</p><p><strong>安全消息：</strong>' + escapeHTML(state.detail.security_message || '-') + '</p><p><strong>截断：</strong>' + (state.detail.text_truncated ? '是' : '否') + '</p></div></div></section>' : '');
+      const renderAudit = () => '<section class="panel"><div class="panel-head"><h2>请求审计</h2><span class="muted">第 ' + escapeHTML(state.pagination.page || 1) + ' 页，共 ' + escapeHTML(state.pagination.total || 0) + ' 条</span></div><p class="muted">审计以企业 Key 的用户名展示；内部仍使用 CPA 的 8 位 Key Hash，右侧 Hash 尾码与请求监控保持一致。</p>' + (state.metadataError ? '<p class="muted">用户信息暂不可用，当前显示 Hash：' + escapeHTML(state.metadataError) + '</p>' : '') + '<div class="filters">' +
+        userField() + field('key_hash','Key Hash（兼容）',state.filters.key_hash,'输入 8 位内部 Hash') + field('model','模型',state.filters.model,'模型名称') + field('source_format','来源',state.filters.source_format,'例如 openai') + field('outcome','结果',state.filters.outcome,'allow / deny / error') + field('security_signal','安全信号',state.filters.security_signal,'过滤安全信号') + '<div class="field"><label>&nbsp;</label><button class="primary" data-action="filter">应用筛选</button></div></div>' +
+        '<div class="table-wrap"><table class="table"><thead><tr><th>时间</th><th>用户</th><th>Hash 尾码</th><th>模型</th><th>来源</th><th>结果</th><th>状态</th><th>安全信号</th><th></th></tr></thead><tbody>' + (state.records.length ? state.records.map((record) => '<tr><td>' + escapeHTML(formatTimestamp(record.created_at)) + '</td><td><strong>' + escapeHTML(userLabelForHash(record.key_hash)) + '</strong></td><td class="mono">' + escapeHTML(monitoringHashForRecord(record.key_hash)) + '</td><td>' + escapeHTML(record.model || '-') + '</td><td>' + escapeHTML(record.source_format || '-') + '</td><td>' + outcomeBadge(record.outcome) + '</td><td>' + escapeHTML(record.status_code || '-') + '</td><td>' + escapeHTML(record.security_signal || '-') + '</td><td><button class="small" data-action="detail" data-id="' + escapeHTML(record.id) + '">详情</button></td></tr>').join('') : '<tr><td colspan="9" class="empty">暂无审计记录</td></tr>') + '</tbody></table></div><div class="actions" style="justify-content:flex-end;margin-top:14px"><button class="small" data-action="prev" ' + ((state.pagination.page || 1) <= 1 ? 'disabled' : '') + '>上一页</button><button class="small" data-action="next" ' + (!state.pagination.has_next ? 'disabled' : '') + '>下一页</button></div></section>' + (state.detail ? '<section class="panel"><div class="panel-head"><h2>记录详情 #' + escapeHTML(state.detail.id) + '</h2><button class="small" data-action="close-detail">关闭</button></div><div class="split"><div><div class="field"><label>请求文本</label><div class="detail message-markdown">' + renderMarkdown(state.detail.text || (state.detail.text_available === false ? '文本不可用：' + (state.detail.text_unavailable_reason || '未知原因') : '')) + '</div></div></div><div><p><strong>用户：</strong>' + escapeHTML(userLabelForHash(state.detail.key_hash)) + '</p><p><strong>Hash 尾码：</strong><span class="mono">' + escapeHTML(monitoringHashForRecord(state.detail.key_hash)) + '</span></p><p><strong>请求 ID：</strong>' + escapeHTML(state.detail.request_id || '-') + '</p><p><strong>安全消息：</strong>' + escapeHTML(state.detail.security_message || '-') + '</p><p><strong>截断：</strong>' + (state.detail.text_truncated ? '是' : '否') + '</p></div></div></section>' : '');
+      const userField = () => '<div class="field"><label>用户名</label><select data-filter="user_name"><option value="">全部用户</option>' + userOptions().map((user) => '<option value="' + escapeHTML(user) + '" ' + (state.filters.user_name === user ? 'selected' : '') + '>' + escapeHTML(user) + '</option>').join('') + '</select></div>';
       const field = (name,label,value,placeholder) => '<div class="field"><label>' + label + '</label><input data-filter="' + name + '" value="' + escapeHTML(value || '') + '" placeholder="' + escapeHTML(placeholder || '') + '"></div>';
       const outcomeBadge = (value) => { const text = String(value || 'unknown'); const klass = text === 'allow' ? 'success' : (text === 'deny' ? 'danger' : 'warn'); return '<span class="badge ' + klass + '">' + escapeHTML(text) + '</span>'; };
-      const renderPolicies = () => '<section class="panel"><div class="panel-head"><h2>访问策略</h2><button class="small" data-action="refresh-policies">刷新</button></div><p class="muted">插件只暴露 Key Hash，不会在派生数据或页面中显示明文 API Key。禁止模型使用逗号分隔。</p><div class="table-wrap"><table class="table"><thead><tr><th>Key Hash</th><th>禁止模型</th><th>审计</th><th>更新时间</th><th></th></tr></thead><tbody>' + (state.policies.length ? state.policies.map((policy) => '<tr><td class="mono">' + escapeHTML(maskHash(policy.key_hash)) + '</td><td><input class="policy-input" id="models-' + escapeHTML(policy.key_hash) + '" value="' + escapeHTML((policy.denied_models || []).join(', ')) + '"></td><td><label class="check"><input id="audit-' + escapeHTML(policy.key_hash) + '" type="checkbox" ' + (policy.audit_enabled !== false ? 'checked' : '') + '>开启</label></td><td>' + escapeHTML(policy.updated_at || '-') + '</td><td><button class="small primary" data-action="save-policy" data-hash="' + escapeHTML(policy.key_hash) + '">保存</button></td></tr>').join('') : '<tr><td colspan="5" class="empty">暂无显式策略。缺省策略由插件设置决定。</td></tr>') + '</tbody></table></div></section>';
+      const renderPolicies = () => '<section class="panel"><div class="panel-head"><h2>访问策略</h2><button class="small" data-action="refresh-policies">刷新</button></div><p class="muted">策略按企业 Key 的用户名展示；保存时仍使用 CPA 的 8 位内部 Hash，明文 API Key 不会进入插件。</p><div class="table-wrap"><table class="table"><thead><tr><th>用户</th><th>Hash 尾码</th><th>禁止模型</th><th>审计</th><th>更新时间</th><th></th></tr></thead><tbody>' + (state.policies.length ? state.policies.map((policy) => '<tr><td><strong>' + escapeHTML(userLabelForHash(policy.key_hash)) + '</strong></td><td class="mono">' + escapeHTML(monitoringHashForRecord(policy.key_hash)) + '</td><td><input class="policy-input" id="models-' + escapeHTML(policy.key_hash) + '" value="' + escapeHTML((policy.denied_models || []).join(', ')) + '"></td><td><label class="check"><input id="audit-' + escapeHTML(policy.key_hash) + '" type="checkbox" ' + (policy.audit_enabled !== false ? 'checked' : '') + '>开启</label></td><td>' + escapeHTML(policy.updated_at || '-') + '</td><td><button class="small primary" data-action="save-policy" data-hash="' + escapeHTML(policy.key_hash) + '">保存</button></td></tr>').join('') : '<tr><td colspan="6" class="empty">暂无显式策略。缺省策略由插件设置决定。</td></tr>') + '</tbody></table></div></section>';
       const renderSettings = () => { const settings = state.settings || {}; return '<section class="panel"><div class="panel-head"><h2>插件设置</h2></div><div class="filters" style="grid-template-columns:repeat(3,minmax(0,1fr))"><div class="field"><label>保留天数</label><input id="retention" type="number" min="1" max="3650" value="' + escapeHTML(settings.retention_days || '') + '"></div><div class="field"><label>最大文本字节数</label><input id="max-text" type="number" min="1" value="' + escapeHTML(settings.max_text_bytes || '') + '"></div><div class="field"><label>缺省审计</label><label class="check"><input id="default-audit" type="checkbox" ' + (settings.default_audit_enabled !== false ? 'checked' : '') + '>开启</label></div></div><button class="primary" data-action="save-settings">保存设置</button><p class="footer-note">修改保留天数会同时触发过期数据清理。插件配置仍由通用插件中心管理。</p></section>'; };
       const bindEvents = () => {
         document.querySelectorAll('[data-tab]').forEach((node) => node.addEventListener('click', () => { state.tab = node.dataset.tab; render(); }));
-        document.querySelectorAll('[data-filter]').forEach((node) => node.addEventListener('input', () => { state.filters[node.dataset.filter] = node.value; }));
+        document.querySelectorAll('[data-filter]').forEach((node) => {
+          const updateFilter = () => { state.filters[node.dataset.filter] = node.value; };
+          node.addEventListener('input', updateFilter);
+          node.addEventListener('change', updateFilter);
+        });
         document.querySelectorAll('[data-action]').forEach((node) => node.addEventListener('click', () => {
           const action = node.dataset.action;
           if (action === 'reload') return load();

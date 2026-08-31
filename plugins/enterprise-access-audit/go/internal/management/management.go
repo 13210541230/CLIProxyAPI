@@ -564,12 +564,15 @@ func parseAuditQuery(query url.Values) (store.AuditFilter, int, int, error) {
 	if filter.From != nil && filter.To != nil && filter.From.After(*filter.To) {
 		return filter, 0, 0, fmt.Errorf("from must not be after to")
 	}
-	if value := strings.TrimSpace(query.Get("key_hash")); value != "" {
-		hash, err := model.NormalizeKeyHash(value)
+	if values := query["key_hash"]; len(values) > 0 {
+		hashes, err := normalizeUniqueHashes(values)
 		if err != nil {
 			return filter, 0, 0, err
 		}
-		filter.KeyHash = hash
+		filter.KeyHashes = hashes
+		if len(hashes) == 1 {
+			filter.KeyHash = hashes[0]
+		}
 	}
 	if value := strings.TrimSpace(query.Get("model")); value != "" {
 		if len([]byte(value)) > maxModelBytes {

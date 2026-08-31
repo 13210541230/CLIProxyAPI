@@ -45,6 +45,7 @@ type Filter struct {
 	From           *time.Time
 	To             *time.Time
 	KeyHash        string
+	KeyHashes      []string
 	Model          string
 	SourceFormat   string
 	Outcome        string
@@ -576,7 +577,18 @@ func matches(record Record, filter Filter) bool {
 	if filter.To != nil && record.CreatedAt.After(*filter.To) {
 		return false
 	}
-	if filter.KeyHash != "" && record.KeyHash != filter.KeyHash {
+	if len(filter.KeyHashes) > 0 {
+		matched := false
+		for _, keyHash := range filter.KeyHashes {
+			if record.KeyHash == keyHash {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	} else if filter.KeyHash != "" && record.KeyHash != filter.KeyHash {
 		return false
 	}
 	if filter.Model != "" && record.Model != filter.Model {

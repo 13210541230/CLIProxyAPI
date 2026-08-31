@@ -168,7 +168,7 @@ func (s *Store) ListAudit(ctx context.Context, filter AuditFilter, page, pageSiz
 	if s.audit == nil {
 		return AuditPage{}, fmt.Errorf("JSONL audit log is unavailable")
 	}
-	result, err := s.audit.List(ctx, auditlog.Filter{From: filter.From, To: filter.To, KeyHash: filter.KeyHash, Model: filter.Model, SourceFormat: filter.SourceFormat, Outcome: filter.Outcome, SecuritySignal: filter.SecuritySignal}, page, pageSize)
+	result, err := s.audit.List(ctx, auditlog.Filter{From: filter.From, To: filter.To, KeyHash: filter.KeyHash, KeyHashes: filter.KeyHashes, Model: filter.Model, SourceFormat: filter.SourceFormat, Outcome: filter.Outcome, SecuritySignal: filter.SecuritySignal}, page, pageSize)
 	if err != nil {
 		return AuditPage{}, err
 	}
