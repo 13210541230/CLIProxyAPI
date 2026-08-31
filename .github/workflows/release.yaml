@@ -245,7 +245,7 @@ jobs:
             fi
           )
           rm -f "$plugin_dir/enterprise-access-audit.h"
-          cp plugins/enterprise-access-audit/README.md "$archive_dir/plugins/enterprise-access-audit/"
+          cp plugins/enterprise-access-audit/README.md plugins/enterprise-access-audit/README_CN.md "$archive_dir/plugins/enterprise-access-audit/"
 
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
           if [[ "$ARCHIVE_FORMAT" == "zip" ]]; then
@@ -414,7 +414,7 @@ jobs:
               fi
             '
 
-          cp plugins/enterprise-access-audit/README.md "$archive_dir/plugins/enterprise-access-audit/"
+          cp plugins/enterprise-access-audit/README.md plugins/enterprise-access-audit/README_CN.md "$archive_dir/plugins/enterprise-access-audit/"
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
           tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml plugins
       - uses: actions/upload-artifact@v4

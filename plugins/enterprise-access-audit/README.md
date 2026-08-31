@@ -1,5 +1,7 @@
 # Enterprise Access Audit Plugin
 
+- Chinese configuration and operations guide: [README_CN.md](README_CN.md)
+
 `enterprise-access-audit` is an isolated CPA dynamic-library plugin. It owns per-enterprise-Key model policy, text-only request audit persistence, retention cleanup, fixed-path Management API handlers, and its own browser-navigable management resource. The CPA Management Center discovers the resource through plugin metadata and renders it in the generic plugin host; no plugin-specific React page or core-page integration is required. It does not modify CPA core routes, provider routing, translators, `sdk/pluginapi`, or the public plugin ABI.
 
 ## Build and package
