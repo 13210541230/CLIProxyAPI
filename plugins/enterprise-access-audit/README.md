@@ -125,7 +125,7 @@ Example request bodies use hashes/placeholders only:
 {"retention_days":30,"default_audit_enabled":true,"max_text_bytes":32768}
 ```
 
-`audit_enabled: null` or omitted fields preserve the existing value according to the endpoint contract. Audit responses are bounded text-only records ordered by `created_at DESC, id DESC`, with deterministic pagination and filters for time, hash, model, source format, outcome, and the explicit `security_signal=cyber_policy` marker. A `security_message` field, when present, contains only the bounded sanitized upstream message, never the raw upstream response body. Invalid input, missing details, and unavailable storage use stable 400, 404, and 503 responses.
+`audit_enabled: null` or omitted fields preserve the existing value according to the endpoint contract. The batch policy endpoint replaces the deny list for all supplied hashes; the resource therefore sends a batch request only when the operator explicitly changes the model list. Audit-only batch changes use individual single-policy patches so existing per-user deny lists are preserved. Audit responses are bounded text-only records ordered by `created_at DESC, id DESC`, with deterministic pagination and filters for time, hash, model, source format, outcome, and the explicit `security_signal=cyber_policy` marker. A `security_message` field, when present, contains only the bounded sanitized upstream message, never the raw upstream response body. Invalid input, missing details, and unavailable storage use stable 400, 404, and 503 responses.
 
 The plugin exposes one generic-host resource menu:
 
@@ -133,7 +133,7 @@ The plugin exposes one generic-host resource menu:
 GET /v0/resource/plugins/enterprise-access-audit/ui
 ```
 
-The resource is a self-contained HTML workspace for audit records, policy rows, and plugin settings. It uses the Management Center's same-origin `postMessage` bridge for authenticated `/v0/management/enterprise-access-audit/...` calls, so the iframe never receives the Management API bearer key. The resource only displays masked Key hashes and must not call any endpoint that returns raw API Keys. If the plugin is disabled or the resource is unavailable, the generic host removes the menu without affecting Enterprise Keys, Quota, or other core pages.
+The resource is a self-contained HTML workspace for audit records, policy rows, and plugin settings. It uses the Management Center's same-origin `postMessage` bridge for authenticated management calls, so the iframe never receives the Management API bearer key. The resource only displays masked Key hashes and must not call any endpoint that returns raw API Keys. For the user-facing workflow, audit filtering accepts a username or email keyword directly instead of requiring a user dropdown. Policy rows are grouped by user, including all hashes owned by that user, and multiple users can be selected for one batch policy update. The model picker is populated from the current CPA model catalog and loaded auth-file model lists, while a manual model ID remains available for dynamic models. If the plugin is disabled or the resource is unavailable, the generic host removes the menu without affecting Enterprise Keys, Quota, or other core pages.
 
 ## Operations and privacy checklist
 
