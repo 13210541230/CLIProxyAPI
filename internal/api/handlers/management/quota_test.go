@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -149,6 +150,47 @@ func TestGetQuotaConfigReturnsCurrentConfig(t *testing.T) {
 	}
 	if body.Overrides[0].ApplyTo != "api-key" || body.Overrides[0].ApplyValue != "abc" || body.Overrides[0].DailyTokens != 20000 || body.Overrides[0].WeeklyTokens != 90000 {
 		t.Fatalf("unexpected override: %+v", body.Overrides[0])
+	}
+}
+
+func TestPutQuotaConfigPersistsModeAndTokenLimits(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	configPath := t.TempDir() + "/config.yaml"
+	if err := os.WriteFile(configPath, []byte("quota:\n  enabled: false\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg := &config.Config{}
+	h := NewHandler(cfg, configPath, nil)
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/v0/management/quota/config", strings.NewReader(`{
+		"enabled": true,
+		"mode": "tokens",
+		"default": {"daily_tokens": 1000, "weekly_tokens": 7000},
+		"overrides": [{"apply_to":"api-key","apply_value":"abcdef12","daily_tokens":2000,"weekly_tokens":14000}]
+	}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	h.PutQuotaConfig(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if cfg.Quota.Mode != "tokens" || cfg.Quota.Default.DailyTokens != 1000 || cfg.Quota.Default.WeeklyTokens != 7000 {
+		t.Fatalf("quota config = %+v, want token mode and limits", cfg.Quota)
+	}
+	if len(cfg.Quota.Overrides) != 1 || cfg.Quota.Overrides[0].DailyTokens != 2000 || cfg.Quota.Overrides[0].WeeklyTokens != 14000 {
+		t.Fatalf("quota overrides = %+v, want token limits", cfg.Quota.Overrides)
+	}
+	persisted, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read persisted config: %v", err)
+	}
+	for _, fragment := range []string{"mode: tokens", "daily-tokens: 1000", "weekly-tokens: 7000"} {
+		if !strings.Contains(string(persisted), fragment) {
+			t.Fatalf("persisted config missing %q: %s", fragment, persisted)
+		}
 	}
 }
 
