@@ -156,13 +156,14 @@ func (h *Handler) GetPausedKeys(c *gin.Context) {
 // GetQuotaConfig returns the current quota configuration.
 func (h *Handler) GetQuotaConfig(c *gin.Context) {
 	if h == nil || h.cfg == nil {
-		c.JSON(http.StatusOK, gin.H{"enabled": false, "db_path": "", "default": gin.H{}, "overrides": []gin.H{}})
+		c.JSON(http.StatusOK, gin.H{"enabled": false, "mode": "cost", "db_path": "", "default": gin.H{}, "overrides": []gin.H{}})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"enabled":   h.cfg.Quota.Enabled,
+		"mode":      effectiveQuotaMode(h.cfg.Quota.Mode),
 		"db_path":   h.cfg.Quota.DBPath,
-		"default":   gin.H{"daily_cents": h.cfg.Quota.Default.DailyCents, "weekly_cents": h.cfg.Quota.Default.WeeklyCents},
+		"default":   gin.H{"daily_cents": h.cfg.Quota.Default.DailyCents, "weekly_cents": h.cfg.Quota.Default.WeeklyCents, "daily_tokens": h.cfg.Quota.Default.DailyTokens, "weekly_tokens": h.cfg.Quota.Default.WeeklyTokens},
 		"overrides": quotaOverridesToJSON(h.cfg.Quota.Overrides),
 	})
 }
@@ -171,10 +172,12 @@ func quotaOverridesToJSON(entries []quota.SpendLimitEntry) []gin.H {
 	out := make([]gin.H, len(entries))
 	for i, e := range entries {
 		out[i] = gin.H{
-			"apply_to":     e.ApplyTo,
-			"apply_value":  e.ApplyValue,
-			"daily_cents":  e.DailyCents,
-			"weekly_cents": e.WeeklyCents,
+			"apply_to":      e.ApplyTo,
+			"apply_value":   e.ApplyValue,
+			"daily_cents":   e.DailyCents,
+			"weekly_cents":  e.WeeklyCents,
+			"daily_tokens":  e.DailyTokens,
+			"weekly_tokens": e.WeeklyTokens,
 		}
 	}
 	return out
@@ -188,6 +191,7 @@ func (h *Handler) PutQuotaConfig(c *gin.Context) {
 	var body struct {
 		Enabled   *bool                 `json:"enabled"`
 		DBPath    *string               `json:"db_path"`
+		Mode      *string               `json:"mode"`
 		Default   *spendLimitBody       `json:"default"`
 		Overrides []spendLimitEntryBody `json:"overrides"`
 	}
@@ -202,6 +206,9 @@ func (h *Handler) PutQuotaConfig(c *gin.Context) {
 	if body.DBPath != nil {
 		h.cfg.Quota.DBPath = *body.DBPath
 	}
+	if body.Mode != nil {
+		h.cfg.Quota.Mode = effectiveQuotaMode(*body.Mode)
+	}
 	if body.Default != nil {
 		if body.Default.DailyCents != nil {
 			h.cfg.Quota.Default.DailyCents = *body.Default.DailyCents
@@ -209,15 +216,23 @@ func (h *Handler) PutQuotaConfig(c *gin.Context) {
 		if body.Default.WeeklyCents != nil {
 			h.cfg.Quota.Default.WeeklyCents = *body.Default.WeeklyCents
 		}
+		if body.Default.DailyTokens != nil {
+			h.cfg.Quota.Default.DailyTokens = *body.Default.DailyTokens
+		}
+		if body.Default.WeeklyTokens != nil {
+			h.cfg.Quota.Default.WeeklyTokens = *body.Default.WeeklyTokens
+		}
 	}
 	if body.Overrides != nil {
 		h.cfg.Quota.Overrides = make([]quota.SpendLimitEntry, len(body.Overrides))
 		for i, o := range body.Overrides {
 			h.cfg.Quota.Overrides[i] = quota.SpendLimitEntry{
-				ApplyTo:     o.ApplyTo,
-				ApplyValue:  o.ApplyValue,
-				DailyCents:  o.DailyCents,
-				WeeklyCents: o.WeeklyCents,
+				ApplyTo:      o.ApplyTo,
+				ApplyValue:   o.ApplyValue,
+				DailyCents:   o.DailyCents,
+				WeeklyCents:  o.WeeklyCents,
+				DailyTokens:  o.DailyTokens,
+				WeeklyTokens: o.WeeklyTokens,
 			}
 		}
 	}
@@ -231,15 +246,26 @@ func (h *Handler) PutQuotaConfig(c *gin.Context) {
 }
 
 type spendLimitBody struct {
-	DailyCents  *int64 `json:"daily_cents"`
-	WeeklyCents *int64 `json:"weekly_cents"`
+	DailyCents   *int64 `json:"daily_cents"`
+	WeeklyCents  *int64 `json:"weekly_cents"`
+	DailyTokens  *int64 `json:"daily_tokens"`
+	WeeklyTokens *int64 `json:"weekly_tokens"`
 }
 
 type spendLimitEntryBody struct {
-	ApplyTo     string `json:"apply_to"`
-	ApplyValue  string `json:"apply_value"`
-	DailyCents  int64  `json:"daily_cents"`
-	WeeklyCents int64  `json:"weekly_cents"`
+	ApplyTo      string `json:"apply_to"`
+	ApplyValue   string `json:"apply_value"`
+	DailyCents   int64  `json:"daily_cents"`
+	WeeklyCents  int64  `json:"weekly_cents"`
+	DailyTokens  int64  `json:"daily_tokens"`
+	WeeklyTokens int64  `json:"weekly_tokens"`
+}
+
+func effectiveQuotaMode(mode string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), "tokens") {
+		return "tokens"
+	}
+	return "cost"
 }
 
 // ResetQuota clears quota/cooldown routing state for one auth index.

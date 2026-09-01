@@ -94,12 +94,15 @@ func TestGetQuotaConfigReturnsCurrentConfig(t *testing.T) {
 		Quota: quota.QuotaConfig{
 			Enabled: true,
 			DBPath:  "quota.db",
-			Default: quota.SpendLimit{DailyCents: 100, WeeklyCents: 700},
+			Mode:    "tokens",
+			Default: quota.SpendLimit{DailyCents: 100, WeeklyCents: 700, DailyTokens: 10000, WeeklyTokens: 70000},
 			Overrides: []quota.SpendLimitEntry{{
-				ApplyTo:     "api-key",
-				ApplyValue:  "abc",
-				DailyCents:  200,
-				WeeklyCents: 900,
+				ApplyTo:      "api-key",
+				ApplyValue:   "abc",
+				DailyCents:   200,
+				WeeklyCents:  900,
+				DailyTokens:  20000,
+				WeeklyTokens: 90000,
 			}},
 		},
 	}, nil)
@@ -115,31 +118,36 @@ func TestGetQuotaConfigReturnsCurrentConfig(t *testing.T) {
 
 	var body struct {
 		Enabled bool   `json:"enabled"`
+		Mode    string `json:"mode"`
 		DBPath  string `json:"db_path"`
 		Default struct {
-			DailyCents  int64 `json:"daily_cents"`
-			WeeklyCents int64 `json:"weekly_cents"`
+			DailyCents   int64 `json:"daily_cents"`
+			WeeklyCents  int64 `json:"weekly_cents"`
+			DailyTokens  int64 `json:"daily_tokens"`
+			WeeklyTokens int64 `json:"weekly_tokens"`
 		} `json:"default"`
 		Overrides []struct {
-			ApplyTo     string `json:"apply_to"`
-			ApplyValue  string `json:"apply_value"`
-			DailyCents  int64  `json:"daily_cents"`
-			WeeklyCents int64  `json:"weekly_cents"`
+			ApplyTo      string `json:"apply_to"`
+			ApplyValue   string `json:"apply_value"`
+			DailyCents   int64  `json:"daily_cents"`
+			WeeklyCents  int64  `json:"weekly_cents"`
+			DailyTokens  int64  `json:"daily_tokens"`
+			WeeklyTokens int64  `json:"weekly_tokens"`
 		} `json:"overrides"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
-	if !body.Enabled || body.DBPath != "quota.db" {
+	if !body.Enabled || body.Mode != "tokens" || body.DBPath != "quota.db" {
 		t.Fatalf("unexpected top-level config: %+v", body)
 	}
-	if body.Default.DailyCents != 100 || body.Default.WeeklyCents != 700 {
+	if body.Default.DailyCents != 100 || body.Default.WeeklyCents != 700 || body.Default.DailyTokens != 10000 || body.Default.WeeklyTokens != 70000 {
 		t.Fatalf("unexpected default config: %+v", body.Default)
 	}
 	if len(body.Overrides) != 1 {
 		t.Fatalf("overrides len = %d, want 1", len(body.Overrides))
 	}
-	if body.Overrides[0].ApplyTo != "api-key" || body.Overrides[0].ApplyValue != "abc" {
+	if body.Overrides[0].ApplyTo != "api-key" || body.Overrides[0].ApplyValue != "abc" || body.Overrides[0].DailyTokens != 20000 || body.Overrides[0].WeeklyTokens != 90000 {
 		t.Fatalf("unexpected override: %+v", body.Overrides[0])
 	}
 }

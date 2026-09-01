@@ -217,9 +217,13 @@ quota-exceeded:
 # quota:
 #   enabled: false
 #   db-path: "~/.cli-proxy-api/quota.db"
+#   mode: cost # cost (usage cost in cents) or tokens (total tokens)
 #   default:
 #     daily-cents: 15000
 #     weekly-cents: 50000
+#     # Used when mode is tokens.
+#     daily-tokens: 0
+#     weekly-tokens: 0
 
 # Routing strategy for selecting credentials when multiple match.
 routing:
