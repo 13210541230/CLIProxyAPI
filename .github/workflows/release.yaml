@@ -837,8 +837,11 @@ jobs:
             fi
 
             extract_dir="$(mktemp -d)"
+            archive_status=0
             if [[ "$archive_format" == "zip" ]]; then
-              unzip -q "$archive_path" -d "$extract_dir"
+              # PowerShell-created Windows archives may return exit 1 for a
+              # backslash-separator warning even when extraction succeeds.
+              unzip -q "$archive_path" -d "$extract_dir" || archive_status=$?
             else
               tar -xzf "$archive_path" -C "$extract_dir"
             fi
@@ -851,8 +854,11 @@ jobs:
             fi
             server_bin="$(find "$extract_dir" -type f -name "$server_name" -print -quit)"
             if [[ -z "$server_bin" ]]; then
-              echo "missing ${server_name} in ${archive_name}" >&2
+              echo "missing ${server_name} in ${archive_name} (archive status ${archive_status})" >&2
               exit 1
+            fi
+            if [[ "$archive_status" -ne 0 ]]; then
+              echo "archive extraction returned ${archive_status}; required files were extracted" >&2
             fi
             package_dir="$(dirname "$server_bin")"
 
