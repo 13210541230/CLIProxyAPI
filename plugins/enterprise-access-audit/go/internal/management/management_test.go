@@ -75,11 +75,16 @@ func TestResourceUIIsServedByPluginHandler(t *testing.T) {
 		!strings.Contains(body, "formatTimestamp") ||
 		!strings.Contains(body, "toLocaleString") ||
 		!strings.Contains(body, "用户名搜索") ||
-		!strings.Contains(body, "/v0/management/auth-files/models") ||
-		!strings.Contains(body, "model-definitions") ||
+		!strings.Contains(body, "/v0/management/plugin-host/models") ||
 		!strings.Contains(body, "/policies/batch") ||
-		!strings.Contains(body, "批量设置用户限制策略") {
+		!strings.Contains(body, "data-editor-model-option") ||
+		!strings.Contains(body, "data-policy-search") ||
+		!strings.Contains(body, "全选搜索结果") ||
+		!strings.Contains(body, "批量设置访问策略") {
 		t.Fatal("resource UI does not contain the expected audit workspace controls")
+	}
+	if strings.Contains(body, "/v0/management/auth-files/models") || strings.Contains(body, "model-definitions") {
+		t.Fatal("resource UI must use the management center model list only")
 	}
 }
 
