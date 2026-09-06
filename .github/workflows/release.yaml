@@ -852,7 +852,7 @@ jobs:
               server_name="cli-proxy-api.exe"
               ext=".exe"
             fi
-            server_bin="$(find "$extract_dir" -type f -name "$server_name" -print -quit)"
+            server_bin="$(find "$extract_dir" -type f -name "$server_name" -print -quit 2>/dev/null || true)"
             if [[ -z "$server_bin" ]]; then
               echo "missing ${server_name} in ${archive_name} (archive status ${archive_status})" >&2
               exit 1
