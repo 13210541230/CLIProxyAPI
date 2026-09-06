@@ -842,6 +842,8 @@ jobs:
               # PowerShell-created Windows archives may return exit 1 for a
               # backslash-separator warning even when extraction succeeds.
               unzip -q "$archive_path" -d "$extract_dir" || archive_status=$?
+              # Normalize permissions carried by Windows-created archives before copying resources.
+              chmod -R u+rwX "$extract_dir" 2>/dev/null || true
             else
               tar -xzf "$archive_path" -C "$extract_dir"
             fi
