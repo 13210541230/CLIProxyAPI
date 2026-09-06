@@ -138,6 +138,10 @@ PackyCode provides special discounts for our software users: register using <a h
 
 CLIProxyAPI Guides: [https://help.router-for.me/](https://help.router-for.me/)
 
+### Unified CPA-Manager native bundle
+
+The fork release at [13210541230/CLIProxyAPI](https://github.com/13210541230/CLIProxyAPI/releases) publishes platform-specific `CLIProxyAPI-Suite` archives containing CLIProxyAPI, CPA-Manager, and the update helper. Start `cpa-manager` from the extracted directory to use the embedded management panel and the local CPA supervisor.
+
 ## Management API
 
 see [MANAGEMENT_API.md](https://help.router-for.me/management/api)

@@ -134,6 +134,10 @@ PackyCode 为本软件用户提供了特别优惠：使用<a href="https://www.p
 
 CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-for.me/cn/)
 
+### CPA-Manager 原生联合包
+
+我们的 fork 发布仓库 [13210541230/CLIProxyAPI](https://github.com/13210541230/CLIProxyAPI/releases) 会发布包含 CLIProxyAPI、CPA-Manager 和更新助手的 `CLIProxyAPI-Suite` 平台联合包。解压后启动 `cpa-manager`，即可使用内嵌管理页面和本机 CPA 监督启动功能。
+
 ## 管理 API 文档
 
 请参见 [MANAGEMENT_API_CN.md](https://help.router-for.me/cn/management/api)

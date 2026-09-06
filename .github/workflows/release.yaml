@@ -10,7 +10,10 @@ permissions:
   contents: write
 
 env:
-  GH_REPO: ${{ github.repository }}
+  GH_REPO: 13210541230/CLIProxyAPI
+  MANAGEMENT_CENTER_REPO: 13210541230/Cli-Proxy-API-Management-Center
+  # Keep the embedded manager source immutable and auditable for each CPA release.
+  MANAGEMENT_CENTER_REF: 71d48b07d5b00b7c6d4f26b2d2e69faf5c5de29b
   GO_VERSION: '1.26.4'
 
 jobs:
@@ -177,9 +180,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          source_date_epoch="$(git show -s --format=%ct "$GITHUB_REF_NAME")"
+          build_date="$(SOURCE_DATE_EPOCH="$source_date_epoch" python3 -c 'import datetime, os; print(datetime.datetime.fromtimestamp(int(os.environ["SOURCE_DATE_EPOCH"]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+          echo "SOURCE_DATE_EPOCH=$source_date_epoch" >> "$GITHUB_ENV"
           echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           echo "COMMIT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
-          echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          echo "BUILD_DATE=$build_date" >> "$GITHUB_ENV"
       - name: Build archive
         shell: bash
         env:
@@ -338,9 +344,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          source_date_epoch="$(git show -s --format=%ct "$GITHUB_REF_NAME")"
+          build_date="$(SOURCE_DATE_EPOCH="$source_date_epoch" python3 -c 'import datetime, os; print(datetime.datetime.fromtimestamp(int(os.environ["SOURCE_DATE_EPOCH"]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+          echo "SOURCE_DATE_EPOCH=$source_date_epoch" >> "$GITHUB_ENV"
           echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           echo "COMMIT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
-          echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          echo "BUILD_DATE=$build_date" >> "$GITHUB_ENV"
       - name: Build archive
         shell: bash
         env:
@@ -507,9 +516,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          source_date_epoch="$(git show -s --format=%ct "$GITHUB_REF_NAME")"
+          build_date="$(SOURCE_DATE_EPOCH="$source_date_epoch" python3 -c 'import datetime, os; print(datetime.datetime.fromtimestamp(int(os.environ["SOURCE_DATE_EPOCH"]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+          echo "SOURCE_DATE_EPOCH=$source_date_epoch" >> "$GITHUB_ENV"
           echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           echo "COMMIT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
-          echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          echo "BUILD_DATE=$build_date" >> "$GITHUB_ENV"
       - name: Build archive
         shell: bash
         env:
@@ -635,7 +647,9 @@ jobs:
           set -euo pipefail
           release_version="${GITHUB_REF_NAME#v}"
           commit="$(git rev-parse --short HEAD)"
-          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          source_date_epoch="$(git show -s --format=%ct "$GITHUB_REF_NAME")"
+          build_date="$(SOURCE_DATE_EPOCH="$source_date_epoch" python3 -c 'import datetime, os; print(datetime.datetime.fromtimestamp(int(os.environ["SOURCE_DATE_EPOCH"]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+          echo "SOURCE_DATE_EPOCH=$source_date_epoch" >> "$GITHUB_ENV"
           echo "RELEASE_VERSION=$release_version" >> "$GITHUB_ENV"
           echo "COMMIT=$commit" >> "$GITHUB_ENV"
           echo "BUILD_DATE=$build_date" >> "$GITHUB_ENV"
@@ -738,6 +752,230 @@ jobs:
             fi
           )
           gh release upload "$GITHUB_REF_NAME" "$tmp_dir/checksums.txt" --clobber
+
+  build-unified:
+    name: build CPA suite bundle
+    needs:
+      - prepare-release
+      - build-hosted
+      - build-linux-glibc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/standalone
+          merge-multiple: true
+      - name: Build CPA-Manager source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${MANAGEMENT_CENTER_REF}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "MANAGEMENT_CENTER_REF must be a full immutable commit SHA" >&2
+            exit 1
+          fi
+          rm -rf /tmp/cpa-manager
+          git init /tmp/cpa-manager
+          git -C /tmp/cpa-manager remote add origin "https://github.com/${MANAGEMENT_CENTER_REPO}.git"
+          git -C /tmp/cpa-manager fetch --depth 1 --tags origin "${MANAGEMENT_CENTER_REF}"
+          git -C /tmp/cpa-manager checkout --detach FETCH_HEAD
+          manager_commit="$(git -C /tmp/cpa-manager rev-parse HEAD)"
+          manager_version="$(git -C /tmp/cpa-manager describe --tags --exact-match HEAD 2>/dev/null || git -C /tmp/cpa-manager describe --tags --always HEAD)"
+          printf '%s\n' "$manager_commit" > /tmp/cpa-manager-commit
+          printf '%s\n' "$manager_version" > /tmp/cpa-manager-version
+          cd /tmp/cpa-manager
+          npm ci
+          VERSION="${manager_version}" npm run build
+          python3 bin/release/normalize-embedded-html.py \
+            dist/index.html usage-service/internal/httpapi/web/management.html
+      - name: Build suite archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          manager_source=/tmp/cpa-manager/usage-service
+          manager_html="${manager_source}/internal/httpapi/web/management.html"
+          manager_commit="$(cat /tmp/cpa-manager-commit)"
+          manager_version="$(cat /tmp/cpa-manager-version)"
+          source_date_epoch="$(git show -s --format=%ct "$GITHUB_REF_NAME")"
+          build_date="$(SOURCE_DATE_EPOCH="$source_date_epoch" python3 -c 'import datetime, os; print(datetime.datetime.fromtimestamp(int(os.environ["SOURCE_DATE_EPOCH"]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+          export SOURCE_DATE_EPOCH="$source_date_epoch"
+          manager_bins=/tmp/cpa-manager-bins
+          suite_dir="dist/unified"
+          rm -rf "$manager_bins" "$suite_dir"
+          mkdir -p "$manager_bins" "$suite_dir"
+          python3 - "$manager_version" "$manager_commit" > "$suite_dir/manager-build.json" <<'PY'
+          import json
+          import sys
+          print(json.dumps({'version': sys.argv[1], 'commit': sys.argv[2]}, indent=2))
+          PY
+
+          targets=(
+            "windows amd64 amd64 zip"
+            "windows arm64 aarch64 zip"
+            "darwin amd64 amd64 tar.gz"
+            "darwin arm64 aarch64 tar.gz"
+            "linux amd64 amd64 tar.gz"
+            "linux arm64 aarch64 tar.gz"
+          )
+          for target in "${targets[@]}"; do
+            read -r goos goarch release_arch archive_format <<<"$target"
+            archive_name="CLIProxyAPI_${version}_${goos}_${release_arch}.${archive_format}"
+            archive_path="$(find dist/standalone -type f -name "$archive_name" -print -quit)"
+            if [[ -z "$archive_path" ]]; then
+              echo "missing standalone archive: $archive_name" >&2
+              exit 1
+            fi
+
+            extract_dir="$(mktemp -d)"
+            if [[ "$archive_format" == "zip" ]]; then
+              unzip -q "$archive_path" -d "$extract_dir"
+            else
+              tar -xzf "$archive_path" -C "$extract_dir"
+            fi
+
+            server_name="cli-proxy-api"
+            ext=""
+            if [[ "$goos" == "windows" ]]; then
+              server_name="cli-proxy-api.exe"
+              ext=".exe"
+            fi
+            server_bin="$(find "$extract_dir" -type f -name "$server_name" -print -quit)"
+            if [[ -z "$server_bin" ]]; then
+              echo "missing ${server_name} in ${archive_name}" >&2
+              exit 1
+            fi
+            package_dir="$(dirname "$server_bin")"
+
+            manager_bin="${manager_bins}/${goos}_${goarch}/cpa-manager${ext}"
+            updater_bin="${manager_bins}/${goos}_${goarch}/cpa-updater${ext}"
+            mkdir -p "$(dirname "$manager_bin")"
+            (
+              cd "$manager_source"
+              CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath \
+                -ldflags "-s -w -X github.com/seakee/cpa-manager/usage-service/internal/buildinfo.Version=${manager_version} -X github.com/seakee/cpa-manager/usage-service/internal/buildinfo.Commit=${manager_commit} -X github.com/seakee/cpa-manager/usage-service/internal/buildinfo.BuildDate=${build_date}" \
+                -o "$manager_bin" ./cmd/cpa-manager
+              CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags "-s -w" \
+                -o "$updater_bin" ./cmd/cpa-updater
+            )
+
+            bash release/package-unified.sh \
+              --version "${GITHUB_REF_NAME}" \
+              --os "$goos" \
+              --arch "$release_arch" \
+              --server-bin "$server_bin" \
+              --server-package-dir "$package_dir" \
+              --usage-bin "$manager_bin" \
+              --updater-bin "$updater_bin" \
+              --management-html "$manager_html" \
+              --output-dir "$suite_dir"
+            rm -rf "$extract_dir"
+          done
+          find "$suite_dir" -maxdepth 1 -type f -print | sort
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unified-suite
+          path: |
+            dist/unified/CLIProxyAPI-Suite_*.tar.gz
+            dist/unified/CLIProxyAPI-Suite_*.zip
+            dist/unified/manager-build.json
+          if-no-files-found: error
+
+  publish-unified:
+    runs-on: ubuntu-latest
+    needs: build-unified
+    if: needs.build-unified.result == 'success'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: unified-suite
+          path: dist/unified
+      - name: Generate suite checksums and manifest
+        shell: bash
+        env:
+          UPDATE_REPOSITORY: 13210541230/CLIProxyAPI
+        run: |
+          set -euo pipefail
+          export RELEASE_TAG="$GITHUB_REF_NAME"
+          export RELEASE_VERSION="${GITHUB_REF_NAME#v}"
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path('dist/unified')
+          version = os.environ['RELEASE_VERSION']
+          tag = os.environ['RELEASE_TAG']
+          repository = os.environ['UPDATE_REPOSITORY']
+          specs = [
+              ('windows', 'amd64', 'amd64', 'zip'),
+              ('windows', 'arm64', 'aarch64', 'zip'),
+              ('darwin', 'amd64', 'amd64', 'tar.gz'),
+              ('darwin', 'arm64', 'aarch64', 'tar.gz'),
+              ('linux', 'amd64', 'amd64', 'tar.gz'),
+              ('linux', 'arm64', 'aarch64', 'tar.gz'),
+          ]
+          assets = []
+          checksum_lines = []
+          for os_name, arch, release_arch, extension in specs:
+              name = f'CLIProxyAPI-Suite_{version}_{os_name}_{release_arch}.{extension}'
+              path = root / name
+              if not path.is_file():
+                  raise SystemExit(f'missing unified asset: {path}')
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              checksum_lines.append(f'{digest}  {name}')
+              assets.append({
+                  'os': os_name,
+                  'arch': arch,
+                  'name': name,
+                  'format': extension,
+                  'downloadUrl': f'https://github.com/{repository}/releases/download/{tag}/{name}',
+                  'sha256': digest,
+                  'size': path.stat().st_size,
+              })
+          Path('suite-checksums.txt').write_text('\n'.join(checksum_lines) + '\n', encoding='utf-8')
+          metadata_path = Path('dist/unified/manager-build.json')
+          if not metadata_path.is_file():
+              raise SystemExit(f'missing manager build metadata: {metadata_path}')
+          manager_metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
+          manifest = {
+              'schema': 1,
+              'bundleVersion': version,
+              'releaseTag': tag,
+              'cpaVersion': version,
+              'managerVersion': manager_metadata['version'],
+              'managerCommit': manager_metadata['commit'],
+              'releaseUrl': f'https://github.com/{repository}/releases/tag/{tag}',
+              'assets': assets,
+          }
+          Path('manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+          PY
+          cat manifest.json
+          cat suite-checksums.txt
+      - name: Upload suite release assets
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(dist/unified/CLIProxyAPI-Suite_*.tar.gz dist/unified/CLIProxyAPI-Suite_*.zip)
+          if [[ ${#assets[@]} -ne 6 ]]; then
+            echo "expected six suite assets, found ${#assets[@]}" >&2
+            exit 1
+          fi
+          gh release upload "$GITHUB_REF_NAME" "${assets[@]}" manifest.json suite-checksums.txt \
+            --repo "$GH_REPO" --clobber
 
   publish-checksums:
     runs-on: ubuntu-latest

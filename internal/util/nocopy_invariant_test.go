@@ -106,6 +106,8 @@ var reviewedInPlaceByteWrites = map[string]reviewedInPlaceByteWrite{
 	"internal/runtime/executor/claude_executor_request.go":  {2, "shifts []string headers to insert a part; no byte of any payload is rewritten"},
 	"internal/runtime/executor/helps/claude_mcp_alias.go":   {1, "copies an HMAC sum into a local fixed-size digest array"},
 	"internal/client/codex/live/tcp_proxy.go":               {1, "copies header and payload into a freshly allocated frame"},
+	"internal/home/client.go":                               {1, "zeroes the private Redis response buffer after json.Unmarshal has copied its fields"},
+	"internal/pluginstore/auth.go":                          {1, "zeroes the private Basic-auth credential buffer after base64 encoding"},
 }
 
 // TestInPlaceByteWritesAreReviewed keeps the set of in-place byte writes small
