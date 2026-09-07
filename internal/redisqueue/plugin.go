@@ -66,6 +66,17 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	}
 	responseServiceTier := strings.TrimSpace(record.ResponseServiceTier)
 	clientRequestMetadata := internallogging.GetClientRequestMetadata(ctx)
+	sessionID := strings.TrimSpace(record.SessionID)
+	parentSessionID := strings.TrimSpace(record.ParentSessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(clientRequestMetadata.SessionID)
+		parentSessionID = strings.TrimSpace(clientRequestMetadata.ParentSessionID)
+	} else if parentSessionID == "" && sessionID == strings.TrimSpace(clientRequestMetadata.SessionID) {
+		parentSessionID = strings.TrimSpace(clientRequestMetadata.ParentSessionID)
+	}
+	if sessionID == "" || sessionID == parentSessionID {
+		parentSessionID = ""
+	}
 
 	usageDetail := coreusage.EnsureTokenBreakdownForProvider(record.Detail, record.Provider, record.ExecutorType)
 	tokens := tokenStats{
@@ -90,6 +101,11 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	}
 	fail.Body = ""
 
+	stream := record.Stream
+	if !stream {
+		stream = coreusage.StreamFromContext(ctx)
+	}
+
 	detail := requestDetail{
 		Timestamp:       timestamp,
 		LatencyMs:       record.Latency.Milliseconds(),
@@ -104,6 +120,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		Failed:          failed,
 		SecuritySignal:  securitySignal,
 		Generate:        coreusage.GenerateEnabled(record.Generate),
+		Stream:          stream,
 		Fail:            fail,
 		ResponseHeaders: record.ResponseHeaders,
 	}
@@ -120,6 +137,8 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		AuthType:            authType,
 		APIKey:              apiKey,
 		RequestID:           requestID,
+		SessionID:           sessionID,
+		ParentSessionID:     parentSessionID,
 		ReasoningEffort:     reasoningEffort,
 		ServiceTier:         serviceTier,
 		ResponseServiceTier: responseServiceTier,
@@ -142,6 +161,8 @@ type queuedUsageDetail struct {
 	AuthType            string                   `json:"auth_type"`
 	APIKey              string                   `json:"api_key"`
 	RequestID           string                   `json:"request_id"`
+	SessionID           string                   `json:"session_id,omitempty"`
+	ParentSessionID     string                   `json:"parent_session_id,omitempty"`
 	ReasoningEffort     string                   `json:"reasoning_effort"`
 	ServiceTier         string                   `json:"service_tier"`
 	ResponseServiceTier string                   `json:"response_service_tier,omitempty"`
@@ -161,6 +182,7 @@ type requestDetail struct {
 	Failed          bool        `json:"failed"`
 	SecuritySignal  string      `json:"security_signal,omitempty"`
 	Generate        bool        `json:"generate"`
+	Stream          bool        `json:"stream"`
 	Fail            failDetail  `json:"fail"`
 	ResponseHeaders http.Header `json:"response_headers,omitempty"`
 }
