@@ -74,16 +74,21 @@ func TestResourceUIIsServedByPluginHandler(t *testing.T) {
 		!strings.Contains(body, "setInterval") ||
 		!strings.Contains(body, "formatTimestamp") ||
 		!strings.Contains(body, "toLocaleString") ||
-		!strings.Contains(body, "用户名搜索") ||
-		!strings.Contains(body, "/v0/management/plugin-host/models") ||
-		!strings.Contains(body, "/policies/batch") ||
+		!strings.Contains(body, "data-filter=\"user_name\"") ||
+		!strings.Contains(body, "plugin-host/models") ||
+		!strings.Contains(body, "policies/batch") ||
 		!strings.Contains(body, "data-editor-model-option") ||
 		!strings.Contains(body, "data-policy-search") ||
 		!strings.Contains(body, "全选搜索结果") ||
 		!strings.Contains(body, "data-department-option") ||
 		!strings.Contains(body, "data-action=\"select-visible-departments\"") ||
 		!strings.Contains(body, "搜索部门名称") ||
-		!strings.Contains(body, "批量设置访问策略") {
+		!strings.Contains(body, "批量设置访问策略") ||
+		!strings.Contains(body, "data-audit-user-options") ||
+		!strings.Contains(body, "data-audit-user-option") ||
+		!strings.Contains(body, "applyAuditFilters") ||
+		!strings.Contains(body, "部门、邮箱和 Key 尾码") {
+
 		t.Fatal("resource UI does not contain the expected audit workspace controls")
 	}
 	if strings.Contains(body, "/v0/management/auth-files/models") || strings.Contains(body, "model-definitions") {
