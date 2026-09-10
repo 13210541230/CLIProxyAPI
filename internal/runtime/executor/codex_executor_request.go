@@ -431,6 +431,24 @@ func isCodexResponsesLiteRequest(body []byte, headers http.Header) bool {
 	return value.Type == gjson.True || value.Type == gjson.String && strings.EqualFold(strings.TrimSpace(value.String()), "true")
 }
 
+// normalizeCodexResponsesLiteForModel prevents a known-incompatible Lite
+// request from being forwarded to Codex. Unknown models retain the existing
+// behavior so newly published model capabilities are not blocked by a stale
+// local catalog.
+func normalizeCodexResponsesLiteForModel(body []byte, headers http.Header, modelID string) ([]byte, http.Header) {
+	supported, known := registry.CodexClientModelSupportsResponsesLite(modelID)
+	if !known || supported || !isCodexResponsesLiteRequest(body, headers) {
+		return body, headers
+	}
+
+	if headers != nil {
+		headers = headers.Clone()
+		deleteHeaderCaseInsensitive(headers, codexResponsesLiteHeader)
+	}
+	body, _ = sjson.DeleteBytes(body, codexResponsesLiteMetadata)
+	return body, headers
+}
+
 func ensureImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth.Auth, headers http.Header) []byte {
 	if isCodexResponsesLiteRequest(body, headers) {
 		return body

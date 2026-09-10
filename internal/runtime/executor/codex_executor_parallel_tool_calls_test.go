@@ -7,6 +7,31 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestNormalizeCodexResponsesLiteForModel(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.5","client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"true"}}`)
+	headers := make(http.Header)
+	headers.Set(codexResponsesLiteHeader, "true")
+
+	normalizedBody, normalizedHeaders := normalizeCodexResponsesLiteForModel(body, headers, "gpt-5.5")
+	if normalizedHeaders.Get(codexResponsesLiteHeader) != "" {
+		t.Fatalf("unsupported model retained Responses Lite header: %v", normalizedHeaders)
+	}
+	if gjson.GetBytes(normalizedBody, codexResponsesLiteMetadata).Exists() {
+		t.Fatalf("unsupported model retained Responses Lite metadata: %s", normalizedBody)
+	}
+	if headers.Get(codexResponsesLiteHeader) != "true" {
+		t.Fatalf("normalization mutated caller headers: %v", headers)
+	}
+
+	liteBody := []byte(`{"model":"gpt-5.6-luna","client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"true"}}`)
+	liteHeaders := make(http.Header)
+	liteHeaders.Set(codexResponsesLiteHeader, "true")
+	preservedBody, preservedHeaders := normalizeCodexResponsesLiteForModel(liteBody, liteHeaders, "gpt-5.6-luna")
+	if preservedHeaders.Get(codexResponsesLiteHeader) != "true" || !gjson.GetBytes(preservedBody, codexResponsesLiteMetadata).Exists() {
+		t.Fatalf("supported model lost Responses Lite marker: body=%s headers=%v", preservedBody, preservedHeaders)
+	}
+}
+
 func TestNormalizeCodexParallelToolCallsForTools_DropsWhenToolsMissing(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.4","parallel_tool_calls":true,"input":"hi"}`)
 

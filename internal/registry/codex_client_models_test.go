@@ -27,6 +27,26 @@ func TestEmbeddedCodexClientModelsCatalogIsValid(t *testing.T) {
 	}
 }
 
+func TestCodexClientModelSupportsResponsesLite(t *testing.T) {
+	tests := []struct {
+		model   string
+		support bool
+		known   bool
+	}{
+		{model: "gpt-5.5", support: false, known: true},
+		{model: "GPT-5.6-LUNA", support: true, known: true},
+		{model: "model-not-in-catalog", support: false, known: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			support, known := CodexClientModelSupportsResponsesLite(tt.model)
+			if support != tt.support || known != tt.known {
+				t.Fatalf("CodexClientModelSupportsResponsesLite(%q) = (%t, %t), want (%t, %t)", tt.model, support, known, tt.support, tt.known)
+			}
+		})
+	}
+}
+
 func TestValidateCodexClientModelsJSON(t *testing.T) {
 	validDefault := testCodexClientModel("gpt-5.5", 1)
 	validOther := testCodexClientModel("gpt-5.6-sol", 2)

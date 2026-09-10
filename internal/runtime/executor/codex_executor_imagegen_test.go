@@ -58,6 +58,51 @@ func TestCodexExecutorExecuteResponsesLiteHeaderDoesNotInjectImageGenerationTool
 	}
 }
 
+func TestCodexExecutorExecuteResponsesLiteHeaderStripsForUnsupportedModel(t *testing.T) {
+	var gotHeader string
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get(codexResponsesLiteHeader)
+		var errRead error
+		gotBody, errRead = io.ReadAll(r.Body)
+		if errRead != nil {
+			t.Fatalf("read request body: %v", errRead)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_unsupported_lite\",\"object\":\"response\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"total_tokens\":0}}}\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider: "codex",
+		Attributes: map[string]string{
+			"api_key":   "test",
+			"base_url":  server.URL,
+			"plan_type": "pro",
+		},
+	}
+	headers := make(http.Header)
+	headers.Set(codexResponsesLiteHeader, "true")
+
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello","client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"true"}}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Headers:      headers,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if gotHeader != "" {
+		t.Fatalf("unsupported model received Responses Lite header: %q", gotHeader)
+	}
+	if gjson.GetBytes(gotBody, codexResponsesLiteMetadata).Exists() {
+		t.Fatalf("unsupported model received Responses Lite metadata: %s", gotBody)
+	}
+}
+
 func TestCodexExecutorExecuteStreamResponsesLiteHeaderForcesParallelToolCallsFalse(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

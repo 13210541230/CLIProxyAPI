@@ -20,9 +20,10 @@ type codexClientModelsPayload struct {
 }
 
 type codexClientModelsStore struct {
-	mu       sync.RWMutex
-	data     []byte
-	revision uint64
+	mu                  sync.RWMutex
+	data                []byte
+	responsesLiteBySlug map[string]bool
+	revision            uint64
 }
 
 var codexClientCatalogStore = &codexClientModelsStore{}
@@ -59,6 +60,21 @@ func loadCodexClientModelsFromBytes(data []byte, source string) (bool, error) {
 		return false, fmt.Errorf("%s: %w", source, err)
 	}
 
+	var payload codexClientModelsPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return false, fmt.Errorf("%s: decode Codex client model catalog: %w", source, err)
+	}
+	responsesLiteBySlug := make(map[string]bool, len(payload.Models))
+	for _, model := range payload.Models {
+		slug, _ := model["slug"].(string)
+		slug = strings.ToLower(strings.TrimSpace(slug))
+		useResponsesLite, ok := model["use_responses_lite"].(bool)
+		if slug == "" || !ok {
+			continue
+		}
+		responsesLiteBySlug[slug] = useResponsesLite
+	}
+
 	cloned := append([]byte(nil), data...)
 	codexClientCatalogStore.mu.Lock()
 	defer codexClientCatalogStore.mu.Unlock()
@@ -66,8 +82,23 @@ func loadCodexClientModelsFromBytes(data []byte, source string) (bool, error) {
 		return false, nil
 	}
 	codexClientCatalogStore.data = cloned
+	codexClientCatalogStore.responsesLiteBySlug = responsesLiteBySlug
 	codexClientCatalogStore.revision++
 	return true, nil
+}
+
+// CodexClientModelSupportsResponsesLite reports the Responses Lite capability
+// for a catalog model. The second return value is false when the catalog does
+// not contain an explicit capability for the requested model.
+func CodexClientModelSupportsResponsesLite(modelID string) (supported bool, known bool) {
+	modelID = strings.ToLower(strings.TrimSpace(modelID))
+	if modelID == "" {
+		return false, false
+	}
+	codexClientCatalogStore.mu.RLock()
+	defer codexClientCatalogStore.mu.RUnlock()
+	supported, known = codexClientCatalogStore.responsesLiteBySlug[modelID]
+	return supported, known
 }
 
 // ValidateCodexClientModelsJSON validates the fields required to serve a
