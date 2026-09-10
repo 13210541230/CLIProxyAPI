@@ -508,6 +508,18 @@
           if (action === 'save-settings') return saveSettings();
         }));
       };
+      document.addEventListener('mousedown', (event) => {
+        if (!state.auditUserPickerOpen) return;
+        if (event.target && event.target.closest && event.target.closest('.audit-user-field')) return;
+        state.auditUserPickerOpen = false;
+        render();
+      });
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && state.auditUserPickerOpen) {
+          state.auditUserPickerOpen = false;
+          render();
+        }
+      });
       const load = async () => {
         state.loading = true; render();
         try {
