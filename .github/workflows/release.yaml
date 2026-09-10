@@ -13,7 +13,7 @@ env:
   GH_REPO: 13210541230/CLIProxyAPI
   MANAGEMENT_CENTER_REPO: 13210541230/Cli-Proxy-API-Management-Center
   # Keep the embedded manager source immutable and auditable for each CPA release.
-  MANAGEMENT_CENTER_REF: 21ee4b69b064c0affcafafa926bc654c93634eea
+  MANAGEMENT_CENTER_REF: 1252b390f61e5f8ea9dfc038165df89dbdf155ab
   GO_VERSION: '1.26.4'
 
 jobs:
