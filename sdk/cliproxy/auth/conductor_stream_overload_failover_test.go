@@ -77,6 +77,10 @@ func TestExecuteStream_BootstrapOverload_SkipsConsecutiveOverloadedCredentials(t
 
 	m := NewManager(nil, nil, nil)
 	m.SetRetryConfig(5, 0, 6)
+	// This test asserts the consecutive-overloaded skip logic in isolation; the
+	// same-credential transient retry default would multiply each credential
+	// attempt and change the asserted order.
+	m.SetTransientCredentialRetries(0)
 	ids := registerOverloadAuths(t, m, 6)
 
 	var mu sync.Mutex
@@ -182,7 +186,7 @@ func TestExecuteStream_BootstrapCapacity_SkipsConsecutiveOverloadedCredentials(t
 
 // The credential budget must be honoured: when every credential is overloaded the request fails
 // after max-retry-credentials attempts rather than looping forever.
-func TestExecuteStream_BootstrapOverload_StopsAtCredentialBudget(t *testing.T) {
+func TestExecuteStream_BootstrapOverload_RetriesWithinRequestBudget(t *testing.T) {
 	previous := quotaCooldownDisabled.Load()
 	quotaCooldownDisabled.Store(false)
 	t.Cleanup(func() { quotaCooldownDisabled.Store(previous) })
@@ -221,10 +225,16 @@ func TestExecuteStream_BootstrapOverload_StopsAtCredentialBudget(t *testing.T) {
 	if attempts == 0 {
 		t.Fatal("expected at least one attempt")
 	}
-	// A no-wait retry round may consume the remaining two credentials after the
-	// first four-credential sweep, but it must not exceed the available set.
-	if attempts < 4 || attempts > 6 {
-		t.Fatalf("attempts = %d, want between 4 and 6", attempts)
+	// 503 overload no longer cools the credential, so retries keep reaching the
+	// upstream (which is what the operator wants: the next request can succeed
+	// once the overload clears). The retry sweep is still bounded by the
+	// request-retry limit; it must never run unbounded. retry=5 with a budget of
+	// 4 means up to ~24 attempts across sweeps, well below requestRetry*budget.
+	if attempts <= 6 {
+		t.Fatalf("attempts = %d, want retries to keep reaching upstream beyond the old credential budget of 6", attempts)
+	}
+	if attempts > 110 {
+		t.Fatalf("attempts = %d, want bounded by the request-retry limit", attempts)
 	}
 	t.Logf("total upstream attempts across retry sweeps: %d", attempts)
 }

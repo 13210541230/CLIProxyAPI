@@ -633,6 +633,38 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if isResponsesCompactRequestFaultError(execOpts, errExec) || isRequestInvalidError(errExec) {
 					return cliproxyexecutor.Response{}, errExec
 				}
+				// Same-credential retries on transient upstream failures (500 empty
+				// stream / 502/503/504) before rotating credentials: a recoverable
+				// blip should not reset the request-signature cache binding on every
+				// single attempt. Rotation only happens after the same credential
+				// keeps failing. This runs after request-scoped classification so
+				// a 502 carrying a request fault is never blindly retried.
+				for transientAttempt := 0; transientAttempt < int(m.transientCredentialRetries.Load()); transientAttempt++ {
+					if !isTransientUpstreamError(errExec) {
+						break
+					}
+					execCtx = newUpstreamAttemptContext(execCtx)
+					startRetry := time.Now()
+					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
+					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
+					if errExec != nil {
+						if hasUpstreamExecutionAttempt(errExec) {
+							upstreamErr = errExec
+						}
+						warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, time.Since(startRetry), errExec)
+						if errCtx := execCtx.Err(); errCtx != nil {
+							return cliproxyexecutor.Response{}, errCtx
+						}
+						continue
+					}
+					break
+				}
+				if errExec == nil {
+					m.MarkResult(execCtx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: true, Options: execOpts})
+					attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, upstreamModel, aliasResult)
+					rewriteForceMappedResponse(&resp, attemptAliasResult)
+					return resp, nil
+				}
 				authErr = errExec
 				if result.CredentialScope {
 					break
@@ -849,6 +881,35 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				}
 				if isRequestInvalidError(errExec) {
 					return cliproxyexecutor.Response{}, errExec
+				}
+				// Same-credential retries on transient upstream failures before
+				// rotating credentials (see executeMixedOnce for rationale). Runs
+				// after request-scoped classification.
+				for transientAttempt := 0; transientAttempt < int(m.transientCredentialRetries.Load()); transientAttempt++ {
+					if !isTransientUpstreamError(errExec) {
+						break
+					}
+					execCtx = newUpstreamAttemptContext(execCtx)
+					startRetry := time.Now()
+					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
+					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
+					if errExec != nil {
+						if hasUpstreamExecutionAttempt(errExec) {
+							upstreamErr = errExec
+						}
+						warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, time.Since(startRetry), errExec)
+						if errCtx := execCtx.Err(); errCtx != nil {
+							return cliproxyexecutor.Response{}, errCtx
+						}
+						continue
+					}
+					break
+				}
+				if errExec == nil {
+					m.MarkResult(execCtx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: true, Options: execOpts, SkipQuotaObservation: true})
+					attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, upstreamModel, aliasResult)
+					rewriteForceMappedResponse(&resp, attemptAliasResult)
+					return resp, nil
 				}
 				authErr = errExec
 				if result.CredentialScope {
@@ -1189,6 +1250,38 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			if isRequestInvalidError(errStream) {
 				return nil, errStream
+			}
+			// Same-credential retries on transient upstream failures before
+			// rotating credentials, local (non-Home) conductor only. A recoverable
+			// blip should not reset the request-signature cache binding by moving
+			// to another credential on every attempt. Runs after request-scoped
+			// classification so a 502 carrying a request fault is never blindly
+			// retried.
+			if selection == nil {
+				for transientAttempt := 0; transientAttempt < int(m.transientCredentialRetries.Load()); transientAttempt++ {
+					if !isTransientUpstreamError(errStream) {
+						break
+					}
+					execCtx = newUpstreamAttemptContext(execCtx)
+					streamAttemptStart := time.Now()
+					streamResult, errStream = m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, execOpts, routeModel, streamExecutionModel, models, pooled, aliasResult, routing, true, false)
+					if errStream != nil {
+						if hasUpstreamExecutionAttempt(errStream) {
+							upstreamErr = errStream
+						}
+						warnLogUpstreamFailure(execCtx, entry, provider, routeModel, auth, time.Since(streamAttemptStart), errStream)
+						if errCtx := execCtx.Err(); errCtx != nil && ctx != nil && ctx.Err() != nil {
+							return nil, errCtx
+						}
+						continue
+					}
+					break
+				}
+				if errStream == nil {
+					// A same-credential retry succeeded: hand back the real stream
+					// instead of falling through to the failover bookkeeping.
+					return streamResult, nil
+				}
 			}
 			lastErr = errStream
 			if homeMode {

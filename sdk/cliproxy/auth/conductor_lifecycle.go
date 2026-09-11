@@ -30,6 +30,22 @@ func (m *Manager) SetRetryConfig(retry int, maxRetryInterval time.Duration, maxR
 	m.maxRetryInterval.Store(maxRetryInterval.Nanoseconds())
 }
 
+// SetTransientCredentialRetries configures how many extra attempts the same
+// credential receives on a transient upstream failure (502/503/504) before
+// falling over to another credential. Zero keeps current behavior (immediate
+// rotation); a value of n retries the same credential n times first, which
+// preserves request-signature cache affinity across a recoverable upstream
+// blip. Must be called before the manager serves requests.
+func (m *Manager) SetTransientCredentialRetries(retries int) {
+	if m == nil {
+		return
+	}
+	if retries < 0 {
+		retries = 0
+	}
+	m.transientCredentialRetries.Store(int32(retries))
+}
+
 // RegisterExecutor registers a provider executor with the manager.
 func (m *Manager) RegisterExecutor(executor ProviderExecutor) {
 	if executor == nil {

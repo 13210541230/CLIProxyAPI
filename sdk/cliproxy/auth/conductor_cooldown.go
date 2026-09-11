@@ -1463,7 +1463,61 @@ func shouldSkipCredentialCooldown(err *Error) bool {
 	if err != nil && err.Code == ErrorCodeForceCooldown {
 		return false
 	}
-	return isRequestScopedResultError(err) || isConnectionLifecycleResultError(err)
+	return isRequestScopedResultError(err) || isConnectionLifecycleResultError(err) || isTransientUpstreamResultError(err)
+}
+
+// isTransientUpstreamResultError reports gateway-level upstream failures and
+// stream interruptions (502/503/504). These mean the upstream side was
+// temporarily unavailable (bad gateway, overload, or the response stream
+// dropped mid-flight); they are not credential faults and the very next
+// request can succeed. Cooling a credential on these turns a recoverable
+// upstream blip into repeated auth_unavailable 503 responses for every
+// subsequent request while the unique provider is the only one configured
+// (for example a single openai-compatible upstream relayed through a gateway).
+// Retry bounds (`request-retry`, credential budget, and the client side) still
+// protect the overloaded upstream from an unlimited retry storm.
+func isTransientUpstreamResultError(err *Error) bool {
+	if err == nil {
+		return false
+	}
+	switch statusCodeFromResult(err) {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	case http.StatusInternalServerError:
+		// Only empty-stream failures (upstream accepted the request but closed
+		// the stream before any payload, e.g. "empty_stream: upstream stream
+		// closed before first payload") are transient blips worth retrying on
+		// the same credential. Other 500 responses keep the cooldown contract.
+		return isEmptyStreamError(err.Message)
+	}
+	return false
+}
+
+// isEmptyStreamError reports the well-known empty-stream phrasings emitted by
+// the stream bootstrap path (sdk/cliproxy/auth/conductor_stream.go).
+func isEmptyStreamError(message string) bool {
+	m := strings.ToLower(strings.TrimSpace(message))
+	return strings.Contains(m, "empty_stream") ||
+		strings.Contains(m, "stream closed before first payload") ||
+		strings.Contains(m, "stream has no source")
+}
+
+// isTransientUpstreamError reports a raw error chain for the same gateway-level
+// upstream failures as isTransientUpstreamResultError (500 empty streams
+// included), using the status that the request-scoped error carries or the
+// plain error chain exposes.
+func isTransientUpstreamError(err error) bool {
+	if err == nil {
+		return false
+	}
+	status := statusCodeFromError(err)
+	switch status {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	case http.StatusInternalServerError:
+		return isEmptyStreamError(err.Error())
+	}
+	return isTransientUpstreamResultError(resultErrorFromError(err))
 }
 
 // isConnectionLifecycleError reports transport/session lifecycle failures that must

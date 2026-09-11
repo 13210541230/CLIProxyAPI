@@ -251,7 +251,6 @@ func TestIsConnectionLifecycleError_StatusBearingErrorsStayCoolable(t *testing.T
 		&statusBearingError{status: http.StatusUnauthorized, msg: "unexpected EOF"},
 		&statusBearingError{status: http.StatusTooManyRequests, msg: "context canceled"},
 		&statusBearingError{status: http.StatusInternalServerError, msg: "unexpected EOF"},
-		&statusBearingError{status: http.StatusBadGateway, msg: "websocket: close 1006 (abnormal closure): unexpected EOF"},
 	}
 	for _, err := range cases {
 		if isConnectionLifecycleError(err) {

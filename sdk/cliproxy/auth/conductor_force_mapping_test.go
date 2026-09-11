@@ -224,6 +224,10 @@ func forceMappingStreamUpstreamChunks(provider, upstreamModel string) [][]byte {
 func setupForceMappingManager(t *testing.T, provider, upstreamModel, aliasModel string) (*Manager, *forceMappingExecutor) {
 	t.Helper()
 	manager := NewManager(nil, nil, nil)
+	// Force-mapping tests model the credits-fallback sequence precisely; the
+	// same-credential transient retry default would add extra upstream calls and
+	// change the asserted model-pool sequence.
+	manager.SetTransientCredentialRetries(0)
 	executor := &forceMappingExecutor{id: provider}
 	manager.RegisterExecutor(executor)
 	manager.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
@@ -262,6 +266,9 @@ func setupForceMappingCreditsFallbackManager(t *testing.T, upstreamModel, aliasM
 		QuotaExceeded: internalconfig.QuotaExceeded{AntigravityCredits: true},
 	})
 	manager.SetRetryConfig(0, 0, 1)
+	// Force-mapping credits-fallback tests model the exact fallback sequence;
+	// the same-credential transient retry default must be suppressed.
+	manager.SetTransientCredentialRetries(0)
 	executor := &forceMappingCreditsFallbackExecutor{id: provider}
 	manager.RegisterExecutor(executor)
 	manager.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
@@ -557,6 +564,10 @@ func TestManagerExecuteStream_AntigravityCreditsFallbackForceMappingRewritesResp
 func setupAPIKeyForceMappingManager(t *testing.T, provider, upstreamModel, aliasModel string) (*Manager, *forceMappingExecutor) {
 	t.Helper()
 	manager := NewManager(nil, nil, nil)
+	// Force-mapping tests model the credits-fallback sequence precisely; the
+	// same-credential transient retry default would add extra upstream calls and
+	// change the asserted model-pool sequence.
+	manager.SetTransientCredentialRetries(0)
 	executor := &forceMappingExecutor{id: provider}
 	manager.RegisterExecutor(executor)
 

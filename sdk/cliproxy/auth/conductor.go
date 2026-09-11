@@ -144,6 +144,13 @@ type Manager struct {
 	maxRetryCredentials atomic.Int32
 	maxRetryInterval    atomic.Int64
 
+	// transientCredentialRetries is how many extra attempts the SAME credential
+	// receives on a transient upstream failure (502/503/504) before the
+	// conductor falls over to another credential. Keeping the credential stable
+	// preserves request-signature cache affinity; rotation only happens after
+	// repeated failures on the same credential.
+	transientCredentialRetries atomic.Int32
+
 	// oauthModelAlias stores global OAuth model alias mappings (alias -> upstream name) keyed by channel.
 	oauthModelAlias atomic.Value
 
@@ -196,6 +203,11 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})
 	manager.apiKeyModelRouting.Store(&apiKeyModelRoutingSnapshot{config: &internalconfig.Config{}})
+	// Default to retrying the same credential a couple of times on transient
+	// upstream failures (500 empty stream / 502 / 503 / 504) before falling
+	// over, so a recoverable upstream blip does not rotate credentials and
+	// discard the request-signature cache binding.
+	manager.transientCredentialRetries.Store(2)
 	defaultInFlightConfig, errInFlightConfig := HomeInFlightPublisherConfigFromConfig(internalconfig.DefaultCredentialInFlightConfig())
 	if errInFlightConfig == nil {
 		manager.ApplyHomeInFlightPublisherConfig(defaultInFlightConfig)
