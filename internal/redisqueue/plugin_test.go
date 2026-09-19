@@ -87,6 +87,25 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 	})
 }
 
+func TestUsageQueuePluginUsesResponseBodyModelEvidence(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ctx := internallogging.WithResponseStatusHolder(context.Background())
+		internallogging.SetResponseStatus(ctx, http.StatusOK)
+
+		(&usageQueuePlugin{}).HandleUsage(ctx, coreusage.Record{
+			Provider:              "codex",
+			Model:                 "gpt-5.6-luna",
+			UpstreamModel:         "gpt-5.6-sol",
+			UpstreamModelEvidence: "response_body",
+			Detail:                coreusage.Detail{TotalTokens: 3},
+		})
+
+		payload := popSinglePayload(t)
+		requireStringField(t, payload, "upstream_model", "gpt-5.6-sol")
+		requireStringField(t, payload, "upstream_model_evidence", "response_body")
+	})
+}
+
 func TestUsageQueuePluginNormalizesDirectSDKUsageByProvider(t *testing.T) {
 	tests := []struct {
 		provider  string

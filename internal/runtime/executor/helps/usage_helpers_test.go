@@ -757,6 +757,19 @@ func TestUsageReporterBuildRecordIncludesRequestedModelAlias(t *testing.T) {
 	}
 }
 
+func TestUsageReporterObservesUpstreamResponseModel(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "codex", "gpt-5.6-luna", nil)
+	reporter.ObserveUpstreamModel([]byte(`{"type":"response.completed","response":{"model":"gpt-5.6-sol"}}`))
+
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false)
+	if record.UpstreamModel != "gpt-5.6-sol" {
+		t.Fatalf("upstream model = %q, want %q", record.UpstreamModel, "gpt-5.6-sol")
+	}
+	if record.UpstreamModelEvidence != "response_body" {
+		t.Fatalf("upstream model evidence = %q, want response_body", record.UpstreamModelEvidence)
+	}
+}
+
 func TestNewExecutorUsageReporterIncludesExecutorType(t *testing.T) {
 	reporter := NewExecutorUsageReporter(context.Background(), &TestUsageExecutor{}, "gpt-5.4", nil)
 

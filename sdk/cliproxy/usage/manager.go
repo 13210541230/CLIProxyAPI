@@ -59,6 +59,10 @@ type Record struct {
 	Detail      Detail
 	// ResponseHeaders stores a snapshot of upstream response headers for usage sinks.
 	ResponseHeaders http.Header
+	// UpstreamModel is the model reported by the upstream response body or headers.
+	UpstreamModel string
+	// UpstreamModelEvidence identifies how UpstreamModel was observed.
+	UpstreamModelEvidence string
 }
 
 // Failure holds HTTP failure metadata for an upstream request attempt.

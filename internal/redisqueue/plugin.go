@@ -107,7 +107,11 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	if securitySignal != "" {
 		errorDetails = clienterror.UpstreamErrorDetails{Code: securitySignal}
 	}
-	upstreamModel, upstreamModelEvidence := upstreamModelFromHeaders(record.ResponseHeaders)
+	upstreamModel := strings.TrimSpace(record.UpstreamModel)
+	upstreamModelEvidence := strings.TrimSpace(record.UpstreamModelEvidence)
+	if upstreamModel == "" {
+		upstreamModel, upstreamModelEvidence = upstreamModelFromHeaders(record.ResponseHeaders)
+	}
 	fail.Body = ""
 
 	stream := record.Stream

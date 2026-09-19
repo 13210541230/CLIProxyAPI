@@ -332,6 +332,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		}
 
 		payload = normalizeCodexWebsocketCompletion(payload)
+		reporter.ObserveUpstreamModel(payload)
 		eventType := gjson.GetBytes(payload, "type").String()
 		if helps.HasMeaningfulCodexOutputDelta(payload) {
 			sawOutputDelta = true

@@ -24,32 +24,35 @@ import (
 )
 
 type UsageReporter struct {
-	provider            string
-	baseURL             string
-	executorType        string
-	model               string
-	alias               string
-	authID              string
-	authIndex           string
-	authMu              sync.RWMutex
-	accessTokenHash     string
-	authType            string
-	apiKey              string
-	sessionID           string
-	parentSessionID     string
-	source              string
-	reasoning           string
-	serviceTier         string
-	generate            bool
-	stream              bool
-	requestedAt         time.Time
-	ttftMu              sync.RWMutex
-	ttft                time.Duration
-	firstPacketDuration time.Duration
-	firstPacketSet      bool
-	ttftStart           time.Time
-	ttftSet             bool
-	once                sync.Once
+	provider              string
+	baseURL               string
+	executorType          string
+	model                 string
+	alias                 string
+	authID                string
+	authIndex             string
+	authMu                sync.RWMutex
+	accessTokenHash       string
+	upstreamModelMu       sync.RWMutex
+	upstreamModel         string
+	upstreamModelEvidence string
+	authType              string
+	apiKey                string
+	sessionID             string
+	parentSessionID       string
+	source                string
+	reasoning             string
+	serviceTier           string
+	generate              bool
+	stream                bool
+	requestedAt           time.Time
+	ttftMu                sync.RWMutex
+	ttft                  time.Duration
+	firstPacketDuration   time.Duration
+	firstPacketSet        bool
+	ttftStart             time.Time
+	ttftSet               bool
+	once                  sync.Once
 }
 
 type usageExecutor interface {
@@ -154,6 +157,36 @@ func isHierarchyParent(primary, parent string) bool {
 		return true
 	}
 	return false
+}
+
+// ObserveUpstreamModel records the model reported by an upstream response payload.
+// Codex Responses carries this value under response.model rather than a response header.
+func (r *UsageReporter) ObserveUpstreamModel(payload []byte) {
+	if r == nil || len(payload) == 0 {
+		return
+	}
+	for _, path := range []string{"response.model", "model", "response.model_name", "model_name"} {
+		model := strings.TrimSpace(gjson.GetBytes(payload, path).String())
+		if model == "" || strings.EqualFold(model, "unknown") {
+			continue
+		}
+		r.upstreamModelMu.Lock()
+		if r.upstreamModel == "" {
+			r.upstreamModel = model
+			r.upstreamModelEvidence = "response_body"
+		}
+		r.upstreamModelMu.Unlock()
+		return
+	}
+}
+
+func (r *UsageReporter) upstreamModelEvidenceValue() (string, string) {
+	if r == nil {
+		return "", ""
+	}
+	r.upstreamModelMu.RLock()
+	defer r.upstreamModelMu.RUnlock()
+	return r.upstreamModel, r.upstreamModelEvidence
 }
 
 // UpdateAccessTokenFingerprint records the token version actually used upstream.
@@ -444,31 +477,34 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 	if r == nil {
 		return usage.Record{Model: model, Detail: detail, Failed: failed, Fail: fail, Generate: usage.GenerateFlag(true)}
 	}
+	upstreamModel, upstreamModelEvidence := r.upstreamModelEvidenceValue()
 	return usage.Record{
-		Provider:            r.provider,
-		BaseURL:             r.baseURL,
-		ExecutorType:        r.executorType,
-		Model:               model,
-		Alias:               r.alias,
-		Source:              r.source,
-		APIKey:              r.apiKey,
-		SessionID:           r.sessionID,
-		ParentSessionID:     r.parentSessionID,
-		AuthID:              r.authID,
-		AuthIndex:           r.authIndex,
-		AccessTokenSHA256:   r.accessTokenFingerprint(),
-		AuthType:            r.authType,
-		ReasoningEffort:     r.reasoning,
-		ServiceTier:         r.serviceTier,
-		ResponseServiceTier: strings.TrimSpace(detail.ResponseServiceTier),
-		Generate:            usage.GenerateFlag(r.generate),
-		Stream:              r.stream,
-		RequestedAt:         r.requestedAt,
-		Latency:             r.latency(),
-		TTFT:                r.ttftDuration(),
-		Failed:              failed,
-		Fail:                fail,
-		Detail:              detail,
+		Provider:              r.provider,
+		BaseURL:               r.baseURL,
+		ExecutorType:          r.executorType,
+		Model:                 model,
+		Alias:                 r.alias,
+		Source:                r.source,
+		APIKey:                r.apiKey,
+		SessionID:             r.sessionID,
+		ParentSessionID:       r.parentSessionID,
+		AuthID:                r.authID,
+		AuthIndex:             r.authIndex,
+		AccessTokenSHA256:     r.accessTokenFingerprint(),
+		AuthType:              r.authType,
+		ReasoningEffort:       r.reasoning,
+		ServiceTier:           r.serviceTier,
+		ResponseServiceTier:   strings.TrimSpace(detail.ResponseServiceTier),
+		Generate:              usage.GenerateFlag(r.generate),
+		Stream:                r.stream,
+		RequestedAt:           r.requestedAt,
+		Latency:               r.latency(),
+		TTFT:                  r.ttftDuration(),
+		Failed:                failed,
+		Fail:                  fail,
+		Detail:                detail,
+		UpstreamModel:         upstreamModel,
+		UpstreamModelEvidence: upstreamModelEvidence,
 	}
 }
 
