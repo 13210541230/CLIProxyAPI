@@ -15,11 +15,25 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/quota"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executionregistry"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
+
+func TestCallerHashMetadataUsesHashOnly(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("userApiKey", "downstream-secret")
+
+	metadata := callerHashMetadata(c)
+	if metadata[quota.KeyHashMetadataKey] != quota.KeyHash("downstream-secret") {
+		t.Fatalf("caller metadata hash = %#v, want canonical hash", metadata)
+	}
+	if _, ok := metadata["userApiKey"]; ok {
+		t.Fatalf("caller metadata leaked raw API key: %#v", metadata)
+	}
+}
 
 type apiKeyFirstSelector struct{}
 

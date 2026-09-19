@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/securitysignal"
 	coresession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
@@ -102,6 +103,11 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	if failed && securitysignal.Detect(fail.Body) {
 		securitySignal = securitysignal.CyberPolicy
 	}
+	errorDetails := clienterror.ExtractUpstreamErrorDetails(fail.Body)
+	if securitySignal != "" {
+		errorDetails = clienterror.UpstreamErrorDetails{Code: securitySignal}
+	}
+	upstreamModel, upstreamModelEvidence := upstreamModelFromHeaders(record.ResponseHeaders)
 	fail.Body = ""
 
 	stream := record.Stream
@@ -129,22 +135,27 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	}
 
 	payload, err := json.Marshal(queuedUsageDetail{
-		requestDetail:       detail,
-		AccountingVersion:   coreusage.TokenAccountingSchemaVersion,
-		TokenBreakdown:      usageDetail.TokenBreakdown,
-		Provider:            provider,
-		ExecutorType:        executorType,
-		Model:               modelName,
-		Alias:               aliasName,
-		Endpoint:            resolveEndpoint(ctx),
-		AuthType:            authType,
-		APIKey:              apiKey,
-		RequestID:           requestID,
-		SessionID:           sessionID,
-		ParentSessionID:     parentSessionID,
-		ReasoningEffort:     reasoningEffort,
-		ServiceTier:         serviceTier,
-		ResponseServiceTier: responseServiceTier,
+		requestDetail:         detail,
+		AccountingVersion:     coreusage.TokenAccountingSchemaVersion,
+		TokenBreakdown:        usageDetail.TokenBreakdown,
+		Provider:              provider,
+		ExecutorType:          executorType,
+		Model:                 modelName,
+		Alias:                 aliasName,
+		Endpoint:              resolveEndpoint(ctx),
+		AuthType:              authType,
+		APIKey:                apiKey,
+		RequestID:             requestID,
+		SessionID:             sessionID,
+		ParentSessionID:       parentSessionID,
+		ReasoningEffort:       reasoningEffort,
+		ServiceTier:           serviceTier,
+		ResponseServiceTier:   responseServiceTier,
+		UpstreamModel:         upstreamModel,
+		UpstreamModelEvidence: upstreamModelEvidence,
+		ErrorCode:             errorDetails.Code,
+		ErrorType:             errorDetails.Type,
+		FailSummary:           errorDetails.Summary,
 	})
 	if err != nil {
 		return
@@ -154,21 +165,26 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 
 type queuedUsageDetail struct {
 	requestDetail
-	AccountingVersion   int                      `json:"accounting_version"`
-	TokenBreakdown      coreusage.TokenBreakdown `json:"token_breakdown"`
-	Provider            string                   `json:"provider"`
-	ExecutorType        string                   `json:"executor_type"`
-	Model               string                   `json:"model"`
-	Alias               string                   `json:"alias"`
-	Endpoint            string                   `json:"endpoint"`
-	AuthType            string                   `json:"auth_type"`
-	APIKey              string                   `json:"api_key"`
-	RequestID           string                   `json:"request_id"`
-	SessionID           string                   `json:"session_id,omitempty"`
-	ParentSessionID     string                   `json:"parent_session_id,omitempty"`
-	ReasoningEffort     string                   `json:"reasoning_effort"`
-	ServiceTier         string                   `json:"service_tier"`
-	ResponseServiceTier string                   `json:"response_service_tier,omitempty"`
+	AccountingVersion     int                      `json:"accounting_version"`
+	TokenBreakdown        coreusage.TokenBreakdown `json:"token_breakdown"`
+	Provider              string                   `json:"provider"`
+	ExecutorType          string                   `json:"executor_type"`
+	Model                 string                   `json:"model"`
+	Alias                 string                   `json:"alias"`
+	Endpoint              string                   `json:"endpoint"`
+	AuthType              string                   `json:"auth_type"`
+	APIKey                string                   `json:"api_key"`
+	RequestID             string                   `json:"request_id"`
+	SessionID             string                   `json:"session_id,omitempty"`
+	ParentSessionID       string                   `json:"parent_session_id,omitempty"`
+	ReasoningEffort       string                   `json:"reasoning_effort"`
+	ServiceTier           string                   `json:"service_tier"`
+	ResponseServiceTier   string                   `json:"response_service_tier,omitempty"`
+	UpstreamModel         string                   `json:"upstream_model,omitempty"`
+	UpstreamModelEvidence string                   `json:"upstream_model_evidence,omitempty"`
+	ErrorCode             string                   `json:"error_code,omitempty"`
+	ErrorType             string                   `json:"error_type,omitempty"`
+	FailSummary           string                   `json:"fail_summary,omitempty"`
 }
 
 type requestDetail struct {
@@ -204,6 +220,15 @@ type tokenStats struct {
 type failDetail struct {
 	StatusCode int    `json:"status_code"`
 	Body       string `json:"body,omitempty"`
+}
+
+func upstreamModelFromHeaders(headers http.Header) (string, string) {
+	for _, name := range []string{"OpenAI-Model", "X-OpenAI-Model", "X-Upstream-Model"} {
+		if value := strings.TrimSpace(headers.Get(name)); value != "" {
+			return value, "response_header"
+		}
+	}
+	return "", ""
 }
 
 func resolveFail(ctx context.Context, record coreusage.Record, failed bool) failDetail {

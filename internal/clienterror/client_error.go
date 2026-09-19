@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -14,6 +15,19 @@ import (
 // StatusClientClosedRequest is the nginx-style status used when the client
 // aborts the request before the proxy finishes (context.Canceled).
 const StatusClientClosedRequest = 499
+
+// UpstreamErrorDetails contains safe, bounded error metadata suitable for
+// request telemetry. It deliberately excludes the raw upstream body.
+type UpstreamErrorDetails struct {
+	Code    string
+	Type    string
+	Summary string
+}
+
+var (
+	telemetrySecretPattern = regexp.MustCompile(`(?i)\b(?:authorization|bearer|basic|api[_ -]?key|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|password|secret)\b\s*[:=]\s*["']?[^,\s"']+`)
+	telemetryTokenPattern  = regexp.MustCompile(`\b(?:sk-|ghp_)[A-Za-z0-9._~+/=-]{6,}\b`)
+)
 
 var requestFaultCodes = map[string]struct{}{
 	"cyber_policy":                {},
@@ -32,6 +46,63 @@ var requestFaultTypes = map[string]struct{}{
 	"invalid_request_error": {},
 	"bad_request_error":     {},
 	"invalid_prompt":        {},
+}
+
+// ExtractUpstreamErrorDetails extracts only structured code/type and a
+// sanitized, bounded summary from an upstream error string.
+func ExtractUpstreamErrorDetails(raw string) UpstreamErrorDetails {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return UpstreamErrorDetails{}
+	}
+	jsonPart := raw
+	if idx := strings.Index(raw, ": {"); idx >= 0 && idx < 80 {
+		jsonPart = strings.TrimSpace(raw[idx+2:])
+	}
+
+	var code, errType, message string
+	if json.Valid([]byte(jsonPart)) {
+		parsed := gjson.Parse(jsonPart)
+		for _, path := range []string{"error.code", "response.error.code", "body.error.code", "code"} {
+			if code = strings.TrimSpace(parsed.Get(path).String()); code != "" {
+				break
+			}
+		}
+		for _, path := range []string{"error.type", "response.error.type", "body.error.type", "type"} {
+			if errType = strings.TrimSpace(parsed.Get(path).String()); errType != "" {
+				break
+			}
+		}
+		for _, path := range []string{"error.message", "response.error.message", "body.error.message", "message"} {
+			if message = strings.TrimSpace(parsed.Get(path).String()); message != "" {
+				break
+			}
+		}
+	}
+	if message == "" && code == "" && errType == "" {
+		message = raw
+	}
+	if message == "" {
+		message = errType
+	}
+	if message == "" {
+		message = code
+	}
+	message = sanitizeTelemetrySummary(message)
+	if code != "" && message != "" && !strings.Contains(strings.ToLower(message), strings.ToLower(code)) {
+		message = code + ": " + message
+	}
+	return UpstreamErrorDetails{Code: code, Type: errType, Summary: message}
+}
+
+func sanitizeTelemetrySummary(value string) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	value = telemetrySecretPattern.ReplaceAllString(value, "[REDACTED]")
+	value = telemetryTokenPattern.ReplaceAllString(value, "[REDACTED]")
+	if len(value) > 512 {
+		value = value[:512]
+	}
+	return strings.TrimSpace(value)
 }
 
 // HTTPStatusFromError extracts an HTTP status from err.

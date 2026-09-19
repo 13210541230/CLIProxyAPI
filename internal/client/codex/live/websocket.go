@@ -56,7 +56,10 @@ func (h *Handler) HandleDirectWebsocket(c *gin.Context) {
 	}
 	ctx := context.WithValue(c.Request.Context(), "gin", c)
 	ctx = coreexecutor.WithDownstreamWebsocket(ctx)
-	selectionOpts := coreexecutor.Options{Headers: liveSelectionHeaders(c)}
+	selectionOpts := coreexecutor.Options{
+		Headers:  liveSelectionHeaders(c),
+		Metadata: callerHashMetadata(c),
+	}
 	ctx = handlers.EnrichContextWithSessionHierarchy(ctx, selectionOpts.Headers, nil, nil)
 	selection, selected, errSelect := h.selectOAuth(ctx, selectionModel, selectionOpts)
 	if errSelect != nil {

@@ -215,3 +215,114 @@ func schedulerRequest(ids ...string) pluginapi.SchedulerPickRequest {
 	}
 	return req
 }
+
+func TestHostExclusiveSchedulerUnavailableFailsClosed(t *testing.T) {
+	host := newHostWithRecords(capabilityRecord{
+		id:       "other-scheduler",
+		priority: 100,
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{Scheduler: schedulerFunc(func(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, error) {
+			return pluginapi.SchedulerPickResponse{Handled: true, AuthID: "auth-1"}, nil
+		})}},
+	})
+	host.exclusiveOwners = map[string][]string{"codex": {"pool-scheduler"}}
+
+	req := schedulerRequest("auth-1")
+	req.Provider = "codex"
+	req.Options.Metadata = map[string]any{"quota_key_hash": "abcdef12"}
+	_, handled, errPick := host.PickAuth(context.Background(), req)
+	if !handled {
+		t.Fatal("PickAuth() handled = false, want true")
+	}
+	var authErr interface {
+		Error() string
+		StatusCode() int
+	}
+	if !errors.As(errPick, &authErr) || authErr.StatusCode() != 503 || !strings.Contains(errPick.Error(), "policy_unavailable") {
+		t.Fatalf("PickAuth() error = %v, want policy_unavailable/503", errPick)
+	}
+}
+
+func TestHostExclusiveSchedulerRejectsWithoutBuiltinFallback(t *testing.T) {
+	var calls int
+	host := newHostWithRecords(capabilityRecord{
+		id:       "pool-scheduler",
+		priority: 1,
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			SchedulerExclusiveProviders: []string{"codex"},
+			Scheduler: schedulerFunc(func(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, error) {
+				calls++
+				return pluginapi.SchedulerPickResponse{
+					Decision:   pluginapi.SchedulerDecisionReject,
+					ErrorCode:  "account_pool_unavailable",
+					HTTPStatus: 503,
+					Retryable:  true,
+					Reason:     "pool has no eligible auth",
+				}, nil
+			}),
+		}},
+	})
+	host.exclusiveOwners = map[string][]string{"codex": {"pool-scheduler"}}
+
+	req := schedulerRequest("auth-1")
+	req.Provider = "codex"
+	req.Options.Metadata = map[string]any{"quota_key_hash": "abcdef12"}
+	_, handled, errPick := host.PickAuth(context.Background(), req)
+	if !handled {
+		t.Fatal("PickAuth() handled = false, want true")
+	}
+	var authErr interface {
+		Error() string
+		StatusCode() int
+	}
+	if !errors.As(errPick, &authErr) || authErr.StatusCode() != 503 || !strings.Contains(errPick.Error(), "account_pool_unavailable") {
+		t.Fatalf("PickAuth() error = %v, want account_pool_unavailable/503", errPick)
+	}
+	if calls != 1 {
+		t.Fatalf("scheduler calls = %d, want 1", calls)
+	}
+}
+
+func TestHostExclusiveSchedulerRequiresCanonicalCallerHash(t *testing.T) {
+	host := newHostWithRecords(capabilityRecord{
+		id:       "pool-scheduler",
+		priority: 1,
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			SchedulerExclusiveProviders: []string{"codex"},
+			Scheduler: schedulerFunc(func(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, error) {
+				t.Fatal("scheduler was called without caller hash")
+				return pluginapi.SchedulerPickResponse{}, nil
+			}),
+		}},
+	})
+	host.exclusiveOwners = map[string][]string{"codex": {"pool-scheduler"}}
+
+	req := schedulerRequest("auth-1")
+	req.Provider = "codex"
+	_, handled, errPick := host.PickAuth(context.Background(), req)
+	if !handled || errPick == nil || !strings.Contains(errPick.Error(), "identity_missing") {
+		t.Fatalf("PickAuth() = handled %v, err %v, want identity_missing", handled, errPick)
+	}
+}
+
+func TestHostExclusiveSchedulerRejectsOwnerScopeMismatch(t *testing.T) {
+	host := newHostWithRecords(capabilityRecord{
+		id:       "pool-scheduler",
+		priority: 1,
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			SchedulerExclusiveProviders: []string{"openai"},
+			Scheduler: schedulerFunc(func(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, error) {
+				t.Fatal("scope-mismatched scheduler was called")
+				return pluginapi.SchedulerPickResponse{}, nil
+			}),
+		}},
+	})
+	host.exclusiveOwners = map[string][]string{"codex": {"pool-scheduler"}}
+
+	req := schedulerRequest("auth-1")
+	req.Provider = "codex"
+	req.Options.Metadata = map[string]any{"quota_key_hash": "abcdef12"}
+	_, handled, errPick := host.PickAuth(context.Background(), req)
+	if !handled || errPick == nil || !strings.Contains(errPick.Error(), "policy_unavailable") {
+		t.Fatalf("PickAuth() = handled %v, err %v, want policy_unavailable", handled, errPick)
+	}
+}

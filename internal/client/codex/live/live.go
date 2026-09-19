@@ -20,6 +20,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/quota"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -217,6 +218,7 @@ func (h *Handler) Handle(c *gin.Context) {
 	ctx := context.WithValue(c.Request.Context(), "gin", c)
 	selectionOpts := coreexecutor.Options{
 		Headers:         liveSelectionHeaders(c),
+		Metadata:        callerHashMetadata(c),
 		OriginalRequest: body,
 	}
 	ctx = handlers.EnrichContextWithSessionHierarchy(ctx, selectionOpts.Headers, body, nil)
@@ -484,6 +486,21 @@ func mediaCredentialName(selected *auth.Auth, authIndex string) string {
 		}
 	}
 	return strings.TrimSpace(authIndex)
+}
+
+func callerHashMetadata(c *gin.Context) map[string]any {
+	if c == nil {
+		return nil
+	}
+	value, exists := c.Get("userApiKey")
+	if !exists || value == nil {
+		return nil
+	}
+	apiKey := strings.TrimSpace(fmt.Sprint(value))
+	if apiKey == "" {
+		return nil
+	}
+	return map[string]any{quota.KeyHashMetadataKey: quota.KeyHash(apiKey)}
 }
 
 func (h *Handler) selectOAuth(ctx context.Context, model string, opts coreexecutor.Options) (*auth.HomeDispatchSelection, *auth.Auth, error) {

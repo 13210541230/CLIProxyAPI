@@ -103,3 +103,27 @@ func TestRuntimeConfigFromConfigDerivesStoreVersionFromReleaseTag(t *testing.T) 
 		t.Fatalf("runtimeConfigFromConfig() version = %q, want 1.0.3", got.Items["alpha"].Version)
 	}
 }
+
+func TestRuntimeConfigFromConfigExtractsExclusiveSchedulerProvidersWhenDisabled(t *testing.T) {
+	var node yaml.Node
+	if errDecode := yaml.Unmarshal([]byte("exclusive-scheduler-providers: [codex, codex]\n"), &node); errDecode != nil {
+		t.Fatalf("yaml.Unmarshal() error = %v", errDecode)
+	}
+	cfg := &config.Config{
+		Plugins: config.PluginsConfig{
+			Enabled: false,
+			Configs: map[string]config.PluginInstanceConfig{
+				"pool": {Raw: *node.Content[0]},
+			},
+		},
+	}
+
+	got, errRuntimeConfig := runtimeConfigFromConfig(cfg)
+	if errRuntimeConfig != nil {
+		t.Fatalf("runtimeConfigFromConfig() error = %v", errRuntimeConfig)
+	}
+	owners := got.ExclusiveSchedulers["codex"]
+	if len(owners) != 1 || owners[0] != "pool" {
+		t.Fatalf("exclusive scheduler owners = %#v, want [pool]", owners)
+	}
+}

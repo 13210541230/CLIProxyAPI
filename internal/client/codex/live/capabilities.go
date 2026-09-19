@@ -77,12 +77,15 @@ func (h *Handler) HandleHangup(c *gin.Context) {
 		activeSelection = session.homeSelection
 		selected = activeSelection.CloneAuth()
 	} else {
+		selectionMetadata := callerHashMetadata(c)
+		if selectionMetadata == nil {
+			selectionMetadata = make(map[string]any)
+		}
+		selectionMetadata[coreexecutor.PinnedAuthMetadataKey] = session.authID
+		selectionMetadata[coreexecutor.ExecutionSessionMetadataKey] = callID
 		selectionOpts := coreexecutor.Options{
-			Headers: liveSelectionHeaders(c),
-			Metadata: map[string]any{
-				coreexecutor.PinnedAuthMetadataKey:       session.authID,
-				coreexecutor.ExecutionSessionMetadataKey: callID,
-			},
+			Headers:  liveSelectionHeaders(c),
+			Metadata: selectionMetadata,
 		}
 		selection, selectedAuth, errSelect := h.selectOAuth(ctx, session.model, selectionOpts)
 		if errSelect != nil {

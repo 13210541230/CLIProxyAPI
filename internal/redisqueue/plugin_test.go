@@ -28,6 +28,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		responseHeaders := http.Header{}
 		responseHeaders.Add("X-Upstream-Request-Id", "upstream-req-1")
 		responseHeaders.Add("Retry-After", "30")
+		responseHeaders.Add("OpenAI-Model", "gpt-5.4")
 
 		plugin := &usageQueuePlugin{}
 		plugin.HandleUsage(ctx, coreusage.Record{
@@ -77,6 +78,8 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		requireTokensBoolField(t, payload, "cache_read_tokens_present", true)
 		requireHeaderField(t, payload, "response_headers", "X-Upstream-Request-Id", []string{"upstream-req-1"})
 		requireHeaderField(t, payload, "response_headers", "Retry-After", []string{"30"})
+		requireStringField(t, payload, "upstream_model", "gpt-5.4")
+		requireStringField(t, payload, "upstream_model_evidence", "response_header")
 		requireBoolField(t, payload, "failed", false)
 		requireBoolField(t, payload, "generate", true)
 		requireBoolField(t, payload, "stream", false)
@@ -305,7 +308,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndFailureAndGinRequestID(t 
 			Latency:     2500 * time.Millisecond,
 			Fail: coreusage.Failure{
 				StatusCode: http.StatusInternalServerError,
-				Body:       "upstream failed",
+				Body:       `{"error":{"type":"server_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}`,
 			},
 			Detail: coreusage.Detail{
 				InputTokens:  10,
@@ -324,6 +327,9 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndFailureAndGinRequestID(t 
 		requireStringField(t, payload, "request_id", "gin-request-id")
 		requireBoolField(t, payload, "failed", true)
 		requireFailField(t, payload, http.StatusInternalServerError, "")
+		requireStringField(t, payload, "error_code", "server_is_overloaded")
+		requireStringField(t, payload, "error_type", "server_error")
+		requireStringField(t, payload, "fail_summary", "server_is_overloaded: Our servers are currently overloaded. Please try again later.")
 		requireMissingField(t, payload, "security_signal")
 	})
 }

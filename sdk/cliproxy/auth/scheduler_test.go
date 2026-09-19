@@ -2078,3 +2078,22 @@ func TestManager_SchedulerTracksMarkResultCooldownAndRecovery(t *testing.T) {
 		t.Fatalf("len(seen) = %d, want %d", len(seen), 2)
 	}
 }
+
+func TestSchedulerOptionsRedactsCredentialHeaders(t *testing.T) {
+	opts := schedulerOptions(cliproxyexecutor.Options{Headers: http.Header{
+		"Authorization":       []string{"Bearer secret"},
+		"X-Api-Key":           []string{"api-secret"},
+		"X-Goog-Api-Key":      []string{"google-secret"},
+		"Cookie":              []string{"session=secret"},
+		"Proxy-Authorization": []string{"Basic secret"},
+		"X-Request-ID":        []string{"request-1"},
+	}})
+	if len(opts.Headers) != 1 || len(opts.Headers["X-Request-ID"]) != 1 {
+		t.Fatalf("safe scheduler headers = %#v, want only X-Request-ID", opts.Headers)
+	}
+	for key := range opts.Headers {
+		if schedulerAttributeSensitive(key) {
+			t.Fatalf("sensitive scheduler header survived: %q", key)
+		}
+	}
+}

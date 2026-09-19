@@ -376,7 +376,13 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		c.JSON(clienterror.HTTPStatusFromErrorOr(errRoute, http.StatusServiceUnavailable), gin.H{"error": errRoute.Error()})
 		return
 	}
-	selectionOpts := coreexecutor.Options{Headers: selectionHeaders, OriginalRequest: body}
+	selectionMetadata := map[string]any{}
+	if value, exists := c.Get("userApiKey"); exists && value != nil {
+		if apiKey := strings.TrimSpace(fmt.Sprint(value)); apiKey != "" {
+			selectionMetadata[quota.KeyHashMetadataKey] = quota.KeyHash(apiKey)
+		}
+	}
+	selectionOpts := coreexecutor.Options{Headers: selectionHeaders, Metadata: selectionMetadata, OriginalRequest: body}
 	var selection *auth.HomeDispatchSelection
 	var selected *auth.Auth
 	if s.handlers.AuthManager.HomeEnabled() {

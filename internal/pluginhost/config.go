@@ -13,9 +13,10 @@ import (
 var defaultRuntimeConfigYAML = []byte("enabled: false\npriority: 0\n")
 
 type runtimeConfig struct {
-	Enabled bool
-	Dir     string
-	Items   map[string]runtimeItemConfig
+	Enabled             bool
+	Dir                 string
+	Items               map[string]runtimeItemConfig
+	ExclusiveSchedulers map[string][]string
 }
 
 type runtimeItemConfig struct {
@@ -28,22 +29,22 @@ type runtimeItemConfig struct {
 
 func runtimeConfigFromConfig(cfg *config.Config) (runtimeConfig, error) {
 	out := runtimeConfig{
-		Dir:   "plugins",
-		Items: make(map[string]runtimeItemConfig),
+		Dir:                 "plugins",
+		Items:               make(map[string]runtimeItemConfig),
+		ExclusiveSchedulers: make(map[string][]string),
 	}
 	if cfg == nil {
 		return out, nil
 	}
 
 	out.Enabled = cfg.Plugins.Enabled
-	if !out.Enabled {
-		return out, nil
+	if out.Enabled {
+		pluginsDir, errResolvePluginsDir := config.ResolvePluginsDir(cfg.Plugins.Dir)
+		if errResolvePluginsDir != nil {
+			return runtimeConfig{}, errResolvePluginsDir
+		}
+		out.Dir = pluginsDir
 	}
-	pluginsDir, errResolvePluginsDir := config.ResolvePluginsDir(cfg.Plugins.Dir)
-	if errResolvePluginsDir != nil {
-		return runtimeConfig{}, errResolvePluginsDir
-	}
-	out.Dir = pluginsDir
 
 	ids := make([]string, 0, len(cfg.Plugins.Configs))
 	for id := range cfg.Plugins.Configs {
@@ -53,6 +54,12 @@ func runtimeConfigFromConfig(cfg *config.Config) (runtimeConfig, error) {
 
 	for _, id := range ids {
 		item := cfg.Plugins.Configs[id]
+		for _, provider := range exclusiveSchedulerProviders(item) {
+			out.ExclusiveSchedulers[provider] = append(out.ExclusiveSchedulers[provider], id)
+		}
+		if !out.Enabled {
+			continue
+		}
 		enabled := false
 		if item.Enabled != nil {
 			enabled = *item.Enabled
@@ -66,7 +73,51 @@ func runtimeConfigFromConfig(cfg *config.Config) (runtimeConfig, error) {
 			ConfigYAML: runtimeConfigYAML(item, enabled),
 		}
 	}
+	for provider, owners := range out.ExclusiveSchedulers {
+		sort.Strings(owners)
+		out.ExclusiveSchedulers[provider] = owners
+	}
 	return out, nil
+}
+
+func cloneExclusiveSchedulerOwners(src map[string][]string) map[string][]string {
+	if len(src) == 0 {
+		return make(map[string][]string)
+	}
+	out := make(map[string][]string, len(src))
+	for provider, owners := range src {
+		out[provider] = append([]string(nil), owners...)
+	}
+	return out
+}
+
+func exclusiveSchedulerProviders(item config.PluginInstanceConfig) []string {
+	node := yamlMappingValue(&item.Raw, "exclusive-scheduler-providers")
+	if node == nil {
+		return nil
+	}
+	var providers []string
+	if node.Kind == yaml.SequenceNode {
+		if errDecode := node.Decode(&providers); errDecode != nil {
+			return nil
+		}
+	} else if provider := yamlScalarString(node); provider != "" {
+		providers = []string{provider}
+	}
+	seen := make(map[string]struct{}, len(providers))
+	out := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		provider = strings.ToLower(strings.TrimSpace(provider))
+		if provider == "" {
+			continue
+		}
+		if _, ok := seen[provider]; ok {
+			continue
+		}
+		seen[provider] = struct{}{}
+		out = append(out, provider)
+	}
+	return out
 }
 
 func defaultRuntimeItemConfig(id string) runtimeItemConfig {

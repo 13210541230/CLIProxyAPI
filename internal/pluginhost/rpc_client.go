@@ -86,6 +86,7 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 		SchemaVersion: schemaVersion,
 		Capabilities: pluginapi.Capabilities{
 			FrontendAuthProviderExclusive: resp.Capabilities.FrontendAuthProvider && resp.Capabilities.FrontendAuthProviderExclusive,
+			SchedulerExclusiveProviders:   append([]string(nil), resp.Capabilities.SchedulerExclusiveProviders...),
 			ExecutorModelScope:            resp.Capabilities.ExecutorModelScope,
 			ExecutorInputFormats:          append([]string(nil), resp.Capabilities.ExecutorInputFormats...),
 			ExecutorOutputFormats:         append([]string(nil), resp.Capabilities.ExecutorOutputFormats...),
@@ -219,6 +220,7 @@ func sanitizePluginRequest(request any) any {
 		req.HTTPClient = nil
 		return req
 	case pluginapi.SchedulerPickRequest:
+		req.Options.Headers = sanitizeSchedulerHeaders(req.Options.Headers)
 		req.Options.Metadata = sanitizePluginMetadata(req.Options.Metadata)
 		for index := range req.Candidates {
 			req.Candidates[index].Metadata = sanitizePluginMetadata(req.Candidates[index].Metadata)
@@ -290,6 +292,33 @@ func sanitizePluginRequest(request any) any {
 	default:
 		return request
 	}
+}
+
+func sanitizeSchedulerHeaders(src map[string][]string) map[string][]string {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(src))
+	for key, values := range src {
+		normalized := strings.ToLower(strings.NewReplacer("-", "_", ".", "_", " ", "_").Replace(strings.TrimSpace(key)))
+		compact := strings.ReplaceAll(normalized, "_", "")
+		sensitive := strings.Contains(normalized, "authorization") ||
+			strings.Contains(normalized, "cookie") ||
+			strings.Contains(normalized, "api_key") ||
+			strings.Contains(compact, "apikey") ||
+			strings.Contains(normalized, "token") ||
+			strings.Contains(normalized, "secret") ||
+			strings.Contains(normalized, "credential") ||
+			strings.Contains(normalized, "password")
+		if sensitive {
+			continue
+		}
+		out[key] = append([]string(nil), values...)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func sanitizePluginMetadata(src map[string]any) map[string]any {

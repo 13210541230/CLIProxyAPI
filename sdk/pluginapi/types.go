@@ -82,6 +82,10 @@ type Capabilities struct {
 	FrontendAuthProviderExclusive bool
 	// Scheduler chooses an auth candidate before the built-in scheduler runs.
 	Scheduler Scheduler
+	// SchedulerExclusiveProviders declares providers for which this scheduler is the
+	// configured fail-closed owner. The host uses this scope only with its generic
+	// exclusive-scheduler configuration; it does not contain pool policy.
+	SchedulerExclusiveProviders []string
 	// ModelRouter routes matching requests to a plugin executor, the router's own executor,
 	// or a built-in provider before model-to-provider resolution and auth selection.
 	ModelRouter ModelRouter
@@ -520,13 +524,34 @@ type SchedulerAuthCandidate struct {
 	Metadata map[string]any
 }
 
+// SchedulerDecision identifies the scheduler result semantics.
+type SchedulerDecision string
+
+const (
+	SchedulerDecisionSelected        SchedulerDecision = "selected"
+	SchedulerDecisionDelegateBuiltin SchedulerDecision = "delegate_builtin"
+	SchedulerDecisionReject          SchedulerDecision = "reject"
+)
+
 // SchedulerPickResponse returns a scheduler plugin routing decision.
 type SchedulerPickResponse struct {
+	// Decision is the structured routing decision. Empty preserves legacy behavior
+	// for non-exclusive schedulers only.
+	Decision SchedulerDecision
 	// AuthID identifies the selected auth record.
 	AuthID string
 	// DelegateBuiltin asks the host to use a named built-in scheduler.
 	DelegateBuiltin string
-	// Handled reports whether the plugin made a scheduling decision.
+	// ErrorCode is the stable rejection code when Decision is reject.
+	ErrorCode string
+	// HTTPStatus is the client-visible status for a rejection.
+	HTTPStatus int
+	// Retryable reports whether the caller may retry the same request later.
+	Retryable bool
+	// Reason is a bounded, secret-free diagnostic reason for a rejection.
+	Reason string
+	// Handled reports whether the plugin made a scheduling decision. It remains
+	// for compatibility with legacy plugins.
 	Handled bool
 }
 

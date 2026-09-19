@@ -46,6 +46,7 @@ func TestRPCCapabilitiesIncludeFrontendAuthProviderExclusive(t *testing.T) {
 func TestRPCCapabilitiesIncludeScheduler(t *testing.T) {
 	plugin := pluginapi.Plugin{
 		Capabilities: pluginapi.Capabilities{
+			SchedulerExclusiveProviders: []string{"codex"},
 			Scheduler: schedulerFunc(func(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, error) {
 				return pluginapi.SchedulerPickResponse{}, nil
 			}),
@@ -70,6 +71,10 @@ func TestRPCCapabilitiesIncludeScheduler(t *testing.T) {
 	}
 	if decoded["scheduler"] != true {
 		t.Fatalf("scheduler = %#v, want true", decoded["scheduler"])
+	}
+	providers, okProviders := decoded["scheduler_exclusive_providers"].([]any)
+	if !okProviders || len(providers) != 1 || providers[0] != "codex" {
+		t.Fatalf("scheduler_exclusive_providers = %#v, want [codex]", decoded["scheduler_exclusive_providers"])
 	}
 }
 

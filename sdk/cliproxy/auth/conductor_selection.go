@@ -844,9 +844,26 @@ func schedulerProviders(provider string, providers []string) []string {
 
 func schedulerOptions(opts cliproxyexecutor.Options) pluginapi.SchedulerOptions {
 	return pluginapi.SchedulerOptions{
-		Headers:  cloneHTTPHeader(opts.Headers),
+		Headers:  schedulerSafeHeaders(opts.Headers),
 		Metadata: cloneSchedulerAnyMap(opts.Metadata),
 	}
+}
+
+func schedulerSafeHeaders(src http.Header) map[string][]string {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(src))
+	for key, values := range src {
+		if schedulerAttributeSensitive(key) {
+			continue
+		}
+		out[key] = append([]string(nil), values...)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func pickSchedulerAuthByID(candidates []*Auth, authID string) *Auth {
@@ -926,8 +943,11 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 	if !handled || !resp.Handled {
 		return nil, false, nil
 	}
-	if selected := pickSchedulerAuthByID(candidates, resp.AuthID); selected != nil {
-		return selected, true, nil
+	if resp.Decision == pluginapi.SchedulerDecisionSelected || (resp.Decision == "" && resp.AuthID != "") {
+		if selected := pickSchedulerAuthByID(candidates, resp.AuthID); selected != nil {
+			return selected, true, nil
+		}
+		return nil, false, nil
 	}
 
 	strategy, okStrategy := builtinSchedulerStrategy(resp.DelegateBuiltin)

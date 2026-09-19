@@ -4,28 +4,53 @@ import (
 	"context"
 	"strings"
 
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 )
 
+const schedulerReasonLimit = 256
+
 func (h *Host) PickAuth(ctx context.Context, req pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, bool, error) {
-	record := h.schedulerRecord()
+	provider := schedulerRequestProvider(req)
+	exclusive, ownerID, ownerConflict := h.exclusiveScheduler(provider)
+	if exclusive {
+		if errIdentity := validateSchedulerCallerHash(req.Options.Metadata); errIdentity != nil {
+			return pluginapi.SchedulerPickResponse{}, true, errIdentity
+		}
+	}
+	record := h.schedulerRecordForRequest(provider, exclusive, ownerID, ownerConflict)
 	if record == nil {
+		if exclusive {
+			return pluginapi.SchedulerPickResponse{}, true, schedulerUnavailableError()
+		}
 		return pluginapi.SchedulerPickResponse{}, false, nil
 	}
 
 	resp, handled, errPick := h.callScheduler(ctx, *record, req)
-	if errPick != nil || !handled {
+	if errPick != nil {
+		if exclusive {
+			return pluginapi.SchedulerPickResponse{}, true, schedulerUnavailableError()
+		}
 		return resp, handled, errPick
 	}
-	if !resp.Handled {
-		return pluginapi.SchedulerPickResponse{}, false, nil
+	if !handled {
+		if exclusive {
+			return pluginapi.SchedulerPickResponse{}, true, schedulerUnavailableError()
+		}
+		return resp, false, nil
 	}
 
 	resp, valid, reason := normalizeSchedulerResponse(resp, req)
 	if !valid {
 		log.WithField("plugin_id", record.id).Warnf("pluginhost: scheduler returned invalid response: %s", reason)
+		if exclusive {
+			return pluginapi.SchedulerPickResponse{}, true, schedulerUnavailableError()
+		}
 		return pluginapi.SchedulerPickResponse{}, false, nil
+	}
+	if resp.Decision == pluginapi.SchedulerDecisionReject {
+		return resp, true, schedulerDecisionError(resp)
 	}
 	return resp, true, nil
 }
@@ -35,12 +60,21 @@ func (h *Host) HasScheduler() bool {
 }
 
 func (h *Host) schedulerRecord() *capabilityRecord {
-	if h == nil {
+	return h.schedulerRecordForRequest("", false, "", false)
+}
+
+func (h *Host) schedulerRecordForRequest(provider string, exclusive bool, ownerID string, ownerConflict bool) *capabilityRecord {
+	if h == nil || ownerConflict {
 		return nil
 	}
 	for _, record := range h.activeRecords() {
 		if h.isPluginFused(record.id) || record.plugin.Capabilities.Scheduler == nil {
 			continue
+		}
+		if exclusive {
+			if record.id != ownerID || !schedulerSupportsProvider(record.plugin, provider) {
+				continue
+			}
 		}
 		copyRecord := record
 		return &copyRecord
@@ -72,24 +106,144 @@ func (h *Host) callScheduler(ctx context.Context, record capabilityRecord, req p
 }
 
 func normalizeSchedulerResponse(resp pluginapi.SchedulerPickResponse, req pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, bool, string) {
+	resp.Decision = pluginapi.SchedulerDecision(strings.ToLower(strings.TrimSpace(string(resp.Decision))))
 	resp.AuthID = strings.TrimSpace(resp.AuthID)
 	resp.DelegateBuiltin = strings.TrimSpace(resp.DelegateBuiltin)
+	resp.ErrorCode = strings.TrimSpace(resp.ErrorCode)
+	resp.Reason = boundedSchedulerReason(resp.Reason)
 
-	hasAuthID := resp.AuthID != ""
-	hasDelegate := resp.DelegateBuiltin != ""
-	if !hasAuthID && !hasDelegate {
-		return pluginapi.SchedulerPickResponse{}, false, "missing auth id or delegate"
+	// Empty Decision is the legacy response shape. It is converted locally so
+	// older non-exclusive plugins retain their existing ABI behavior.
+	if resp.Decision == "" {
+		if !resp.Handled {
+			return pluginapi.SchedulerPickResponse{}, false, "unhandled legacy response"
+		}
+		switch {
+		case resp.AuthID != "":
+			resp.Decision = pluginapi.SchedulerDecisionSelected
+		case resp.DelegateBuiltin != "":
+			resp.Decision = pluginapi.SchedulerDecisionDelegateBuiltin
+		default:
+			return pluginapi.SchedulerPickResponse{}, false, "missing auth id or delegate"
+		}
 	}
-	if hasAuthID {
+
+	switch resp.Decision {
+	case pluginapi.SchedulerDecisionSelected:
+		if resp.AuthID == "" {
+			return pluginapi.SchedulerPickResponse{}, false, "selected decision missing auth id"
+		}
 		if !schedulerCandidateExists(req.Candidates, resp.AuthID) {
 			return pluginapi.SchedulerPickResponse{}, false, "unknown auth id"
 		}
+		resp.Handled = true
 		return resp, true, ""
+	case pluginapi.SchedulerDecisionDelegateBuiltin:
+		if !validSchedulerBuiltin(resp.DelegateBuiltin) {
+			return pluginapi.SchedulerPickResponse{}, false, "unknown delegate"
+		}
+		resp.Handled = true
+		return resp, true, ""
+	case pluginapi.SchedulerDecisionReject:
+		if resp.ErrorCode == "" {
+			return pluginapi.SchedulerPickResponse{}, false, "reject decision missing error code"
+		}
+		if resp.HTTPStatus < 400 || resp.HTTPStatus > 599 {
+			return pluginapi.SchedulerPickResponse{}, false, "reject decision has invalid http status"
+		}
+		resp.Handled = true
+		return resp, true, ""
+	default:
+		return pluginapi.SchedulerPickResponse{}, false, "unknown scheduler decision"
 	}
-	if !validSchedulerBuiltin(resp.DelegateBuiltin) {
-		return pluginapi.SchedulerPickResponse{}, false, "unknown delegate"
+}
+
+func schedulerDecisionError(resp pluginapi.SchedulerPickResponse) error {
+	message := resp.Reason
+	if message == "" {
+		message = resp.ErrorCode
 	}
-	return resp, true, ""
+	return &coreauth.Error{
+		Code:       resp.ErrorCode,
+		Message:    message,
+		Retryable:  resp.Retryable,
+		HTTPStatus: resp.HTTPStatus,
+	}
+}
+
+func validateSchedulerCallerHash(metadata map[string]any) error {
+	value, ok := metadata["quota_key_hash"]
+	if !ok {
+		return &coreauth.Error{Code: "identity_missing", Message: "canonical caller identity is missing", Retryable: false, HTTPStatus: 401}
+	}
+	hash, ok := value.(string)
+	if !ok || len(strings.TrimSpace(hash)) != 8 {
+		return &coreauth.Error{Code: "identity_missing", Message: "canonical caller identity is invalid", Retryable: false, HTTPStatus: 400}
+	}
+	for _, char := range strings.TrimSpace(hash) {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+			return &coreauth.Error{Code: "identity_missing", Message: "canonical caller identity is invalid", Retryable: false, HTTPStatus: 400}
+		}
+	}
+	return nil
+}
+
+func schedulerUnavailableError() error {
+	return &coreauth.Error{
+		Code:       "policy_unavailable",
+		Message:    "exclusive scheduler policy is unavailable",
+		Retryable:  true,
+		HTTPStatus: 503,
+	}
+}
+
+func boundedSchedulerReason(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if len(reason) > schedulerReasonLimit {
+		return reason[:schedulerReasonLimit]
+	}
+	return reason
+}
+
+func schedulerRequestProvider(req pluginapi.SchedulerPickRequest) string {
+	provider := strings.ToLower(strings.TrimSpace(req.Provider))
+	if provider != "" && provider != "mixed" {
+		return provider
+	}
+	for _, candidate := range req.Providers {
+		candidate = strings.ToLower(strings.TrimSpace(candidate))
+		if candidate == "codex" {
+			return candidate
+		}
+	}
+	return provider
+}
+
+func (h *Host) exclusiveScheduler(provider string) (bool, string, bool) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if h == nil || provider == "" {
+		return false, "", false
+	}
+	h.mu.Lock()
+	owners := append([]string(nil), h.exclusiveOwners[provider]...)
+	h.mu.Unlock()
+	if len(owners) == 0 {
+		return false, "", false
+	}
+	if len(owners) != 1 {
+		return true, "", true
+	}
+	return true, owners[0], false
+}
+
+func schedulerSupportsProvider(plugin pluginapi.Plugin, provider string) bool {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	for _, candidate := range plugin.Capabilities.SchedulerExclusiveProviders {
+		if strings.ToLower(strings.TrimSpace(candidate)) == provider {
+			return true
+		}
+	}
+	return false
 }
 
 func schedulerCandidateExists(candidates []pluginapi.SchedulerAuthCandidate, authID string) bool {

@@ -69,6 +69,7 @@ type Host struct {
 	activePluginPaths      map[string]string
 	cleanupFilesPending    bool
 	runtimeConfig          *config.Config
+	exclusiveOwners        map[string][]string
 	authManager            *coreauth.Manager
 	modelExecutor          modelExecutor
 	modelClientIDs         map[string]struct{}
@@ -116,6 +117,7 @@ func New() *Host {
 		httpStreams:            newHostHTTPStreamBridge(),
 		modelStreams:           newModelStreamBridge(),
 		callbackContexts:       newCallbackContextRegistry(),
+		exclusiveOwners:        make(map[string][]string),
 	}
 	h.snapshot.Store(emptySnapshot())
 	return h
@@ -215,6 +217,7 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 	}
 	h.mu.Lock()
 	h.runtimeConfig = cfg
+	h.exclusiveOwners = cloneExclusiveSchedulerOwners(rc.ExclusiveSchedulers)
 	h.mu.Unlock()
 
 	if !rc.Enabled {
@@ -928,17 +931,17 @@ func (h *Host) rollbackReplacement(lp *loadedPlugin, item runtimeItemConfig) (ca
 		return capabilityRecord{}, pluginFile{}, false
 	}
 	return capabilityRecord{
-		id:       lp.id,
-		path:     lp.path,
-		version:  lp.version,
-		priority: item.Priority,
-		meta:     plugin.Metadata,
-		plugin:   plugin,
-	}, pluginFile{
-		ID:      lp.id,
-		Path:    lp.path,
-		Version: lp.version,
-	}, true
+			id:       lp.id,
+			path:     lp.path,
+			version:  lp.version,
+			priority: item.Priority,
+			meta:     plugin.Metadata,
+			plugin:   plugin,
+		}, pluginFile{
+			ID:      lp.id,
+			Path:    lp.path,
+			Version: lp.version,
+		}, true
 }
 
 func (h *Host) callRegister(ctx context.Context, lp *loadedPlugin, item runtimeItemConfig) (pluginapi.Plugin, bool) {
