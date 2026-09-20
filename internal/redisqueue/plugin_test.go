@@ -44,6 +44,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 			ReasoningEffort:     "medium",
 			ServiceTier:         "auto",
 			ResponseServiceTier: "default",
+			ResponseModel:       "gpt-5.6-luna",
 			Generate:            coreusage.GenerateFlag(true),
 			RequestedAt:         time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
 			Latency:             1500 * time.Millisecond,
@@ -73,13 +74,14 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		requireStringField(t, payload, "service_tier", "auto")
 		requireMissingField(t, payload, "request_service_tier")
 		requireStringField(t, payload, "response_service_tier", "default")
+		requireStringField(t, payload, "response_model", "gpt-5.6-luna")
 		requireIntField(t, payload, "accounting_version", coreusage.TokenAccountingSchemaVersion)
 		requireTokenBreakdown(t, payload, coreusage.TokenAccountingQualityComplete, 30)
 		requireTokensBoolField(t, payload, "cache_read_tokens_present", true)
 		requireHeaderField(t, payload, "response_headers", "X-Upstream-Request-Id", []string{"upstream-req-1"})
 		requireHeaderField(t, payload, "response_headers", "Retry-After", []string{"30"})
-		requireStringField(t, payload, "upstream_model", "gpt-5.4")
-		requireStringField(t, payload, "upstream_model_evidence", "response_header")
+		requireStringField(t, payload, "upstream_model", "gpt-5.6-luna")
+		requireStringField(t, payload, "upstream_model_evidence", "response_body")
 		requireBoolField(t, payload, "failed", false)
 		requireBoolField(t, payload, "generate", true)
 		requireBoolField(t, payload, "stream", false)
@@ -93,11 +95,10 @@ func TestUsageQueuePluginUsesResponseBodyModelEvidence(t *testing.T) {
 		internallogging.SetResponseStatus(ctx, http.StatusOK)
 
 		(&usageQueuePlugin{}).HandleUsage(ctx, coreusage.Record{
-			Provider:              "codex",
-			Model:                 "gpt-5.6-luna",
-			UpstreamModel:         "gpt-5.6-sol",
-			UpstreamModelEvidence: "response_body",
-			Detail:                coreusage.Detail{TotalTokens: 3},
+			Provider:      "codex",
+			Model:         "gpt-5.6-luna",
+			ResponseModel: "gpt-5.6-sol",
+			Detail:        coreusage.Detail{TotalTokens: 3},
 		})
 
 		payload := popSinglePayload(t)

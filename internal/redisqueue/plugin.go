@@ -67,6 +67,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		serviceTier = coreusage.ServiceTierFromContext(ctx)
 	}
 	responseServiceTier := strings.TrimSpace(record.ResponseServiceTier)
+	responseModel := strings.TrimSpace(record.ResponseModel)
 	clientRequestMetadata := internallogging.GetClientRequestMetadata(ctx)
 	sessionID := strings.TrimSpace(record.SessionID)
 	parentSessionID := strings.TrimSpace(record.ParentSessionID)
@@ -107,8 +108,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	if securitySignal != "" {
 		errorDetails = clienterror.UpstreamErrorDetails{Code: securitySignal}
 	}
-	upstreamModel := strings.TrimSpace(record.UpstreamModel)
-	upstreamModelEvidence := strings.TrimSpace(record.UpstreamModelEvidence)
+	upstreamModel, upstreamModelEvidence := responseModel, "response_body"
 	if upstreamModel == "" {
 		upstreamModel, upstreamModelEvidence = upstreamModelFromHeaders(record.ResponseHeaders)
 	}
@@ -155,6 +155,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		ReasoningEffort:       reasoningEffort,
 		ServiceTier:           serviceTier,
 		ResponseServiceTier:   responseServiceTier,
+		ResponseModel:         responseModel,
 		UpstreamModel:         upstreamModel,
 		UpstreamModelEvidence: upstreamModelEvidence,
 		ErrorCode:             errorDetails.Code,
@@ -184,6 +185,7 @@ type queuedUsageDetail struct {
 	ReasoningEffort       string                   `json:"reasoning_effort"`
 	ServiceTier           string                   `json:"service_tier"`
 	ResponseServiceTier   string                   `json:"response_service_tier,omitempty"`
+	ResponseModel         string                   `json:"response_model,omitempty"`
 	UpstreamModel         string                   `json:"upstream_model,omitempty"`
 	UpstreamModelEvidence string                   `json:"upstream_model_evidence,omitempty"`
 	ErrorCode             string                   `json:"error_code,omitempty"`

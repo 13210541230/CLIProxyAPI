@@ -76,6 +76,65 @@ func TestRPCCapabilitiesIncludeScheduler(t *testing.T) {
 	if !okProviders || len(providers) != 1 || providers[0] != "codex" {
 		t.Fatalf("scheduler_exclusive_providers = %#v, want [codex]", decoded["scheduler_exclusive_providers"])
 	}
+	if decoded["scheduler_across_priorities"] != nil && decoded["scheduler_across_priorities"] != false {
+		t.Fatalf("scheduler_across_priorities = %#v, want omitted or false", decoded["scheduler_across_priorities"])
+	}
+}
+
+func TestRPCCapabilitiesIncludeSchedulerAcrossPriorities(t *testing.T) {
+	plugin := pluginapi.Plugin{
+		Capabilities: pluginapi.Capabilities{
+			Scheduler: schedulerFunc(func(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, error) {
+				return pluginapi.SchedulerPickResponse{}, nil
+			}),
+			SchedulerAcrossPriorities: true,
+		},
+	}
+
+	caps := rpcCapabilitiesFromPlugin(plugin)
+	if !caps.Scheduler {
+		t.Fatal("Scheduler = false, want true")
+	}
+	if !caps.SchedulerAcrossPriorities {
+		t.Fatal("SchedulerAcrossPriorities = false, want true")
+	}
+
+	raw, errMarshal := json.Marshal(caps)
+	if errMarshal != nil {
+		t.Fatalf("Marshal() error = %v", errMarshal)
+	}
+	var decoded map[string]any
+	if errUnmarshal := json.Unmarshal(raw, &decoded); errUnmarshal != nil {
+		t.Fatalf("Unmarshal() error = %v", errUnmarshal)
+	}
+	if decoded["scheduler_across_priorities"] != true {
+		t.Fatalf("scheduler_across_priorities = %#v, want true", decoded["scheduler_across_priorities"])
+	}
+}
+
+type testAcrossPrioritiesSchedulerFunc struct {
+	schedulerFunc
+}
+
+func (testAcrossPrioritiesSchedulerFunc) SchedulerWantsAcrossPriorities() bool {
+	return true
+}
+
+func TestRPCCapabilitiesIncludeSchedulerAcrossPrioritiesViaMethod(t *testing.T) {
+	plugin := pluginapi.Plugin{
+		Capabilities: pluginapi.Capabilities{
+			Scheduler: testAcrossPrioritiesSchedulerFunc{
+				schedulerFunc: schedulerFunc(func(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, error) {
+					return pluginapi.SchedulerPickResponse{}, nil
+				}),
+			},
+		},
+	}
+
+	caps := rpcCapabilitiesFromPlugin(plugin)
+	if !caps.SchedulerAcrossPriorities {
+		t.Fatal("SchedulerAcrossPriorities = false, want true")
+	}
 }
 
 func TestRPCCapabilitiesIncludeModelRouter(t *testing.T) {

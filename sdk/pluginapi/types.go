@@ -86,6 +86,10 @@ type Capabilities struct {
 	// configured fail-closed owner. The host uses this scope only with its generic
 	// exclusive-scheduler configuration; it does not contain pool policy.
 	SchedulerExclusiveProviders []string
+	// SchedulerAcrossPriorities opts into receiving available candidates across all priority tiers
+	// in SchedulerPickRequest.Candidates. When false (default), Candidates only contains
+	// credentials from the highest available priority tier.
+	SchedulerAcrossPriorities bool
 	// ModelRouter routes matching requests to a plugin executor, the router's own executor,
 	// or a built-in provider before model-to-provider resolution and auth selection.
 	ModelRouter ModelRouter
@@ -1630,9 +1634,21 @@ func (b *QuotaBucket) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// QuotaMetric is a provider-defined, bounded numeric account summary for management UI rendering.
+// Format is "number" or "currency"; Currency is an ISO 4217 code when Format is "currency".
+type QuotaMetric struct {
+	Key      string  `json:"key"`
+	Label    string  `json:"label"`
+	Value    float64 `json:"value"`
+	Unit     string  `json:"unit,omitempty"`
+	Format   string  `json:"format,omitempty"`
+	Currency string  `json:"currency,omitempty"`
+}
+
 // QuotaFetchResponse carries normalized quota information for management UI rendering.
 type QuotaFetchResponse struct {
 	Subscription       *QuotaSubscription `json:"subscription,omitempty"`
+	Summary            []QuotaMetric      `json:"summary,omitempty"`
 	ServerTimeOffsetMs int64              `json:"serverTimeOffsetMs,omitempty"`
 	Groups             []QuotaGroup       `json:"groups,omitempty"`
 }

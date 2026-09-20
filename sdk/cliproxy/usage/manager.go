@@ -45,6 +45,8 @@ type Record struct {
 	RequestServiceTier string
 	// ResponseServiceTier stores the final tier reported by the upstream response.
 	ResponseServiceTier string
+	// ResponseModel stores the model name reported by the upstream response, empty when unknown.
+	ResponseModel string
 	// Generate reports whether the client requested actual generation.
 	// nil or true means generation is enabled; only an explicit false disables generation.
 	// Use GenerateFlag to set the value and GenerateEnabled to read it with the default.
@@ -59,10 +61,6 @@ type Record struct {
 	Detail      Detail
 	// ResponseHeaders stores a snapshot of upstream response headers for usage sinks.
 	ResponseHeaders http.Header
-	// UpstreamModel is the model reported by the upstream response body or headers.
-	UpstreamModel string
-	// UpstreamModelEvidence identifies how UpstreamModel was observed.
-	UpstreamModelEvidence string
 }
 
 // Failure holds HTTP failure metadata for an upstream request attempt.
