@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -16,6 +17,30 @@ func TestParseYAMLUsesDeterministicDefaults(t *testing.T) {
 	}
 	if filepath.Base(cfg.DatabasePath) != DefaultDatabaseFilename {
 		t.Fatalf("database path = %q", cfg.DatabasePath)
+	}
+	if filepath.Base(cfg.AccountPool.DataDir) != "account-pool" {
+		t.Fatalf("account pool data directory = %q", cfg.AccountPool.DataDir)
+	}
+	if _, errStat := os.Stat(cfg.AccountPool.DataDir); errStat != nil {
+		t.Fatalf("account pool data directory was not created: %v", errStat)
+	}
+}
+
+func TestParseYAMLDefaultsAccountPoolDataDirWhenEnabled(t *testing.T) {
+	workingDir := t.TempDir()
+	cfg, err := ParseYAML([]byte("data_dir: plugin-state\naccount_pool:\n  enabled: true\n"), workingDir)
+	if err != nil {
+		t.Fatalf("ParseYAML() error = %v", err)
+	}
+	want := filepath.Join(workingDir, "plugin-state", "account-pool")
+	if cfg.AccountPool.DataDir != want {
+		t.Fatalf("account pool data directory = %q, want %q", cfg.AccountPool.DataDir, want)
+	}
+	if !cfg.AccountPool.Enabled {
+		t.Fatal("account pool should be enabled")
+	}
+	if _, errStat := os.Stat(want); errStat != nil {
+		t.Fatalf("account pool data directory was not created: %v", errStat)
 	}
 }
 

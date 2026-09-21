@@ -111,15 +111,16 @@ func ParseYAML(raw []byte, workingDir string) (Config, error) {
 }
 
 func accountPoolConfigFromYAML(decoded *accountPoolYAML, pluginDataDir string) AccountPoolConfig {
-	if decoded == nil {
-		return AccountPoolConfig{}
-	}
 	cfg := AccountPoolConfig{
-		Enabled:        decoded.Enabled,
+		DataDir:        filepath.Join(pluginDataDir, "account-pool"),
 		ReserveSeconds: DefaultAccountPoolReserveSeconds,
 		WindowSeconds:  DefaultAccountPoolWindowSeconds,
 		MaxWaitSeconds: DefaultAccountPoolMaxWaitSeconds,
 	}
+	if decoded == nil {
+		return cfg
+	}
+	cfg.Enabled = decoded.Enabled
 	if decoded.DataDir != "" {
 		cfg.DataDir = decoded.DataDir
 	}
@@ -176,11 +177,12 @@ func Normalize(input Config, workingDir string) (Config, error) {
 	if errMkdir := os.MkdirAll(filepath.Dir(input.DatabasePath), 0o750); errMkdir != nil {
 		return Config{}, fmt.Errorf("create database directory %q: %w", filepath.Dir(input.DatabasePath), errMkdir)
 	}
-	if input.AccountPool.DataDir != "" {
-		input.AccountPool.DataDir = resolvePath(workingDir, input.AccountPool.DataDir)
-		if errMkdir := os.MkdirAll(input.AccountPool.DataDir, 0o750); errMkdir != nil {
-			return Config{}, fmt.Errorf("create account pool data directory %q: %w", input.AccountPool.DataDir, errMkdir)
-		}
+	if input.AccountPool.DataDir == "" {
+		input.AccountPool.DataDir = filepath.Join(input.DataDir, "account-pool")
+	}
+	input.AccountPool.DataDir = resolvePath(workingDir, input.AccountPool.DataDir)
+	if errMkdir := os.MkdirAll(input.AccountPool.DataDir, 0o750); errMkdir != nil {
+		return Config{}, fmt.Errorf("create account pool data directory %q: %w", input.AccountPool.DataDir, errMkdir)
 	}
 	if input.AccountPool.ReserveSeconds <= 0 {
 		input.AccountPool.ReserveSeconds = DefaultAccountPoolReserveSeconds
