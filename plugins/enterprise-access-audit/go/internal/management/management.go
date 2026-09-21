@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/accountpool"
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/model"
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/state"
@@ -100,20 +101,37 @@ func Routes(basePath, resourceBasePath string) Registration {
 		resourcePath = resourceBasePath + ResourceUIPath
 	}
 	return Registration{
-		Routes: []Route{
-			{Method: http.MethodGet, Path: basePath + PoliciesPath},
-			{Method: http.MethodPut, Path: basePath + BatchPoliciesPath},
-			{Method: http.MethodPut, Path: basePath + PolicyPath},
-			{Method: http.MethodGet, Path: basePath + AuditPath},
-			{Method: http.MethodGet, Path: basePath + AuditDetailPath},
-			{Method: http.MethodGet, Path: basePath + SettingsPath},
-			{Method: http.MethodPut, Path: basePath + SettingsPath},
-		},
+		Routes: append(
+			[]Route{
+				{Method: http.MethodGet, Path: basePath + PoliciesPath},
+				{Method: http.MethodPut, Path: basePath + BatchPoliciesPath},
+				{Method: http.MethodPut, Path: basePath + PolicyPath},
+				{Method: http.MethodGet, Path: basePath + AuditPath},
+				{Method: http.MethodGet, Path: basePath + AuditDetailPath},
+				{Method: http.MethodGet, Path: basePath + SettingsPath},
+				{Method: http.MethodPut, Path: basePath + SettingsPath},
+			},
+			accountPoolRoutes(basePath)...,
+		),
 		Resources: []Resource{{
 			Path:        resourcePath,
 			Menu:        "Enterprise Access Audit",
 			Description: "Review enterprise request audit records and manage access policies.",
 		}},
+	}
+}
+
+// accountPoolRoutes returns the account-pool management routes under the plugin base path.
+func accountPoolRoutes(basePath string) []Route {
+	// RoutePrefix already ends with /account-pool; append literal suffixes.
+	prefix := accountpool.RoutePrefix(basePath)
+	return []Route{
+		{Method: http.MethodGet, Path: prefix},
+		{Method: http.MethodGet, Path: prefix + "/policy"},
+		{Method: http.MethodPut, Path: prefix + "/policy"},
+		{Method: http.MethodGet, Path: prefix + "/concurrency-limits"},
+		{Method: http.MethodPut, Path: prefix + "/concurrency-limits"},
+		{Method: http.MethodGet, Path: prefix + "/state"},
 	}
 }
 
@@ -379,12 +397,14 @@ func (h *Handler) auditDetail(ctx context.Context, query url.Values) ManagementR
 }
 
 type settingsResponse struct {
+	AuditEnabled        bool `json:"audit_enabled"`
 	RetentionDays       int  `json:"retention_days"`
 	DefaultAuditEnabled bool `json:"default_audit_enabled"`
 	MaxTextBytes        int  `json:"max_text_bytes"`
 }
 
 type settingsRequest struct {
+	AuditEnabled        json.RawMessage `json:"audit_enabled"`
 	RetentionDays       json.RawMessage `json:"retention_days"`
 	DefaultAuditEnabled json.RawMessage `json:"default_audit_enabled"`
 	MaxTextBytes        json.RawMessage `json:"max_text_bytes"`
@@ -400,7 +420,7 @@ func (h *Handler) getSettings(ctx context.Context) ManagementResponse {
 	if errStore != nil {
 		return storageResponse(errStore)
 	}
-	return jsonResponse(http.StatusOK, settingsResponse{RetentionDays: settings.RetentionDays, DefaultAuditEnabled: settings.DefaultAuditEnabled, MaxTextBytes: settings.MaxTextBytes})
+	return jsonResponse(http.StatusOK, settingsResponse{AuditEnabled: settings.AuditEnabled, RetentionDays: settings.RetentionDays, DefaultAuditEnabled: settings.DefaultAuditEnabled, MaxTextBytes: settings.MaxTextBytes})
 }
 
 func (h *Handler) updateSettings(ctx context.Context, body []byte) ManagementResponse {
@@ -408,10 +428,17 @@ func (h *Handler) updateSettings(ctx context.Context, body []byte) ManagementRes
 	if err := decodeBody(body, &request); err != nil {
 		return errorResponse(http.StatusBadRequest, "invalid_input", err.Error())
 	}
-	if len(request.RetentionDays) == 0 && len(request.DefaultAuditEnabled) == 0 && len(request.MaxTextBytes) == 0 {
+	if len(request.AuditEnabled) == 0 && len(request.RetentionDays) == 0 && len(request.DefaultAuditEnabled) == 0 && len(request.MaxTextBytes) == 0 {
 		return errorResponse(http.StatusBadRequest, "invalid_input", "at least one setting is required")
 	}
 	patch := store.SettingsPatch{}
+	if len(request.AuditEnabled) > 0 {
+		value, err := parseRequiredBool(request.AuditEnabled)
+		if err != nil {
+			return errorResponse(http.StatusBadRequest, "invalid_input", "audit_enabled must be boolean")
+		}
+		patch.AuditEnabled = &value
+	}
 	if len(request.RetentionDays) > 0 {
 		value, err := parseIntField(request.RetentionDays, "retention_days")
 		if err != nil || value < config.MinRetentionDays || value > config.MaxRetentionDays {

@@ -131,9 +131,15 @@ plugins:
       data_dir: ".cli-proxy-api/plugins/enterprise-access-audit"
       database_path: ".cli-proxy-api/plugins/enterprise-access-audit/enterprise-access-audit.sqlite"
       retention_days: 30
-      default_audit_enabled: true
+      default_audit_enabled: false
       max_text_bytes: 32768
       cleanup_interval_seconds: 3600
+      account_pool:
+        enabled: true
+        data_dir: ".cli-proxy-api/plugins/enterprise-access-audit/account-pool"
+        reserve_seconds: 10
+        window_seconds: 15
+        max_wait_seconds: 30
 ```
 
 配置字段如下：
@@ -145,9 +151,16 @@ plugins:
 | `data_dir` | `.cli-proxy-api/plugins/enterprise-access-audit` | — | JSONL、SQLite 及相关数据目录。相对路径以 CPA 工作目录为基准。 |
 | `database_path` | `<data_dir>/enterprise-access-audit.sqlite` | — | SQLite 路径。只保存策略、设置和迁移记录，不保存审计正文。 |
 | `retention_days` | `30` | `1–3650` | 审计记录保留天数。启动时和定时清理时执行。 |
-| `default_audit_enabled` | `true` | — | 没有单独策略记录的 Enterprise Key 使用的默认审计开关。 |
+| `audit_enabled` | `false` | — | 全局请求审计开关，默认关闭。关闭后停止新增审计记录，但模型拒绝策略仍继续生效。 |
+| `default_audit_enabled` | `false` | — | 没有单独策略记录的 Enterprise Key 使用的默认审计状态；全局开关开启后才生效，已有 Key 的单独开关优先。 |
 | `max_text_bytes` | `32768` | `1–1048576` | 单条用户文本最大保存字节数，超出时保留截断标记。 |
 | `cleanup_interval_seconds` | `3600` | `1–86400` | 过期记录清理间隔。 |
+| `account_pool.enabled` | `false` | — | 账号池总开关。开启后插件注册 `scheduler` 能力并作为 Codex 的唯一调度 owner，接管部门池路由、每账号并发与准入；关闭时行为与纯审计插件完全一致。 |
+| `account_pool.data_dir` | `<data_dir>/account-pool` | — | 账号池策略与并发限制落盘目录（`account-pool-policy.json` / `account-pool-limits.json`）。 |
+| `account_pool.reserve_seconds` | `10` | `1–300` | 调度预留秒数，防选号洪峰打爆单账号。 |
+| `account_pool.window_seconds` | `15` | `1–3600` | 滚动准入窗口默认宽度。 |
+| `account_pool.max_wait_seconds` | `30` | `1–300` | 并发准入最大等待，超时返回可重试的 `account_busy`（HTTP 503）。 |
+| `exclusive-scheduler-providers` | `—` | — | 插件条目同级配置 `exclusive-scheduler-providers: [codex]`，将 Codex 调度锁定到本插件，避免与其他调度插件竞争。 |
 
 路径规则：
 
@@ -173,7 +186,7 @@ plugins:
       data_dir: ".cli-proxy-api/plugins/enterprise-access-audit"
       database_path: ".cli-proxy-api/plugins/enterprise-access-audit/enterprise-access-audit.sqlite"
       retention_days: 30
-      default_audit_enabled: true
+      default_audit_enabled: false
       max_text_bytes: 32768
       cleanup_interval_seconds: 3600
 ```
@@ -200,7 +213,7 @@ plugins:
       data_dir: ".cli-proxy-api/plugins/enterprise-access-audit"
       database_path: ".cli-proxy-api/plugins/enterprise-access-audit/enterprise-access-audit.sqlite"
       retention_days: 30
-      default_audit_enabled: true
+      default_audit_enabled: false
       max_text_bytes: 32768
       cleanup_interval_seconds: 3600
 ```
@@ -227,7 +240,7 @@ plugins:
       data_dir: ".cli-proxy-api/plugins/enterprise-access-audit"
       database_path: ".cli-proxy-api/plugins/enterprise-access-audit/enterprise-access-audit.sqlite"
       retention_days: 30
-      default_audit_enabled: true
+      default_audit_enabled: false
       max_text_bytes: 32768
       cleanup_interval_seconds: 3600
 ```
@@ -443,7 +456,38 @@ PUT /v0/management/enterprise-access-audit/settings
 
 优先重新下载同版本、同平台、同架构的 CPA 发布包，并校验 Release 提供的 `checksums.txt`。不要把其他操作系统、其他架构或 `no-plugin` 包中的文件强行改名后加载。动态库是进程内代码，无法像普通外部进程一样隔离运行。
 
+## 11. 账号池与 Codex 并发调度（可选功能）
+
+账号池是 `enterprise-access-audit` 插件的内建扩展能力（实现于独立的 `go/internal/accountpool` 子包，便于后续合并上游时保持隔离）。开启后：
+
+- 插件在 `scheduler.pick` 阶段按调用方 8 位 API Key Hash（`quota_key_hash`）定位其主池，把候选严格过滤到池内成员后，以“优先级 + 最低压力 + 会话粘性 + 10 秒预留”选号；
+- 未绑定用户不受影响，走 CPA 原有全局调度（`delegate_builtin`）；
+- 已绑定用户的请求在 `request.intercept_after` 做有界并发准入；仅对显式配置了并发限制（`/concurrency-limits`）的账号做并发/窗口 gate，未配置或 0 限制的账号不限流；
+- `request.complete` 释放占位；审计功能仍按原有范围工作。
+
+### 11.1 启用
+
+1. 将 `exclusive-scheduler-providers: [codex]` 加入插件条目（这一配置由 CPA 主机读取）；
+2. 打开插件管理页面 → 「账号池」页签：创建账号池 → 勾选 Codex 认证文件作为成员 → 按部门批量绑定用户 → 保存并发限制。
+
+> 注意：启用账号池后，本插件成为 Codex 的唯一调度 owner，其他插件（如 cpa-account-config-manager）对 Codex 的调度/并发能力将被旁路；如同时部署该插件建议将其停用。账号池成员使用 CPA 认证文件的 `id`（Auth ID）标识，与调度候选一一对应；并发限制也按该 Auth ID 配置。
+
+### 11.2 管理接口
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/v0/management/plugins/enterprise-access-audit/account-pool` | 读取当前策略快照与生效状态 |
+| GET/PUT | `.../account-pool/policy` | 读取 / 原子替换策略快照（`version` 单调递增，`hash` 由插件规范化） |
+| GET/PUT | `.../account-pool/concurrency-limits` | 读取 / 替换每账号并发限制 |
+| GET | `.../account-pool/state?authId=...` | 读取单账号并发诊断（active / waiting / reserved / window） |
+
+### 11.3 数据文件
+
+- `account-pool-policy.json`：版本化完整策略（池、成员、绑定），SHA-256 校验；
+- `account-pool-limits.json`：每账号并发/窗口限制。
+
 ## 12. 从源码构建
+
 
 源码位于：
 

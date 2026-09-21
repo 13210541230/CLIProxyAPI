@@ -109,6 +109,10 @@ func (h *Handler) Intercept(ctx context.Context, req Request) (Response, error) 
 			return fmt.Errorf("load policy: %w", errPolicy)
 		}
 		denied = deniedModel(policy, req.RequestedModel) || deniedModel(policy, req.Model)
+		if !settings.AuditEnabled {
+			h.markAuditSkipped(req.RequestID)
+			return nil
+		}
 		if text.TextUnavailableReason == "no_new_user_turn" {
 			h.markAuditSkipped(req.RequestID)
 			return nil
@@ -173,6 +177,9 @@ func (h *Handler) Complete(ctx context.Context, completion Completion) error {
 		settings, errSettings := active.GetSettings(ctx, store.SettingsFromConfig(h.cfg))
 		if errSettings != nil {
 			return fmt.Errorf("load audit settings for completion: %w", errSettings)
+		}
+		if !settings.AuditEnabled {
+			return nil
 		}
 		policy, errPolicy := active.GetPolicyWithDefault(ctx, keyHash, settings.DefaultAuditEnabled)
 		if errPolicy != nil {

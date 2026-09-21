@@ -57,7 +57,7 @@ Tagged CLIProxyAPI releases build the plugin together with the matching plugin-c
          data_dir: .cli-proxy-api/plugins/enterprise-access-audit
          database_path: .cli-proxy-api/plugins/enterprise-access-audit/enterprise-access-audit.sqlite
          retention_days: 30
-         default_audit_enabled: true
+         default_audit_enabled: false
          max_text_bytes: 32768
          cleanup_interval_seconds: 3600
    ```
@@ -75,15 +75,66 @@ The plugin configuration fields are:
 | `data_dir` | `.cli-proxy-api/plugins/enterprise-access-audit` | Relative paths resolve below the CPA working directory; the directory is created during configuration. |
 | `database_path` | `<data_dir>/enterprise-access-audit.sqlite` | Relative paths resolve against the CPA working directory; when omitted, the database is placed inside the resolved `data_dir`. Parent directories are created if needed. |
 | `retention_days` | `30` | Audit records older than the retention window are removed at startup and periodically. Valid range is 1–3650. |
-| `default_audit_enabled` | `true` | Applies to a Key with no stored policy row. A stored per-Key switch always wins. |
+| `audit_enabled` | `false` | Global request-audit switch. Disabled by default; turning it off stops new audit records while model-deny policies continue to apply. |
+| `default_audit_enabled` | `false` | Applies to a Key with no stored policy row; a stored per-Key switch still wins when the global switch is enabled. |
 | `max_text_bytes` | `32768` | Maximum persisted user-text size. Valid range is 1–1048576 bytes; truncation is recorded as metadata. |
 | `cleanup_interval_seconds` | `3600` | Periodic expiry cleanup interval. |
+| `account_pool.enabled` | `false` | Master switch. When enabled the plugin registers the `scheduler` capability and becomes the exclusive Codex scheduler owner, taking over department-pool routing, per-account concurrency, and admission; when disabled behavior is identical to the audit-only plugin. |
+| `account_pool.data_dir` | `<data_dir>/account-pool` | Directory for account-pool policy and concurrency limits (`account-pool-policy.json` / `account-pool-limits.json`). |
+| `account_pool.reserve_seconds` | `10` | Scheduler reservation seconds that guard against pick bursts. |
+| `account_pool.window_seconds` | `15` | Default rolling admission window width in seconds. |
+| `account_pool.max_wait_seconds` | `30` | Maximum admission wait before a retryable `account_busy` (HTTP 503) rejection. |
+| `exclusive-scheduler-providers` | — | Host-level sibling key `exclusive-scheduler-providers: [codex]` locks Codex scheduling to this plugin. |
 
 The deterministic default database is `.cli-proxy-api/plugins/enterprise-access-audit/enterprise-access-audit.sqlite` below the CPA working directory. SQLite stores only policies, settings, and migration bookkeeping; audit text is appended to one protected `key-<api-key-hash>-YYYYMMDD.jsonl` file per canonical Key hash and UTC calendar day under `data_dir`. New records use the date partition while existing legacy `key-<api-key-hash>.jsonl` files remain readable, so upgrades do not require an in-place migration. The date files are JSON Lines and can be rotated, compacted, and expired independently; retention cleanup removes old records and empty files. On first startup after this storage change, an existing SQLite `audit_records` table is backed up beside the database with a `.legacy-*.sqlite` suffix and removed from the active database; its old records are intentionally not imported into the new logs. Back up these files using the operator's normal protected storage process; do not copy API Keys into backup names, notes, or logs.
 
 Policy rows use only the canonical eight-character lower-case API-key hash supplied in execution metadata. Raw API Keys are never accepted, derived, stored, logged, or returned. Model IDs are trimmed, reject whitespace/control characters, ASCII lower-cased, deduplicated, sorted, and matched exactly. An empty deny list allows every model; a new/absent policy is all-model-open with audit enabled by default.
 
+## Account pools and Codex concurrency (optional)
+
+Account pools are an inhouse extension of the same plugin binary, implemented as an isolated `go/internal/accountpool` package so upstream merges stay conflict-free. When `account_pool.enabled: true` plus the host-level `exclusive-scheduler-providers: [codex]` are set:
+
+- `scheduler.pick` resolves the caller's primary pool by its 8-character API-key hash (`quota_key_hash`), filters candidates strictly to pool members, then selects by priority + least pressure + session stickiness with a 10s reservation.
+- Unbound callers keep the host's existing global scheduling (`delegate_builtin`).
+- Bound callers are gated at `request.intercept_after` with bounded admission; only accounts with an explicit `/concurrency-limits` entry (non-zero) are gated, unconfigured or zero-limit accounts are never throttled.
+- `request.complete` releases the slot; lifecycle capability is shared with audit so both features coexist on the same hooks.
+
+Configuration lives under the same `enterprise-access-audit` plugin entry:
+
+```yaml
+plugins:
+  enabled: true
+  dir: "plugins"
+  configs:
+    enterprise-access-audit:
+      enabled: true
+      priority: 100
+      data_dir: ".cli-proxy-api/plugins/enterprise-access-audit"
+      account_pool:
+        enabled: true
+        data_dir: ".cli-proxy-api/plugins/enterprise-access-audit/account-pool"
+        reserve_seconds: 10
+        window_seconds: 15
+        max_wait_seconds: 30
+      # host-level key that locks Codex scheduling to this plugin:
+      exclusive-scheduler-providers: [codex]
+```
+
+> Enabling account pools makes this plugin the exclusive Codex scheduler owner, bypassing other plugins' Codex scheduling/concurrency (for example `cpa-account-config-manager`); disable that plugin when both are deployed. Pool members and concurrency limits are keyed by the CPA auth file `id` (Auth ID), which matches scheduler candidates.
+
+Management routes (fixed paths, under `/v0/management/plugins/enterprise-access-audit/`):
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `account-pool` | Policy snapshot and applied status. |
+| GET/PUT | `account-pool/policy` | Read / atomically replace the versioned policy snapshot (hash canonicalized by the plugin). |
+| GET/PUT | `account-pool/concurrency-limits` | Read / replace per-account concurrency limits. |
+| GET | `account-pool/state?authId=...` | Per-auth concurrency diagnostics (active/waiting/reserved/window). |
+
+The account-pool management UI is a tab inside the plugin's own resource page. State files: `account-pool-policy.json` (versioned full snapshot, SHA-256 validated) and `account-pool-limits.json` (per-account limits).
+
 ## Phase-1 request behavior
+
 
 The plugin uses both the host `request_path` metadata and source format. It checks the requested and resolved model, so an alias or model-pool rewrite cannot bypass a deny rule. A denied standard-text execution is terminated before upstream execution with HTTP `403` and stable error type/code `model_not_allowed`. The model catalog remains fully visible; this plugin performs request-time denial only.
 

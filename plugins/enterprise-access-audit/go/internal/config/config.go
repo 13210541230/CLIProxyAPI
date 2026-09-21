@@ -21,16 +21,31 @@ const (
 	MaxCleanupInterval      = 24 * time.Hour
 	DefaultDataDirectory    = ".cli-proxy-api/plugins/enterprise-access-audit"
 	DefaultDatabaseFilename = "enterprise-access-audit.sqlite"
+	// Account-pool defaults.
+	DefaultAccountPoolReserveSeconds = 10
+	DefaultAccountPoolWindowSeconds  = 15
+	DefaultAccountPoolMaxWaitSeconds = 30
 )
+
+// AccountPoolConfig is the validated account-pool sub-configuration.
+type AccountPoolConfig struct {
+	Enabled        bool
+	DataDir        string
+	ReserveSeconds int
+	WindowSeconds  int
+	MaxWaitSeconds int
+}
 
 // Config is the validated runtime configuration for the plugin.
 type Config struct {
 	DataDir             string
 	DatabasePath        string
 	RetentionDays       int
+	AuditEnabled        bool
 	DefaultAuditEnabled bool
 	MaxTextBytes        int
 	CleanupInterval     time.Duration
+	AccountPool         AccountPoolConfig
 }
 
 // Default returns deterministic plugin defaults before path resolution.
@@ -38,19 +53,29 @@ func Default() Config {
 	return Config{
 		DataDir:             DefaultDataDirectory,
 		RetentionDays:       DefaultRetentionDays,
-		DefaultAuditEnabled: true,
+		DefaultAuditEnabled: false,
 		MaxTextBytes:        DefaultMaxTextBytes,
 		CleanupInterval:     DefaultCleanupInterval,
 	}
 }
 
 type yamlConfig struct {
-	DataDir             string `yaml:"data_dir"`
-	DatabasePath        string `yaml:"database_path"`
-	RetentionDays       int    `yaml:"retention_days"`
-	DefaultAuditEnabled *bool  `yaml:"default_audit_enabled"`
-	MaxTextBytes        int    `yaml:"max_text_bytes"`
-	CleanupInterval     int    `yaml:"cleanup_interval_seconds"`
+	DataDir             string           `yaml:"data_dir"`
+	DatabasePath        string           `yaml:"database_path"`
+	RetentionDays       int              `yaml:"retention_days"`
+	AuditEnabled        *bool            `yaml:"audit_enabled"`
+	DefaultAuditEnabled *bool            `yaml:"default_audit_enabled"`
+	MaxTextBytes        int              `yaml:"max_text_bytes"`
+	CleanupInterval     int              `yaml:"cleanup_interval_seconds"`
+	AccountPool         *accountPoolYAML `yaml:"account_pool"`
+}
+
+type accountPoolYAML struct {
+	Enabled        bool   `yaml:"enabled"`
+	DataDir        string `yaml:"data_dir"`
+	ReserveSeconds int    `yaml:"reserve_seconds"`
+	WindowSeconds  int    `yaml:"window_seconds"`
+	MaxWaitSeconds int    `yaml:"max_wait_seconds"`
 }
 
 // ParseYAML decodes host-supplied configuration and applies defaults and validation.
@@ -69,6 +94,9 @@ func ParseYAML(raw []byte, workingDir string) (Config, error) {
 	if decoded.RetentionDays != 0 {
 		defaults.RetentionDays = decoded.RetentionDays
 	}
+	if decoded.AuditEnabled != nil {
+		defaults.AuditEnabled = *decoded.AuditEnabled
+	}
 	if decoded.DefaultAuditEnabled != nil {
 		defaults.DefaultAuditEnabled = *decoded.DefaultAuditEnabled
 	}
@@ -78,7 +106,36 @@ func ParseYAML(raw []byte, workingDir string) (Config, error) {
 	if decoded.CleanupInterval != 0 {
 		defaults.CleanupInterval = time.Duration(decoded.CleanupInterval) * time.Second
 	}
+	defaults.AccountPool = accountPoolConfigFromYAML(decoded.AccountPool, defaults.DataDir)
 	return Normalize(defaults, workingDir)
+}
+
+func accountPoolConfigFromYAML(decoded *accountPoolYAML, pluginDataDir string) AccountPoolConfig {
+	if decoded == nil {
+		return AccountPoolConfig{}
+	}
+	cfg := AccountPoolConfig{
+		Enabled:        decoded.Enabled,
+		ReserveSeconds: DefaultAccountPoolReserveSeconds,
+		WindowSeconds:  DefaultAccountPoolWindowSeconds,
+		MaxWaitSeconds: DefaultAccountPoolMaxWaitSeconds,
+	}
+	if decoded.DataDir != "" {
+		cfg.DataDir = decoded.DataDir
+	}
+	if decoded.ReserveSeconds > 0 {
+		cfg.ReserveSeconds = decoded.ReserveSeconds
+	}
+	if decoded.WindowSeconds > 0 {
+		cfg.WindowSeconds = decoded.WindowSeconds
+	}
+	if decoded.MaxWaitSeconds > 0 {
+		cfg.MaxWaitSeconds = decoded.MaxWaitSeconds
+	}
+	if cfg.DataDir == "" {
+		cfg.DataDir = filepath.Join(pluginDataDir, "account-pool")
+	}
+	return cfg
 }
 
 // Normalize resolves paths, creates the data directory, and validates bounded settings.
@@ -118,6 +175,24 @@ func Normalize(input Config, workingDir string) (Config, error) {
 	}
 	if errMkdir := os.MkdirAll(filepath.Dir(input.DatabasePath), 0o750); errMkdir != nil {
 		return Config{}, fmt.Errorf("create database directory %q: %w", filepath.Dir(input.DatabasePath), errMkdir)
+	}
+	if input.AccountPool.DataDir != "" {
+		input.AccountPool.DataDir = resolvePath(workingDir, input.AccountPool.DataDir)
+		if errMkdir := os.MkdirAll(input.AccountPool.DataDir, 0o750); errMkdir != nil {
+			return Config{}, fmt.Errorf("create account pool data directory %q: %w", input.AccountPool.DataDir, errMkdir)
+		}
+	}
+	if input.AccountPool.ReserveSeconds <= 0 {
+		input.AccountPool.ReserveSeconds = DefaultAccountPoolReserveSeconds
+	}
+	if input.AccountPool.WindowSeconds <= 0 {
+		input.AccountPool.WindowSeconds = DefaultAccountPoolWindowSeconds
+	}
+	if input.AccountPool.MaxWaitSeconds <= 0 {
+		input.AccountPool.MaxWaitSeconds = DefaultAccountPoolMaxWaitSeconds
+	}
+	if input.AccountPool.ReserveSeconds > 300 || input.AccountPool.MaxWaitSeconds < 1 || input.AccountPool.MaxWaitSeconds > 300 {
+		return Config{}, fmt.Errorf("account pool reserve/max_wait seconds are out of bounds")
 	}
 	return input, nil
 }

@@ -11,7 +11,7 @@ func TestParseYAMLUsesDeterministicDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseYAML() error = %v", err)
 	}
-	if cfg.RetentionDays != DefaultRetentionDays || cfg.MaxTextBytes != DefaultMaxTextBytes || !cfg.DefaultAuditEnabled {
+	if cfg.RetentionDays != DefaultRetentionDays || cfg.MaxTextBytes != DefaultMaxTextBytes || cfg.AuditEnabled || cfg.DefaultAuditEnabled {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 	if filepath.Base(cfg.DatabasePath) != DefaultDatabaseFilename {

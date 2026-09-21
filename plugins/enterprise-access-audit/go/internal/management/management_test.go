@@ -40,7 +40,7 @@ func decodeResponse(t *testing.T, response ManagementResponse, target any) {
 
 func TestRoutesAreFixedLiteralPaths(t *testing.T) {
 	registration := Routes("/v0/management", "/v0/resource/plugins/enterprise-access-audit")
-	if len(registration.Routes) != 7 {
+	if len(registration.Routes) != 13 {
 		t.Fatalf("route count = %d", len(registration.Routes))
 	}
 	if len(registration.Resources) != 1 || registration.Resources[0].Path != "/v0/resource/plugins/enterprise-access-audit/ui" {
@@ -54,6 +54,25 @@ func TestRoutesAreFixedLiteralPaths(t *testing.T) {
 			if contains(route.Path, forbidden) {
 				t.Fatalf("route %q contains forbidden %q", route.Path, forbidden)
 			}
+		}
+	}
+	// Account-pool routes must be registered under the plugin prefix without duplication.
+	want := map[string]bool{
+		http.MethodGet + " /v0/management/enterprise-access-audit/account-pool":                    false,
+		http.MethodGet + " /v0/management/enterprise-access-audit/account-pool/policy":             false,
+		http.MethodPut + " /v0/management/enterprise-access-audit/account-pool/policy":             false,
+		http.MethodPut + " /v0/management/enterprise-access-audit/account-pool/concurrency-limits": false,
+		http.MethodGet + " /v0/management/enterprise-access-audit/account-pool/state":              false,
+	}
+	for _, route := range registration.Routes {
+		key := route.Method + " " + route.Path
+		if _, ok := want[key]; ok {
+			want[key] = true
+		}
+	}
+	for key, seen := range want {
+		if !seen {
+			t.Fatalf("missing account-pool route: %s", key)
 		}
 	}
 }
@@ -96,6 +115,29 @@ func TestResourceUIIsServedByPluginHandler(t *testing.T) {
 	}
 }
 
+func TestGlobalAuditSettingEndpoint(t *testing.T) {
+	handler, _ := newTestHandler(t)
+	ctx := context.Background()
+	response := handler.Handle(ctx, ManagementRequest{Method: http.MethodGet, Path: SettingsPath})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("settings status = %d %s", response.StatusCode, response.Body)
+	}
+	var initial settingsResponse
+	decodeResponse(t, response, &initial)
+	if initial.AuditEnabled {
+		t.Fatal("global audit endpoint defaulted to enabled")
+	}
+	response = handler.Handle(ctx, ManagementRequest{Method: http.MethodPut, Path: SettingsPath, Body: []byte(`{"audit_enabled":true}`)})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("enable audit status = %d %s", response.StatusCode, response.Body)
+	}
+	var updated settingsResponse
+	decodeResponse(t, response, &updated)
+	if !updated.AuditEnabled {
+		t.Fatalf("global audit endpoint did not enable audit: %+v", updated)
+	}
+}
+
 func TestPolicyEndpointsPreserveOmittedFieldsAndRejectRawKeys(t *testing.T) {
 	handler, _ := newTestHandler(t)
 	ctx := context.Background()
@@ -110,7 +152,7 @@ func TestPolicyEndpointsPreserveOmittedFieldsAndRejectRawKeys(t *testing.T) {
 		Policies []policyResponse `json:"policies"`
 	}
 	decodeResponse(t, response, &listed)
-	if len(listed.Policies) != 1 || !listed.Policies[0].AuditEnabled || len(listed.Policies[0].DeniedModels) != 0 {
+	if len(listed.Policies) != 1 || listed.Policies[0].AuditEnabled || len(listed.Policies[0].DeniedModels) != 0 {
 		t.Fatalf("absent policy = %+v", listed.Policies)
 	}
 

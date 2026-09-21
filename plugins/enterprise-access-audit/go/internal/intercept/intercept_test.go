@@ -12,11 +12,16 @@ import (
 )
 
 func newTestHandler(t *testing.T) (*Handler, *state.Manager) {
+	return newTestHandlerWithAudit(t, true)
+}
+
+func newTestHandlerWithAudit(t *testing.T, auditEnabled bool) (*Handler, *state.Manager) {
 	t.Helper()
 	root := t.TempDir()
 	cfg, err := config.Normalize(config.Config{
 		DataDir:             root,
 		DatabasePath:        filepath.Join(root, "audit.sqlite"),
+		AuditEnabled:        auditEnabled,
 		RetentionDays:       config.DefaultRetentionDays,
 		DefaultAuditEnabled: true,
 		MaxTextBytes:        16,
@@ -121,6 +126,31 @@ func TestAllowedPassThroughAndLifecycleCorrelation(t *testing.T) {
 	record, err := readRecord(manager, req.RequestID)
 	if err != nil || record.Outcome != "succeeded" || record.StatusCode != 200 || !record.TextAvailable || record.Text != "hello" {
 		t.Fatalf("success record = %#v, error=%v", record, err)
+	}
+}
+
+func TestGlobalAuditDisabledSkipsRecordsButKeepsModelDeny(t *testing.T) {
+	handler, manager := newTestHandlerWithAudit(t, false)
+	setDeny(t, manager, "deadbeef", []string{"blocked"})
+	allowed := Request{RequestID: "audit-off-allowed", SourceFormat: "openai", RequestedModel: "allowed", Model: "allowed", Body: []byte(`{"messages":[{"role":"user","content":"secret"}]}`), Metadata: map[string]any{RequestPathMetadataKey: "/v1/chat/completions", KeyHashMetadataKey: "deadbeef"}}
+	if response, err := handler.Intercept(context.Background(), allowed); err != nil || response.Terminate {
+		t.Fatalf("allowed request = %#v, error=%v", response, err)
+	}
+	if err := handler.Complete(context.Background(), Completion{RequestID: allowed.RequestID, SourceFormat: allowed.SourceFormat, Model: allowed.Model, Outcome: "succeeded", StatusCode: 200, Metadata: allowed.Metadata}); err != nil {
+		t.Fatalf("allowed completion error = %v", err)
+	}
+	if _, err := readRecord(manager, allowed.RequestID); err == nil {
+		t.Fatal("global audit disabled still persisted an allowed request")
+	}
+	denied := allowed
+	denied.RequestID = "audit-off-denied"
+	denied.RequestedModel = "blocked"
+	response, err := handler.Intercept(context.Background(), denied)
+	if err != nil || !response.Terminate || response.StatusCode != 403 {
+		t.Fatalf("denied request = %#v, error=%v", response, err)
+	}
+	if _, err := readRecord(manager, denied.RequestID); err == nil {
+		t.Fatal("global audit disabled still persisted a denied request")
 	}
 }
 

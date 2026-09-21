@@ -23,6 +23,30 @@ func testConfig(t *testing.T) config.Config {
 	return cfg
 }
 
+func TestGlobalAuditSettingPersistsAndDefaultsOff(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, testConfig(t))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+	settings, err := store.GetSettings(ctx, SettingsFromConfig(testConfig(t)))
+	if err != nil {
+		t.Fatalf("GetSettings() error = %v", err)
+	}
+	if settings.AuditEnabled {
+		t.Fatal("global audit unexpectedly enabled by default")
+	}
+	enabled := true
+	if err := store.UpdateSettings(ctx, SettingsPatch{AuditEnabled: &enabled}); err != nil {
+		t.Fatalf("UpdateSettings() error = %v", err)
+	}
+	settings, err = store.GetSettings(ctx, SettingsFromConfig(testConfig(t)))
+	if err != nil || !settings.AuditEnabled {
+		t.Fatalf("global audit setting = %+v, error=%v", settings, err)
+	}
+}
+
 func TestStorePersistsPolicyAcrossRestart(t *testing.T) {
 	ctx := context.Background()
 	cfg := testConfig(t)

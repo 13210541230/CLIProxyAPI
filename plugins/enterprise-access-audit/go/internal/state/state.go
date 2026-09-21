@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/accountpool"
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/store"
 )
@@ -19,6 +20,8 @@ type Manager struct {
 	mu          sync.RWMutex
 	active      *activeState
 	closed      bool
+	cfg         config.Config
+	accountPool *accountpool.Service
 }
 
 type activeState struct {
@@ -57,6 +60,16 @@ func (m *Manager) Configure(ctx context.Context, cfg config.Config) error {
 		return fmt.Errorf("cleanup expired enterprise access audit records on startup: %w", errCleanup)
 	}
 	newState := &activeState{store: newStore, stop: make(chan struct{}), cleanupDone: make(chan struct{}), interval: cfg.CleanupInterval}
+	accountPool := accountpool.New(accountpool.Options{
+		DataDir: cfg.AccountPool.DataDir,
+		Reserve: time.Duration(cfg.AccountPool.ReserveSeconds) * time.Second,
+		MaxWait: time.Duration(cfg.AccountPool.MaxWaitSeconds) * time.Second,
+		Enabled: cfg.AccountPool.Enabled,
+	})
+	if errReload := accountPool.Reload(); errReload != nil {
+		_ = newStore.Close()
+		return fmt.Errorf("reload account pool state: %w", errReload)
+	}
 
 	m.mu.RLock()
 	closed := m.closed
@@ -80,6 +93,8 @@ func (m *Manager) Configure(ctx context.Context, cfg config.Config) error {
 		return ErrUnavailable
 	}
 	m.active = newState
+	m.cfg = cfg
+	m.accountPool = accountPool
 	var closeErr error
 	if retired != nil {
 		<-retired.cleanupDone
@@ -184,6 +199,26 @@ func (m *Manager) CleanupNow(ctx context.Context, now time.Time) (int64, error) 
 		return err
 	})
 	return removed, errCleanup
+}
+
+// Config returns the latest applied plugin configuration.
+func (m *Manager) Config() config.Config {
+	if m == nil {
+		return config.Config{}
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.cfg
+}
+
+// AccountPool returns the active account-pool service (nil when unavailable).
+func (m *Manager) AccountPool() *accountpool.Service {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.accountPool
 }
 
 func (m *Manager) cleanupLoop(current *activeState) {

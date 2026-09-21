@@ -18,8 +18,9 @@ import (
 
 var ErrClosed = errors.New("enterprise access audit store is closed")
 
-// Settings contains persisted retention and text-size controls.
+// Settings contains global audit control and persisted retention/text-size controls.
 type Settings struct {
+	AuditEnabled        bool
 	RetentionDays       int
 	DefaultAuditEnabled bool
 	MaxTextBytes        int
@@ -27,6 +28,7 @@ type Settings struct {
 
 // SettingsPatch updates only non-nil settings fields.
 type SettingsPatch struct {
+	AuditEnabled        *bool
 	RetentionDays       *int
 	DefaultAuditEnabled *bool
 	MaxTextBytes        *int
@@ -119,7 +121,7 @@ func Open(ctx context.Context, cfg config.Config) (*Store, error) {
 
 // SettingsFromConfig converts validated runtime config to persisted defaults.
 func SettingsFromConfig(cfg config.Config) Settings {
-	return Settings{RetentionDays: cfg.RetentionDays, DefaultAuditEnabled: cfg.DefaultAuditEnabled, MaxTextBytes: cfg.MaxTextBytes}
+	return Settings{AuditEnabled: cfg.AuditEnabled, RetentionDays: cfg.RetentionDays, DefaultAuditEnabled: cfg.DefaultAuditEnabled, MaxTextBytes: cfg.MaxTextBytes}
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -192,7 +194,7 @@ func (s *Store) initializeSettings(ctx context.Context, defaults Settings) error
 		return ErrClosed
 	}
 	_, errExec := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO settings(name, value) VALUES
-		('retention_days', ?), ('default_audit_enabled', ?), ('max_text_bytes', ?)`, defaults.RetentionDays, boolInt(defaults.DefaultAuditEnabled), defaults.MaxTextBytes)
+		('audit_enabled', ?), ('retention_days', ?), ('default_audit_enabled', ?), ('max_text_bytes', ?)`, boolInt(defaults.AuditEnabled), defaults.RetentionDays, boolInt(defaults.DefaultAuditEnabled), defaults.MaxTextBytes)
 	if errExec != nil {
 		return fmt.Errorf("initialize plugin settings: %w", errExec)
 	}
@@ -469,6 +471,8 @@ func (s *Store) getSettingsLocked(ctx context.Context, fallback Settings) (Setti
 			return Settings{}, fmt.Errorf("scan setting: %w", errScan)
 		}
 		switch name {
+		case "audit_enabled":
+			result.AuditEnabled = value == "1"
 		case "retention_days":
 			if _, errScan := fmt.Sscanf(value, "%d", &result.RetentionDays); errScan != nil {
 				return Settings{}, fmt.Errorf("parse retention_days: %w", errScan)
@@ -507,6 +511,11 @@ func (s *Store) UpdateSettings(ctx context.Context, patch SettingsPatch) error {
 	rollback := func(err error) error {
 		_ = tx.Rollback()
 		return err
+	}
+	if patch.AuditEnabled != nil {
+		if _, errExec := tx.ExecContext(ctx, `INSERT INTO settings(name, value) VALUES ('audit_enabled', ?) ON CONFLICT(name) DO UPDATE SET value=excluded.value`, boolInt(*patch.AuditEnabled)); errExec != nil {
+			return rollback(fmt.Errorf("update audit_enabled: %w", errExec))
+		}
 	}
 	if patch.RetentionDays != nil {
 		if _, errExec := tx.ExecContext(ctx, `INSERT INTO settings(name, value) VALUES ('retention_days', ?) ON CONFLICT(name) DO UPDATE SET value=excluded.value`, *patch.RetentionDays); errExec != nil {

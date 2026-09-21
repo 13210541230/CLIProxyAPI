@@ -40,9 +40,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"unsafe"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/accountpool"
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/intercept"
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/management"
@@ -99,9 +101,11 @@ type configField struct {
 }
 
 type registrationCapability struct {
-	RequestInterceptor     bool `json:"request_interceptor"`
-	RequestLifecyclePlugin bool `json:"request_lifecycle_plugin"`
-	ManagementAPI          bool `json:"management_api"`
+	RequestInterceptor          bool     `json:"request_interceptor"`
+	RequestLifecyclePlugin      bool     `json:"request_lifecycle_plugin"`
+	ManagementAPI               bool     `json:"management_api"`
+	Scheduler                   bool     `json:"scheduler,omitempty"`
+	SchedulerExclusiveProviders []string `json:"scheduler_exclusive_providers,omitempty"`
 }
 
 type managementRegistrationRequest struct {
@@ -199,8 +203,12 @@ func handleMethod(method string, raw []byte) ([]byte, error) {
 		return okEnvelope(management.Routes(request.BasePath, request.ResourceBasePath))
 	case "management.handle":
 		return handleManagement(raw)
-	case "request.intercept_before", "request.intercept_after":
-		return interceptRequest(raw)
+	case "scheduler.pick":
+		return schedulerPick(raw)
+	case "request.intercept_before":
+		return interceptRequest(raw, false)
+	case "request.intercept_after":
+		return interceptRequest(raw, true)
 	case "request.complete":
 		return complete(raw)
 	default:
@@ -237,11 +245,17 @@ func configure(raw []byte) error {
 }
 
 func pluginRegistration() registration {
+	version := "0.2.0"
+	capabilities := registrationCapability{RequestInterceptor: true, RequestLifecyclePlugin: true, ManagementAPI: true}
+	if pluginState.Config().AccountPool.Enabled {
+		capabilities.Scheduler = true
+		capabilities.SchedulerExclusiveProviders = []string{accountpool.ExclusiveProvider}
+	}
 	return registration{
 		SchemaVersion: schemaVersion,
 		Metadata: metadata{
 			Name:             "enterprise-access-audit",
-			Version:          "0.1.0",
+			Version:          version,
 			Author:           "router-for-me",
 			GitHubRepository: "https://github.com/router-for-me/CLIProxyAPI",
 			Logo:             "https://raw.githubusercontent.com/router-for-me/CLIProxyAPI/main/docs/logo.png",
@@ -249,16 +263,36 @@ func pluginRegistration() registration {
 				{Name: "data_dir", Type: "string", Description: "Plugin data directory; defaults below the CPA working directory."},
 				{Name: "database_path", Type: "string", Description: "SQLite database path; defaults to enterprise-access-audit.sqlite in data_dir."},
 				{Name: "retention_days", Type: "integer", Description: "Audit retention period in days (1-3650)."},
+				{Name: "audit_enabled", Type: "boolean", Description: "Global request-audit switch; disabled by default. Access-deny policies remain enforced when disabled."},
 				{Name: "default_audit_enabled", Type: "boolean", Description: "Default audit state for an absent policy."},
 				{Name: "max_text_bytes", Type: "integer", Description: "Maximum persisted user-text bytes (1-1048576)."},
 				{Name: "cleanup_interval_seconds", Type: "integer", Description: "Automatic cleanup interval in seconds."},
+				{Name: "account_pool.enabled", Type: "boolean", Description: "Enable account-pool Codex scheduling and admission (registers the scheduler capability)."},
+				{Name: "account_pool.data_dir", Type: "string", Description: "Account-pool state directory; defaults to <data_dir>/account-pool."},
+				{Name: "account_pool.reserve_seconds", Type: "integer", Description: "Scheduler reservation seconds guarding against pick bursts (default 10)."},
+				{Name: "account_pool.window_seconds", Type: "integer", Description: "Default rolling admission window seconds (default 15)."},
+				{Name: "account_pool.max_wait_seconds", Type: "integer", Description: "Maximum admission wait before a retryable busy rejection (default 30)."},
 			},
 		},
-		Capabilities: registrationCapability{RequestInterceptor: true, RequestLifecyclePlugin: true, ManagementAPI: true},
+		Capabilities: capabilities,
 	}
 }
 
-func interceptRequest(raw []byte) ([]byte, error) {
+func schedulerPick(raw []byte) ([]byte, error) {
+	var request accountpool.SchedulerPickRequest
+	if len(raw) > 0 {
+		if errUnmarshal := json.Unmarshal(raw, &request); errUnmarshal != nil {
+			return nil, fmt.Errorf("decode scheduler pick request: %w", errUnmarshal)
+		}
+	}
+	svc := pluginState.AccountPool()
+	if svc == nil {
+		return okEnvelope(accountpool.SchedulerPickUnavailable())
+	}
+	return okEnvelope(svc.Pick(request))
+}
+
+func interceptRequest(raw []byte, afterAuth bool) ([]byte, error) {
 	var request intercept.Request
 	if errUnmarshal := json.Unmarshal(raw, &request); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode intercept request: %w", errUnmarshal)
@@ -269,11 +303,38 @@ func interceptRequest(raw []byte) ([]byte, error) {
 	if active == nil {
 		return nil, state.ErrUnavailable
 	}
+	if afterAuth {
+		if rejected := accountPoolAdmit(request); rejected != nil {
+			return okEnvelope(*rejected)
+		}
+	}
 	result, errIntercept := active.Intercept(context.Background(), request)
 	if errIntercept != nil {
 		return nil, errIntercept
 	}
 	return okEnvelope(result)
+}
+
+// accountPoolAdmit gates a selected request when account-pool scheduling is active.
+func accountPoolAdmit(request intercept.Request) *intercept.Response {
+	svc := pluginState.AccountPool()
+	if svc == nil {
+		return nil
+	}
+	result := svc.AdmitIntercept(request.RequestID, request.Metadata)
+	if result == nil {
+		return nil
+	}
+	status := result.StatusCode
+	if status <= 0 {
+		status = http.StatusServiceUnavailable
+	}
+	return &intercept.Response{
+		Terminate:       true,
+		StatusCode:      status,
+		ResponseHeaders: http.Header{"Content-Type": []string{"application/json"}},
+		ResponseBody:    result.Body,
+	}
 }
 
 func handleManagement(raw []byte) ([]byte, error) {
@@ -289,8 +350,22 @@ func handleManagement(raw []byte) ([]byte, error) {
 	if active == nil {
 		return okEnvelope(managementResponse{StatusCode: 503, Headers: http.Header{"Content-Type": []string{"application/json"}}, Body: []byte(`{"error":{"code":"storage_unavailable","message":"plugin storage is unavailable"}}`)})
 	}
+	if accountPoolManagementPath(request.Path) {
+		svc := pluginState.AccountPool()
+		if svc == nil {
+			return okEnvelope(managementResponse{StatusCode: 503, Headers: http.Header{"Content-Type": []string{"application/json"}}, Body: []byte(`{"error":{"code":"storage_unavailable","message":"account pool service is unavailable"}}`)})
+		}
+		response := svc.HandleManagement(accountpool.ManagementRequest{Method: request.Method, Path: request.Path, Headers: request.Headers, Query: request.Query, Body: request.Body})
+		return okEnvelope(managementResponse{StatusCode: response.StatusCode, Headers: response.Headers, Body: response.Body})
+	}
 	response := active.Handle(context.Background(), management.ManagementRequest{Method: request.Method, Path: request.Path, Headers: request.Headers, Query: request.Query, Body: request.Body})
 	return okEnvelope(managementResponse{StatusCode: response.StatusCode, Headers: response.Headers, Body: response.Body})
+}
+
+// accountPoolManagementPath reports whether a management path targets account-pool routes.
+func accountPoolManagementPath(path string) bool {
+	normalized := strings.TrimRight(strings.TrimSpace(path), "/")
+	return strings.HasSuffix(normalized, accountpool.Prefix) || strings.Contains(normalized, accountpool.Prefix+"/")
 }
 
 func complete(raw []byte) ([]byte, error) {
@@ -305,6 +380,9 @@ func complete(raw []byte) ([]byte, error) {
 	handlerMu.RUnlock()
 	if active == nil {
 		return nil, state.ErrUnavailable
+	}
+	if svc := pluginState.AccountPool(); svc != nil {
+		svc.Complete(request.RequestID)
 	}
 	if errComplete := active.Complete(context.Background(), request); errComplete != nil {
 		return nil, errComplete
