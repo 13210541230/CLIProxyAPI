@@ -33,17 +33,17 @@ type candidateLoad struct {
 type Engine struct {
 	mu sync.Mutex
 
-	limits    map[string]Limit
-	active    map[string]int
-	waiting   map[string]int
-	requests  map[string]admissionRecord
-	reserved  map[string][]time.Time
-	sessions  map[string]string // sessionKey -> account auth id
-	retries   map[string]int    // sessionKey -> consecutive retry count
-	window    map[string][]time.Time
-	epoch     uint64
-	cursor    uint64
-	maxRetry  int
+	limits   map[string]Limit
+	active   map[string]int
+	waiting  map[string]int
+	requests map[string]admissionRecord
+	reserved map[string][]time.Time
+	sessions map[string]string // sessionKey -> account auth id
+	retries  map[string]int    // sessionKey -> consecutive retry count
+	window   map[string][]time.Time
+	epoch    uint64
+	cursor   uint64
+	maxRetry int
 
 	now   func() time.Time
 	sleep func(time.Duration)

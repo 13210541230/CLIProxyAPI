@@ -6,9 +6,12 @@ import (
 
 // sessionHeaderKeys and sessionMetadataKeys are read in order to derive a
 // stable conversation session identity for stickiness within a pool.
+// canonical_session_id is injected by the CPA host (ExtractSessionInfo over
+// headers plus native payload identifiers) before scheduling, so native Codex
+// clients stay sticky without custom headers.
 var (
 	sessionHeaderKeys   = []string{"x-session-id", "x-conversation-id", "x-thread-id", "x-prompt-cache-key"}
-	sessionMetadataKeys = []string{"session_id", "conversation_id", "thread_id", "prompt_cache_key"}
+	sessionMetadataKeys = []string{"canonical_session_id", "session_id", "conversation_id", "thread_id", "prompt_cache_key"}
 )
 
 const sessionKeyMaxLen = 128
