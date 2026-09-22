@@ -33,17 +33,17 @@ type candidateLoad struct {
 type Engine struct {
 	mu sync.Mutex
 
-	limits   map[string]Limit
-	active   map[string]int
-	waiting  map[string]int
-	requests map[string]admissionRecord
-	reserved map[string][]time.Time
-	sessions map[string]string // sessionKey -> account auth id
-	retries  map[string]int    // sessionKey -> consecutive retry count
-	window   map[string][]time.Time
-	epoch    uint64
-	cursor   uint64
-	maxRetry int
+	limits         map[string]Limit
+	active         map[string]int
+	waiting        map[string]int
+	requests       map[string]admissionRecord
+	reserved       map[string][]time.Time
+	sessions       map[string]string // sessionKey -> account auth id
+	busyRejections map[string]int    // sessionKey -> consecutive queue timeouts
+	window         map[string][]time.Time
+	epoch          uint64
+	cursor         uint64
+	maxBusy        int
 
 	now   func() time.Time
 	sleep func(time.Duration)
@@ -69,35 +69,31 @@ func NewEngine(reserve, maxWait time.Duration, sessionFn func(schedulerPickReque
 	if maxWait <= 0 {
 		maxWait = 30 * time.Second
 	}
-	const maxRetryDefault = 3
 	return &Engine{
-		limits:   map[string]Limit{},
-		active:   map[string]int{},
-		waiting:  map[string]int{},
-		requests: map[string]admissionRecord{},
-		reserved: map[string][]time.Time{},
-		sessions: map[string]string{},
-		retries:  map[string]int{},
-		window:   map[string][]time.Time{},
-		now:      time.Now,
-		sleep:    time.Sleep,
-		maxRetry: maxRetryDefault,
-		cfg:      engineOptions{Reserve: reserve, MaxWait: maxWait, Session: sessionFn},
+		limits:         map[string]Limit{},
+		active:         map[string]int{},
+		waiting:        map[string]int{},
+		requests:       map[string]admissionRecord{},
+		reserved:       map[string][]time.Time{},
+		sessions:       map[string]string{},
+		busyRejections: map[string]int{},
+		window:         map[string][]time.Time{},
+		now:            time.Now,
+		sleep:          time.Sleep,
+		maxBusy:        3,
+		cfg:            engineOptions{Reserve: reserve, MaxWait: maxWait, Session: sessionFn},
 	}
 }
 
-// SetMaxRetry overrides the maximum consecutive retry count before releasing a
-// sticky session. The default is 3.
-func (e *Engine) SetMaxRetry(n int) {
-	if e == nil {
+// SetMaxBusy overrides the consecutive queue-timeout budget before a session
+// fails over to another in-pool account. Values below 1 are ignored.
+func (e *Engine) SetMaxBusy(n int) {
+	if e == nil || n < 1 {
 		return
 	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	if n < 1 {
-		n = 1
-	}
-	e.maxRetry = n
+	e.maxBusy = n
+	e.mu.Unlock()
 }
 
 // Configure atomically replaces limits and invalidates in-flight waiters.
@@ -180,14 +176,17 @@ func (e *Engine) Pick(request schedulerPickRequest) string {
 		sessionKey = e.cfg.Session(request)
 	}
 	if sessionKey != "" {
+		// Strict stickiness: a session stays on its account through transient
+		// overload and queues there. Only an account that left the candidate
+		// set (cooled, removed, or disabled) is abandoned immediately; local
+		// queue timeouts are tolerated up to the persistent-unavailability
+		// budget tracked in Admit.
 		if sticky := e.sessions[sessionKey]; sticky != "" {
-			// Strict session stickiness: always reserve the sticky account.
-			// Admit handles queueing when saturated; concurrent requests within
-			// the same session are guaranteed to land on the same account.
-			e.reserved[sticky] = append(e.reserved[sticky], now)
-			e.retries[sessionKey] = 0 // reset consecutive failures
-			e.mu.Unlock()
-			return sticky
+			if _, eligible := seen[sticky]; eligible {
+				e.reserved[sticky] = append(e.reserved[sticky], now)
+				e.mu.Unlock()
+				return sticky
+			}
 		}
 	}
 
@@ -221,10 +220,9 @@ func (e *Engine) Pick(request schedulerPickRequest) string {
 
 // Admit enters bounded admission for an already-selected auth. It blocks up to
 // MaxWait when the account is saturated, then rejects retryably. admitted is
-// true when the request may proceed (empty rejection).
-//
-// When the session key is available via metadata, consecutive retryable failures
-// release the sticky session so the next Pick can load-balance to another account.
+// true when the request may proceed (empty rejection). Transient rejections
+// keep the session on its account; only a persistent streak of rejections
+// (maxBusy consecutive, reset by any success) fails the session over in-pool.
 func (e *Engine) Admit(requestID, authID string) (code string, status int, retryable bool, admitted bool) {
 	if e == nil {
 		return "account_pool_unavailable", 503, true, false
@@ -255,7 +253,10 @@ func (e *Engine) Admit(requestID, authID string) (code string, status int, retry
 		if limit.Max15s > 0 {
 			windowUse = e.windowCountLocked(authID, now)
 		}
-		busyConcurrent := limit.Max > 0 && e.active[authID]+e.waiting[authID] >= limit.Max
+		// The concurrency budget governs executing requests only. Counting
+		// queued waiters would block admission once the queue reaches the limit,
+		// leaving an idle account unable to drain its queue until timeouts fire.
+		busyConcurrent := limit.Max > 0 && e.active[authID] >= limit.Max
 		busyWindow := limit.Max15s > 0 && windowUse >= limit.Max15s
 		if !busyConcurrent && !busyWindow {
 			e.active[authID]++
@@ -270,19 +271,24 @@ func (e *Engine) Admit(requestID, authID string) (code string, status int, retry
 					break
 				}
 			}
+			if sessKey != "" {
+				e.busyRejections[sessKey] = 0 // a success clears the failure streak
+			}
 			e.requests[requestID] = admissionRecord{AuthID: authID, SessionKey: sessKey}
 			e.mu.Unlock()
 			return "", 0, false, true
 		}
 
 		if !now.Before(deadline) {
-			// Determine the session key for retry tracking.
+			// Count one full queue timeout for the session. Only a persistent
+			// streak (maxBusy consecutive rejections with no success between)
+			// releases the binding, so transient overload never hops accounts
+			// while a dead account can never strand its sessions forever.
 			sk := ""
 			if record, exists := e.requests[requestID]; exists {
 				sk = record.SessionKey
 			}
 			if sk == "" {
-				// Fallback: find session bound to this authID.
 				for sessKey, sessAuth := range e.sessions {
 					if sessAuth == authID {
 						sk = sessKey
@@ -291,10 +297,10 @@ func (e *Engine) Admit(requestID, authID string) (code string, status int, retry
 				}
 			}
 			if sk != "" {
-				e.retries[sk]++
-				if e.retries[sk] > e.maxRetry {
+				e.busyRejections[sk]++
+				if e.busyRejections[sk] >= e.maxBusy {
 					delete(e.sessions, sk)
-					delete(e.retries, sk)
+					delete(e.busyRejections, sk)
 				}
 			}
 			e.mu.Unlock()
@@ -323,7 +329,7 @@ func (e *Engine) waitForSlot(authID string, waiterEpoch uint64, deadline time.Ti
 		if limit.Max15s > 0 {
 			windowUse = e.windowCountLocked(authID, now)
 		}
-		busyConcurrent := limit.Max > 0 && e.active[authID]+e.waiting[authID] >= limit.Max
+		busyConcurrent := limit.Max > 0 && e.active[authID] >= limit.Max
 		busyWindow := limit.Max15s > 0 && windowUse >= limit.Max15s
 		slotFree := !busyConcurrent && !busyWindow
 		e.mu.Unlock()

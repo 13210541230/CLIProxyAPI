@@ -64,6 +64,7 @@ func (m *Manager) Configure(ctx context.Context, cfg config.Config) error {
 		DataDir: cfg.AccountPool.DataDir,
 		Reserve: time.Duration(cfg.AccountPool.ReserveSeconds) * time.Second,
 		MaxWait: time.Duration(cfg.AccountPool.MaxWaitSeconds) * time.Second,
+		MaxBusy: cfg.AccountPool.MaxBusyRejections,
 		Enabled: cfg.AccountPool.Enabled,
 	})
 	if errReload := accountPool.Reload(); errReload != nil {

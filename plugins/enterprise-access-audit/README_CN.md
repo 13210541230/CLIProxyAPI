@@ -160,6 +160,7 @@ plugins:
 | `account_pool.reserve_seconds` | `10` | `1–300` | 调度预留秒数，防选号洪峰打爆单账号。 |
 | `account_pool.window_seconds` | `15` | `1–3600` | 滚动准入窗口默认宽度。 |
 | `account_pool.max_wait_seconds` | `30` | `1–300` | 并发准入最大等待，超时返回可重试的 `account_busy`（HTTP 503）。 |
+| `account_pool.max_busy_rejections` | `3` | `1–100` | 连续 `account_busy` 拒绝达到该次数后，会话才故障转移到池内其他账号；任意一次成功准入会清零计数。瞬时过载不会换号，持续不可用的账号也不会永久卡住用户。 |
 | `exclusive-scheduler-providers` | `—` | — | 插件条目同级配置 `exclusive-scheduler-providers: [codex]`，将 Codex 调度锁定到本插件，避免与其他调度插件竞争。 |
 
 路径规则：

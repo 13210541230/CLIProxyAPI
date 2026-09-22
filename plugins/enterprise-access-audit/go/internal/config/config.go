@@ -25,15 +25,20 @@ const (
 	DefaultAccountPoolReserveSeconds = 10
 	DefaultAccountPoolWindowSeconds  = 15
 	DefaultAccountPoolMaxWaitSeconds = 30
+	// DefaultAccountPoolMaxBusyRejections is the number of consecutive full
+	// queue timeouts tolerated before a session fails over to another in-pool
+	// account. Successful admissions reset the counter.
+	DefaultAccountPoolMaxBusyRejections = 3
 )
 
 // AccountPoolConfig is the validated account-pool sub-configuration.
 type AccountPoolConfig struct {
-	Enabled        bool
-	DataDir        string
-	ReserveSeconds int
-	WindowSeconds  int
-	MaxWaitSeconds int
+	Enabled           bool
+	DataDir           string
+	ReserveSeconds    int
+	WindowSeconds     int
+	MaxWaitSeconds    int
+	MaxBusyRejections int
 }
 
 // Config is the validated runtime configuration for the plugin.
@@ -77,14 +82,16 @@ type yamlConfig struct {
 	AccountPoolReserveFlat int    `yaml:"account_pool.reserve_seconds"`
 	AccountPoolWindowFlat  int    `yaml:"account_pool.window_seconds"`
 	AccountPoolMaxWaitFlat int    `yaml:"account_pool.max_wait_seconds"`
+	AccountPoolMaxBusyFlat int    `yaml:"account_pool.max_busy_rejections"`
 }
 
 type accountPoolYAML struct {
-	Enabled        bool   `yaml:"enabled"`
-	DataDir        string `yaml:"data_dir"`
-	ReserveSeconds int    `yaml:"reserve_seconds"`
-	WindowSeconds  int    `yaml:"window_seconds"`
-	MaxWaitSeconds int    `yaml:"max_wait_seconds"`
+	Enabled           bool   `yaml:"enabled"`
+	DataDir           string `yaml:"data_dir"`
+	ReserveSeconds    int    `yaml:"reserve_seconds"`
+	WindowSeconds     int    `yaml:"window_seconds"`
+	MaxWaitSeconds    int    `yaml:"max_wait_seconds"`
+	MaxBusyRejections int    `yaml:"max_busy_rejections"`
 }
 
 // ParseYAML decodes host-supplied configuration and applies defaults and validation.
@@ -126,7 +133,8 @@ func effectiveAccountPool(decoded yamlConfig) *accountPoolYAML {
 		decoded.AccountPoolDataDirFlat != "" ||
 		decoded.AccountPoolReserveFlat != 0 ||
 		decoded.AccountPoolWindowFlat != 0 ||
-		decoded.AccountPoolMaxWaitFlat != 0
+		decoded.AccountPoolMaxWaitFlat != 0 ||
+		decoded.AccountPoolMaxBusyFlat != 0
 	if decoded.AccountPool == nil && !hasFlat {
 		return nil
 	}
@@ -138,6 +146,7 @@ func effectiveAccountPool(decoded yamlConfig) *accountPoolYAML {
 	flat.ReserveSeconds = decoded.AccountPoolReserveFlat
 	flat.WindowSeconds = decoded.AccountPoolWindowFlat
 	flat.MaxWaitSeconds = decoded.AccountPoolMaxWaitFlat
+	flat.MaxBusyRejections = decoded.AccountPoolMaxBusyFlat
 	if decoded.AccountPool == nil {
 		return &flat
 	}
@@ -157,15 +166,19 @@ func effectiveAccountPool(decoded yamlConfig) *accountPoolYAML {
 	if merged.MaxWaitSeconds == 0 {
 		merged.MaxWaitSeconds = flat.MaxWaitSeconds
 	}
+	if merged.MaxBusyRejections == 0 {
+		merged.MaxBusyRejections = flat.MaxBusyRejections
+	}
 	return &merged
 }
 
 func accountPoolConfigFromYAML(decoded *accountPoolYAML, pluginDataDir string) AccountPoolConfig {
 	cfg := AccountPoolConfig{
-		DataDir:        filepath.Join(pluginDataDir, "account-pool"),
-		ReserveSeconds: DefaultAccountPoolReserveSeconds,
-		WindowSeconds:  DefaultAccountPoolWindowSeconds,
-		MaxWaitSeconds: DefaultAccountPoolMaxWaitSeconds,
+		DataDir:           filepath.Join(pluginDataDir, "account-pool"),
+		ReserveSeconds:    DefaultAccountPoolReserveSeconds,
+		WindowSeconds:     DefaultAccountPoolWindowSeconds,
+		MaxWaitSeconds:    DefaultAccountPoolMaxWaitSeconds,
+		MaxBusyRejections: DefaultAccountPoolMaxBusyRejections,
 	}
 	if decoded == nil {
 		return cfg
@@ -182,6 +195,9 @@ func accountPoolConfigFromYAML(decoded *accountPoolYAML, pluginDataDir string) A
 	}
 	if decoded.MaxWaitSeconds > 0 {
 		cfg.MaxWaitSeconds = decoded.MaxWaitSeconds
+	}
+	if decoded.MaxBusyRejections > 0 {
+		cfg.MaxBusyRejections = decoded.MaxBusyRejections
 	}
 	if cfg.DataDir == "" {
 		cfg.DataDir = filepath.Join(pluginDataDir, "account-pool")
@@ -243,8 +259,14 @@ func Normalize(input Config, workingDir string) (Config, error) {
 	if input.AccountPool.MaxWaitSeconds <= 0 {
 		input.AccountPool.MaxWaitSeconds = DefaultAccountPoolMaxWaitSeconds
 	}
+	if input.AccountPool.MaxBusyRejections <= 0 {
+		input.AccountPool.MaxBusyRejections = DefaultAccountPoolMaxBusyRejections
+	}
 	if input.AccountPool.ReserveSeconds > 300 || input.AccountPool.MaxWaitSeconds < 1 || input.AccountPool.MaxWaitSeconds > 300 {
 		return Config{}, fmt.Errorf("account pool reserve/max_wait seconds are out of bounds")
+	}
+	if input.AccountPool.MaxBusyRejections > 100 {
+		return Config{}, fmt.Errorf("account pool max_busy_rejections must be between 1 and 100")
 	}
 	return input, nil
 }

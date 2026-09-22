@@ -36,6 +36,9 @@ type Options struct {
 	DataDir string
 	Reserve time.Duration
 	MaxWait time.Duration
+	// MaxBusy is the number of consecutive queue timeouts before a session
+	// fails over to another in-pool account. Zero uses the engine default.
+	MaxBusy int
 	Enabled bool
 }
 
@@ -59,6 +62,9 @@ func New(opts Options) *Service {
 		persist: newPersistence(opts.DataDir),
 		engine:  NewEngine(opts.Reserve, opts.MaxWait, sessionKey),
 		enabled: opts.Enabled,
+	}
+	if opts.MaxBusy > 0 {
+		service.engine.SetMaxBusy(opts.MaxBusy)
 	}
 	return service
 }
