@@ -187,10 +187,27 @@ func EnabledMembers(p Policy, poolID string) []Member {
 	return members
 }
 
+// canonicalBindingHash normalizes a caller hash for binding lookup. The
+// runtime quota_key_hash metadata carries only the first 8 hex chars of the
+// API key's SHA-256 (internal/quota.KeyHash), while the management UI may
+// persist bindings with the full 64-char digest; both forms resolve to the
+// same canonical prefix so either representation binds.
+func canonicalBindingHash(hash string) string {
+	normalized := strings.ToLower(strings.TrimSpace(hash))
+	if len(normalized) > 8 {
+		return normalized[:8]
+	}
+	return normalized
+}
+
 // BindingPool returns the primary pool id for a caller hash and whether bound.
 func BindingPool(p Policy, callerHash string) (string, bool) {
+	want := canonicalBindingHash(callerHash)
+	if want == "" {
+		return "", false
+	}
 	for _, binding := range p.Bindings {
-		if strings.EqualFold(binding.APIKeyHash, callerHash) {
+		if canonicalBindingHash(binding.APIKeyHash) == want {
 			return binding.PoolID, true
 		}
 	}

@@ -2,6 +2,7 @@ package accountpool
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
@@ -93,6 +94,28 @@ func TestPolicyLookups(t *testing.T) {
 	}
 	if _, bound := BindingPool(p, "deadbeef"); bound {
 		t.Fatalf("BindingPool() unexpectedly bound")
+	}
+}
+
+func TestBindingPoolReconcilesShortAndFullHashes(t *testing.T) {
+	pool := Pool{ID: "eng", Name: "Eng", Enabled: true}
+	fullHash := "4dfe4c7861113e4b2e03f514d7adaa11e38cffec8c9ee2375c6b6267a5c11dba"
+	full := mustPolicy(t, []Pool{pool}, nil, []Binding{{APIKeyHash: fullHash, PoolID: "eng"}})
+	// The runtime quota_key_hash metadata carries only the first 8 hex chars
+	// (internal/quota.KeyHash); a full-digest binding must still resolve.
+	if poolID, bound := BindingPool(full, "4dfe4c78"); !bound || poolID != "eng" {
+		t.Fatalf("BindingPool(full binding, short caller) = %q, %v; want eng, true", poolID, bound)
+	}
+	if _, bound := BindingPool(full, "deadbeef"); bound {
+		t.Fatal("BindingPool(unrelated caller) unexpectedly bound")
+	}
+	if _, bound := BindingPool(full, ""); bound {
+		t.Fatal("BindingPool(empty caller) unexpectedly bound")
+	}
+	// Legacy short bindings keep matching, including mixed case.
+	short := mustPolicy(t, []Pool{pool}, nil, []Binding{{APIKeyHash: "ABCD1234", PoolID: "eng"}})
+	if poolID, bound := BindingPool(short, "abcd1234"); !bound || poolID != "eng" {
+		t.Fatalf("BindingPool(short binding, short caller) = %q, %v; want eng, true", poolID, bound)
 	}
 }
 
@@ -227,7 +250,7 @@ func TestServicePickRouting(t *testing.T) {
 }
 
 func TestServiceAdmitScope(t *testing.T) {
-	svc := New(Options{DataDir: t.TempDir(), Reserve: time.Second, MaxWait: time.Second, Enabled: true})
+	svc := New(Options{DataDir: t.TempDir(), Reserve: time.Second, MaxWait: 20 * time.Millisecond, Enabled: true})
 	if err := svc.Reload(); err != nil {
 		t.Fatalf("Reload() error = %v", err)
 	}
@@ -240,24 +263,74 @@ func TestServiceAdmitScope(t *testing.T) {
 	if _, err := svc.Apply(raw); err != nil {
 		t.Fatalf("Apply() error = %v", err)
 	}
-	// Unbound caller is never gated.
+	// Without configured limits every identified request passes regardless of binding.
 	if result := svc.AdmitIntercept("req-1", map[string]any{"quota_key_hash": "12345678", "selected_auth_id": "auth-a"}); result != nil {
 		t.Fatalf("unbound admit = %+v", result)
 	}
-	// Bound caller with selected auth is admitted (nil).
-	if result := svc.AdmitIntercept("req-1", map[string]any{"quota_key_hash": "abcd1234", "selected_auth_id": "auth-a"}); result != nil {
+	if result := svc.AdmitIntercept("req-2", map[string]any{"quota_key_hash": "abcd1234", "selected_auth_id": "auth-a"}); result != nil {
 		t.Fatalf("bound admit = %+v", result)
 	}
 	// Same request id duplicates are idempotent.
-	if result := svc.AdmitIntercept("req-1", map[string]any{"quota_key_hash": "abcd1234", "selected_auth_id": "auth-a"}); result != nil {
+	if result := svc.AdmitIntercept("req-2", map[string]any{"quota_key_hash": "abcd1234", "selected_auth_id": "auth-a"}); result != nil {
 		t.Fatalf("duplicate admit = %+v", result)
 	}
 	// Missing selected auth is never gated.
-	if result := svc.AdmitIntercept("req-2", map[string]any{"quota_key_hash": "abcd1234"}); result != nil {
+	if result := svc.AdmitIntercept("req-3", map[string]any{"quota_key_hash": "abcd1234"}); result != nil {
 		t.Fatalf("no selected auth admit = %+v", result)
 	}
-	// Complete releases the active slot.
 	svc.Complete("req-1")
+	svc.Complete("req-2")
+
+	// A configured limit applies to unbound callers too: pool binding is irrelevant.
+	svc.engine.Configure(map[string]Limit{"auth-a": {Max: 1, Window: time.Second}})
+	if result := svc.AdmitIntercept("req-4", map[string]any{"quota_key_hash": "12345678", "selected_auth_id": "auth-a"}); result != nil {
+		t.Fatalf("unbound first admit = %+v", result)
+	}
+	if active := svc.StateSnapshot("auth-a").Active; active != 1 {
+		t.Fatalf("Active = %d, want 1 (live stats independent of binding)", active)
+	}
+	rejected := svc.AdmitIntercept("req-5", map[string]any{"quota_key_hash": "12345678", "selected_auth_id": "auth-a"})
+	if rejected == nil || rejected.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("unbound second admit = %+v, want 503 account_busy", rejected)
+	}
+	if !strings.Contains(string(rejected.Body), "account_busy") {
+		t.Fatalf("rejected body = %s", rejected.Body)
+	}
+	// Complete releases the active slot.
+	svc.Complete("req-4")
+	if result := svc.AdmitIntercept("req-6", map[string]any{"selected_auth_id": "auth-a"}); result != nil {
+		t.Fatalf("admit after complete = %+v", result)
+	}
+}
+
+// Admission and live stats stay active while pool scheduling itself is disabled.
+func TestAdmitInterceptWorksWhenPoolDisabled(t *testing.T) {
+	svc := New(Options{DataDir: t.TempDir(), Reserve: time.Second, MaxWait: 20 * time.Millisecond, Enabled: false})
+	if err := svc.Reload(); err != nil {
+		t.Fatalf("Reload() error = %v", err)
+	}
+	if svc.Enabled() {
+		t.Fatal("service unexpectedly enabled")
+	}
+	svc.engine.Configure(map[string]Limit{"auth-x": {Max: 1, Window: time.Second}})
+	if result := svc.AdmitIntercept("r1", map[string]any{"selected_auth_id": "auth-x"}); result != nil {
+		t.Fatalf("first admit = %+v", result)
+	}
+	if active := svc.StateSnapshot("auth-x").Active; active != 1 {
+		t.Fatalf("Active = %d, want 1 with pool disabled", active)
+	}
+	rejected := svc.AdmitIntercept("r2", map[string]any{"selected_auth_id": "auth-x"})
+	if rejected == nil || rejected.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("second admit = %+v, want 503 with pool disabled", rejected)
+	}
+	// Accounts without configured limits are never gated.
+	if result := svc.AdmitIntercept("r3", map[string]any{"selected_auth_id": "auth-other"}); result != nil {
+		t.Fatalf("unlimited admit = %+v", result)
+	}
+	svc.Complete("r1")
+	if result := svc.AdmitIntercept("r4", map[string]any{"selected_auth_id": "auth-x"}); result != nil {
+		t.Fatalf("admit after complete = %+v", result)
+	}
 }
 
 func TestEngineConcurrencyGate(t *testing.T) {
