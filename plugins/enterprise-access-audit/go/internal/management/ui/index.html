@@ -573,7 +573,10 @@
 // ============ 账号池管理 ============
       const AP = '/v0/management/enterprise-access-audit/account-pool';
       Object.assign(state, { ap: { policy: null, status: null, authFiles: [], selectedPoolId: '', memberDraftPoolId: '', newPoolId: '', newPoolName: '', memberIds: [], selectedDeptId: '', selectedDeptHashes: [], renameText: '', limits: [], states: {}, busy: false, apError: '' } });
-      const apHash = normalizeKeyHash;
+      // Account-pool binding identity: canonical first-8 form so bindings stored
+      // as either the full 64-char digest or the runtime short hash resolve the
+      // same enterprise-key metadata (mirrors BindingPool on the Go side).
+      const apHash = (value) => normalizeKeyHash(value).slice(0, 8);
       const apMetaForHash = (hash) => { const h = apHash(hash); return (state.keyMetadata || []).find((item) => apHash(item.apiKeyHash) === h) || null; };
       const apUserLabel = (item) => { const meta = item || {}; const username = String(meta.userName || meta.username || meta.name || '').trim() || '未关联用户'; const department = String(meta.departmentName || meta.department || meta.departmentId || '').trim() || '未关联部门'; const email = String(meta.email || meta.userEmail || '').trim() || '未填写邮箱'; return { username, department, email }; };
       const apDepts = () => { const seen = {}; const out = []; (state.keyMetadata || []).forEach((item) => { const id = String(item.departmentId || '').trim(); if (!id || seen[id]) return; seen[id] = 1; out.push({ id, name: String(item.departmentName || item.department || id) }); }); return out; };
