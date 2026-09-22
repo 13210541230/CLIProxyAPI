@@ -44,6 +44,39 @@ func TestParseYAMLDefaultsAccountPoolDataDirWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestParseYAMLAcceptsFlatAccountPoolKeys(t *testing.T) {
+	workingDir := t.TempDir()
+	raw := "data_dir: plugin-state\naccount_pool.enabled: true\naccount_pool.data_dir: custom-pool\naccount_pool.reserve_seconds: 20\n"
+	cfg, err := ParseYAML([]byte(raw), workingDir)
+	if err != nil {
+		t.Fatalf("ParseYAML() error = %v", err)
+	}
+	if !cfg.AccountPool.Enabled {
+		t.Fatal("flat account_pool.enabled was not applied")
+	}
+	want := filepath.Join(workingDir, "custom-pool")
+	if cfg.AccountPool.DataDir != want {
+		t.Fatalf("account pool data directory = %q, want %q", cfg.AccountPool.DataDir, want)
+	}
+	if cfg.AccountPool.ReserveSeconds != 20 {
+		t.Fatalf("reserve seconds = %d, want 20", cfg.AccountPool.ReserveSeconds)
+	}
+	if _, errStat := os.Stat(want); errStat != nil {
+		t.Fatalf("account pool data directory was not created: %v", errStat)
+	}
+}
+
+func TestParseYAMLNestedAccountPoolWinsOverFlatKeys(t *testing.T) {
+	raw := "account_pool:\n  enabled: true\n  reserve_seconds: 7\naccount_pool.enabled: false\naccount_pool.reserve_seconds: 99\n"
+	cfg, err := ParseYAML([]byte(raw), t.TempDir())
+	if err != nil {
+		t.Fatalf("ParseYAML() error = %v", err)
+	}
+	if !cfg.AccountPool.Enabled || cfg.AccountPool.ReserveSeconds != 7 {
+		t.Fatalf("nested block should win: %+v", cfg.AccountPool)
+	}
+}
+
 func TestNormalizeRejectsUnsafeBounds(t *testing.T) {
 	base := Default()
 	for _, test := range []struct {

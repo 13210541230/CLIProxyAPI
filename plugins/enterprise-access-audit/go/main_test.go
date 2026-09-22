@@ -6,7 +6,40 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/state"
 )
+
+func TestFlatAccountPoolKeysEnableSchedulerRegistration(t *testing.T) {
+	root := t.TempDir()
+	yaml := "data_dir: " + filepath.ToSlash(root) + "\n" +
+		"account_pool.enabled: true\n" +
+		"account_pool.data_dir: " + filepath.ToSlash(filepath.Join(root, "pool")) + "\n"
+	configYAML := base64.StdEncoding.EncodeToString([]byte(yaml))
+	raw, err := handleMethod("plugin.register", []byte(`{"schema_version":2,"config_yaml":"`+configYAML+`"}`))
+	if err != nil {
+		t.Fatalf("register error = %v", err)
+	}
+	var envelopeResult envelope
+	if err := json.Unmarshal(raw, &envelopeResult); err != nil || !envelopeResult.OK {
+		t.Fatalf("registration envelope = %s, error=%v", raw, err)
+	}
+	var result registration
+	if err := json.Unmarshal(envelopeResult.Result, &result); err != nil {
+		t.Fatalf("decode registration: %v", err)
+	}
+	if !result.Capabilities.Scheduler {
+		t.Fatal("flat account_pool.enabled did not enable the scheduler capability")
+	}
+	if len(result.Capabilities.SchedulerExclusiveProviders) != 1 || result.Capabilities.SchedulerExclusiveProviders[0] != "codex" {
+		t.Fatalf("exclusive providers = %v, want [codex]", result.Capabilities.SchedulerExclusiveProviders)
+	}
+	// Close the store so Windows can remove the TempDir, then reset the
+	// package-level manager: Shutdown permanently closes it, and the following
+	// dispatch test still needs to register.
+	_, _ = handleMethod("plugin.shutdown", nil)
+	pluginState = state.New()
+}
 
 func TestJSONDispatchWiresInterceptAndCompletion(t *testing.T) {
 	root := t.TempDir()

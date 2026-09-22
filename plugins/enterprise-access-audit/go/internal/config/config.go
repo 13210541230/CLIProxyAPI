@@ -68,6 +68,15 @@ type yamlConfig struct {
 	MaxTextBytes        int              `yaml:"max_text_bytes"`
 	CleanupInterval     int              `yaml:"cleanup_interval_seconds"`
 	AccountPool         *accountPoolYAML `yaml:"account_pool"`
+	// Flat dotted keys. The Management Center plugin config editor writes
+	// ConfigField names literally, so account_pool.enabled arrives as a single
+	// YAML key rather than a nested block. Accept both shapes; an explicit
+	// nested account_pool block always wins.
+	AccountPoolEnabledFlat *bool  `yaml:"account_pool.enabled"`
+	AccountPoolDataDirFlat string `yaml:"account_pool.data_dir"`
+	AccountPoolReserveFlat int    `yaml:"account_pool.reserve_seconds"`
+	AccountPoolWindowFlat  int    `yaml:"account_pool.window_seconds"`
+	AccountPoolMaxWaitFlat int    `yaml:"account_pool.max_wait_seconds"`
 }
 
 type accountPoolYAML struct {
@@ -106,8 +115,49 @@ func ParseYAML(raw []byte, workingDir string) (Config, error) {
 	if decoded.CleanupInterval != 0 {
 		defaults.CleanupInterval = time.Duration(decoded.CleanupInterval) * time.Second
 	}
-	defaults.AccountPool = accountPoolConfigFromYAML(decoded.AccountPool, defaults.DataDir)
+	defaults.AccountPool = accountPoolConfigFromYAML(effectiveAccountPool(decoded), defaults.DataDir)
 	return Normalize(defaults, workingDir)
+}
+
+// effectiveAccountPool merges the flat dotted account_pool.* keys into the
+// nested block shape. Nested values win field-by-field when both are present.
+func effectiveAccountPool(decoded yamlConfig) *accountPoolYAML {
+	hasFlat := decoded.AccountPoolEnabledFlat != nil ||
+		decoded.AccountPoolDataDirFlat != "" ||
+		decoded.AccountPoolReserveFlat != 0 ||
+		decoded.AccountPoolWindowFlat != 0 ||
+		decoded.AccountPoolMaxWaitFlat != 0
+	if decoded.AccountPool == nil && !hasFlat {
+		return nil
+	}
+	flat := accountPoolYAML{}
+	if decoded.AccountPoolEnabledFlat != nil {
+		flat.Enabled = *decoded.AccountPoolEnabledFlat
+	}
+	flat.DataDir = decoded.AccountPoolDataDirFlat
+	flat.ReserveSeconds = decoded.AccountPoolReserveFlat
+	flat.WindowSeconds = decoded.AccountPoolWindowFlat
+	flat.MaxWaitSeconds = decoded.AccountPoolMaxWaitFlat
+	if decoded.AccountPool == nil {
+		return &flat
+	}
+	merged := *decoded.AccountPool
+	if !merged.Enabled && flat.Enabled {
+		merged.Enabled = true
+	}
+	if merged.DataDir == "" {
+		merged.DataDir = flat.DataDir
+	}
+	if merged.ReserveSeconds == 0 {
+		merged.ReserveSeconds = flat.ReserveSeconds
+	}
+	if merged.WindowSeconds == 0 {
+		merged.WindowSeconds = flat.WindowSeconds
+	}
+	if merged.MaxWaitSeconds == 0 {
+		merged.MaxWaitSeconds = flat.MaxWaitSeconds
+	}
+	return &merged
 }
 
 func accountPoolConfigFromYAML(decoded *accountPoolYAML, pluginDataDir string) AccountPoolConfig {
