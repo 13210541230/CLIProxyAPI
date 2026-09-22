@@ -281,6 +281,11 @@ routing:
 
 # Codex provider behavior.
 codex:
+  # Optional custom Codex upstream gateway. Applied only to credentials without an
+  # explicit base-url (codex-api-key entry or auth file), so a per-credential base-url
+  # always wins. Empty keeps the official https://chatgpt.com/backend-api/codex;
+  # clear this value to switch a relay gateway back to the official endpoint.
+  base-url: ""
   # Experimental full-duplex Codex Responses WebSocket steering (default: false).
   # Keeps one upstream account/model per socket; accepted input is never replayed.
   # See STEERING.md for limitations.

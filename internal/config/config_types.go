@@ -180,7 +180,13 @@ type AntigravityConnectionPoolConfig struct {
 
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
-	IdentityConfuse bool `yaml:"identity-confuse" json:"identity-confuse"`
+	// BaseURL replaces the default Codex upstream gateway (https://chatgpt.com/backend-api/codex)
+	// for every Codex credential that carries no explicit base-url of its own (codex-api-key entry
+	// or auth file). A per-credential base-url always wins, so this acts as a switchable gateway:
+	// set it to route through a relay and clear it to fall back to the official endpoint. Config
+	// hot-reload applies; no restart is required.
+	BaseURL         string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+	IdentityConfuse bool   `yaml:"identity-confuse" json:"identity-confuse"`
 	// DisableCodexCloaking disables forcing the official Codex identity headers on HTTP/SSE and WebSocket requests.
 	DisableCodexCloaking bool `yaml:"disable-codex-cloaking" json:"disable-codex-cloaking"`
 	// StreamBootstrapBuffering holds back the frames that arrive before generation starts, none of

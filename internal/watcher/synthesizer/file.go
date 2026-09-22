@@ -252,8 +252,12 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 			a.Attributes["base_url"] = kimiauth.ResolveKimiAPIBaseURL(resolvedDomain)
 		}
 	}
-	// For codex auth files, extract plan_type from metadata or JWT id_token.
+	// For codex auth files, honor an explicit upstream gateway override and extract
+	// plan_type from metadata or JWT id_token.
 	if provider == "codex" {
+		if bu, ok := metadata["base_url"].(string); ok && strings.TrimSpace(bu) != "" {
+			a.Attributes["base_url"] = strings.TrimSpace(bu)
+		}
 		if ptRaw, ok := metadata["plan_type"].(string); ok && strings.TrimSpace(ptRaw) != "" {
 			a.Attributes["plan_type"] = strings.TrimSpace(ptRaw)
 		} else if idTokenRaw, ok := metadata["id_token"].(string); ok && strings.TrimSpace(idTokenRaw) != "" {

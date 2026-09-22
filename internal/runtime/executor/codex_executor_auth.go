@@ -56,7 +56,7 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 	return auth, nil
 }
 
-func codexCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
+func (e *CodexExecutor) codexCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
 	if a == nil {
 		return "", ""
 	}
@@ -68,6 +68,11 @@ func codexCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
 		if v, ok := a.Metadata["access_token"].(string); ok {
 			apiKey = v
 		}
+	}
+	// Configurable Codex gateway: fills credentials that carry no explicit base-url,
+	// so clearing codex.base-url restores the official endpoint on config hot-reload.
+	if baseURL == "" && e != nil && e.cfg != nil {
+		baseURL = strings.TrimSpace(e.cfg.Codex.BaseURL)
 	}
 	return
 }
