@@ -196,6 +196,32 @@ func (s *Store) CleanupExpired(ctx context.Context, now time.Time) (int64, error
 	return s.audit.Cleanup(ctx, cutoff)
 }
 
+// DeleteAudits removes audit records by their identifiers.
+func (s *Store) DeleteAudits(ctx context.Context, ids []int64) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return 0, ErrClosed
+	}
+	if s.audit == nil {
+		return 0, fmt.Errorf("JSONL audit log is unavailable")
+	}
+	return s.audit.Delete(ctx, ids)
+}
+
+// DeleteAllAudits removes every persisted audit record.
+func (s *Store) DeleteAllAudits(ctx context.Context) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return 0, ErrClosed
+	}
+	if s.audit == nil {
+		return 0, fmt.Errorf("JSONL audit log is unavailable")
+	}
+	return s.audit.DeleteAll(ctx)
+}
+
 func toAuditLogRecord(record AuditRecord) auditlog.Record {
 	return auditlog.Record{ID: record.ID, KeyHash: record.KeyHash, CreatedAt: record.CreatedAt, Model: record.Model, SourceFormat: record.SourceFormat, RequestID: record.RequestID, Outcome: record.Outcome, StatusCode: record.StatusCode, Text: record.Text, TextAvailable: record.TextAvailable, TextUnavailableReason: record.TextUnavailableReason, TextTruncated: record.TextTruncated, SecuritySignal: record.SecuritySignal, SecurityMessage: record.SecurityMessage}
 }

@@ -29,6 +29,7 @@ const (
 	PolicyPath        = Prefix + "/policy"
 	AuditPath         = Prefix + "/audit"
 	AuditDetailPath   = Prefix + "/audit/detail"
+	AuditDeletePath   = Prefix + "/audit/delete"
 	SettingsPath      = Prefix + "/settings"
 	ResourceUIPath    = "/ui"
 
@@ -108,6 +109,7 @@ func Routes(basePath, resourceBasePath string) Registration {
 				{Method: http.MethodPut, Path: basePath + PolicyPath},
 				{Method: http.MethodGet, Path: basePath + AuditPath},
 				{Method: http.MethodGet, Path: basePath + AuditDetailPath},
+				{Method: http.MethodPost, Path: basePath + AuditDeletePath},
 				{Method: http.MethodGet, Path: basePath + SettingsPath},
 				{Method: http.MethodPut, Path: basePath + SettingsPath},
 			},
@@ -163,6 +165,8 @@ func (h *Handler) Handle(ctx context.Context, req ManagementRequest) ManagementR
 		return h.listAudit(ctx, req.Query)
 	case path == AuditDetailPath:
 		return h.auditDetail(ctx, req.Query)
+	case path == AuditDeletePath && method == http.MethodPost:
+		return h.deleteAudit(ctx, req.Body)
 	case path == SettingsPath && method == http.MethodGet:
 		return h.getSettings(ctx)
 	case path == SettingsPath:
@@ -184,7 +188,7 @@ func normalizePath(path string) string {
 
 func isKnownPath(path string) bool {
 	switch path {
-	case ResourceUIPath, PoliciesPath, BatchPoliciesPath, PolicyPath, AuditPath, AuditDetailPath, SettingsPath:
+	case ResourceUIPath, PoliciesPath, BatchPoliciesPath, PolicyPath, AuditPath, AuditDetailPath, AuditDeletePath, SettingsPath:
 		return true
 	default:
 		return false
@@ -192,6 +196,9 @@ func isKnownPath(path string) bool {
 }
 
 func methodAllowed(path, method string) bool {
+	if path == AuditDeletePath {
+		return method == http.MethodPost
+	}
 	if path == ResourceUIPath || path == PoliciesPath || path == AuditPath || path == AuditDetailPath {
 		return method == http.MethodGet
 	}
@@ -199,6 +206,9 @@ func methodAllowed(path, method string) bool {
 }
 
 func allowedMethods(path string) string {
+	if path == AuditDeletePath {
+		return http.MethodPost
+	}
 	if path == ResourceUIPath {
 		return http.MethodGet
 	}
@@ -394,6 +404,44 @@ func (h *Handler) auditDetail(ctx context.Context, query url.Values) ManagementR
 		return nil
 	})
 	return jsonResponse(http.StatusOK, auditJSON(record, settings))
+}
+
+type auditDeleteRequest struct {
+	IDs []int64 `json:"ids"`
+	All bool    `json:"all"`
+}
+
+func (h *Handler) deleteAudit(ctx context.Context, body []byte) ManagementResponse {
+	var request auditDeleteRequest
+	if len(body) > 0 {
+		if errJSON := json.Unmarshal(body, &request); errJSON != nil {
+			return errorResponse(http.StatusBadRequest, "invalid_input", "request body must be valid JSON")
+		}
+	}
+	ids := make([]int64, 0, len(request.IDs))
+	for _, id := range request.IDs {
+		if id < 1 {
+			return errorResponse(http.StatusBadRequest, "invalid_input", "ids must be positive integers")
+		}
+		ids = append(ids, id)
+	}
+	if !request.All && len(ids) == 0 {
+		return errorResponse(http.StatusBadRequest, "invalid_input", "ids or all is required")
+	}
+	var removed int64
+	errStore := h.state.WithStore(ctx, func(active *store.Store) error {
+		var err error
+		if request.All {
+			removed, err = active.DeleteAllAudits(ctx)
+		} else {
+			removed, err = active.DeleteAudits(ctx, ids)
+		}
+		return err
+	})
+	if errStore != nil {
+		return storageResponse(errStore)
+	}
+	return jsonResponse(http.StatusOK, map[string]any{"deleted": removed})
 }
 
 type settingsResponse struct {

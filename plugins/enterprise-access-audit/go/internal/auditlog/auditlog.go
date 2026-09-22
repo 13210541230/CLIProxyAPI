@@ -337,6 +337,83 @@ func (l *Log) Cleanup(ctx context.Context, cutoff time.Time) (int64, error) {
 	return removed, nil
 }
 
+// Delete removes persisted records whose IDs are present in the set.
+func (l *Log) Delete(ctx context.Context, ids []int64) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return 0, ErrClosed
+	}
+	target := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		if id > 0 {
+			target[id] = struct{}{}
+		}
+	}
+	if len(target) == 0 {
+		return 0, nil
+	}
+	var removed int64
+	for _, path := range l.filePathsLocked() {
+		if err := ctx.Err(); err != nil {
+			return removed, err
+		}
+		records, err := readRecords(path)
+		if err != nil {
+			return removed, err
+		}
+		kept := records[:0]
+		for _, record := range records {
+			if _, drop := target[record.ID]; drop {
+				removed++
+				delete(target, record.ID)
+				continue
+			}
+			kept = append(kept, record)
+		}
+		if len(kept) == len(records) {
+			continue
+		}
+		if err := rewriteFile(path, kept); err != nil {
+			return removed, err
+		}
+	}
+	return removed, nil
+}
+
+// DeleteAll removes every persisted audit record across dated files.
+func (l *Log) DeleteAll(ctx context.Context) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return 0, ErrClosed
+	}
+	var removed int64
+	for _, path := range l.filePathsLocked() {
+		if err := ctx.Err(); err != nil {
+			return removed, err
+		}
+		records, err := readRecords(path)
+		if err != nil {
+			return removed, err
+		}
+		if len(records) == 0 {
+			continue
+		}
+		removed += int64(len(records))
+		if err := rewriteFile(path, nil); err != nil {
+			return removed, err
+		}
+	}
+	return removed, nil
+}
+
 func (l *Log) prepareLocked(record Record, maxTextBytes int) Record {
 	if record.ID == 0 {
 		record.ID = l.nextID

@@ -40,7 +40,7 @@ func decodeResponse(t *testing.T, response ManagementResponse, target any) {
 
 func TestRoutesAreFixedLiteralPaths(t *testing.T) {
 	registration := Routes("/v0/management", "/v0/resource/plugins/enterprise-access-audit")
-	if len(registration.Routes) != 13 {
+	if len(registration.Routes) != 14 {
 		t.Fatalf("route count = %d", len(registration.Routes))
 	}
 	if len(registration.Resources) != 1 || registration.Resources[0].Path != "/v0/resource/plugins/enterprise-access-audit/ui" {
