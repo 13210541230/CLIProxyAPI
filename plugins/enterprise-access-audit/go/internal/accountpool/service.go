@@ -55,8 +55,9 @@ type Service struct {
 	enabled bool
 }
 
-// New creates a Service with the given options. Options.Enabled gates scheduler
-// participation and admission.
+// New creates a Service with the given options. Options.Enabled gates
+// scheduler participation only; admission and per-account live stats are
+// always active so concurrency limits work with or without pools.
 func New(opts Options) *Service {
 	service := &Service{
 		persist: newPersistence(opts.DataDir),
@@ -290,23 +291,14 @@ func (s *Service) pickGlobally(request SchedulerPickRequest) SchedulerPickRespon
 }
 
 // AdmitIntercept gates an already-selected request at the after-auth stage.
+//
+// Concurrency accounting is deliberately independent of account-pool
+// scheduling: per-account limits and live counters apply to every request
+// whose executor published a selected auth id, whether or not pool
+// scheduling is enabled and whether or not the caller is pool-bound.
 // It returns nil when the request may proceed; otherwise a termination result.
 func (s *Service) AdmitIntercept(requestID string, metadata map[string]any) *AdmitResult {
-	if s == nil || !s.enabled || requestID == "" {
-		return nil
-	}
-	s.mu.RLock()
-	if !s.ready {
-		s.mu.RUnlock()
-		return nil
-	}
-	p := s.policy
-	s.mu.RUnlock()
-	callerHash := strings.ToLower(strings.TrimSpace(metadataString(metadata, metadataKeyHash)))
-	if callerHash == "" {
-		return nil
-	}
-	if _, bound := BindingPool(p, callerHash); !bound {
+	if s == nil || requestID == "" {
 		return nil
 	}
 	authID := strings.TrimSpace(metadataString(metadata, metadataSelectedAuthID))
@@ -482,7 +474,7 @@ func admissionRejected(code string, status int, retryable bool) *AdmitResult {
 	body, _ := json.Marshal(map[string]any{"error": map[string]any{
 		"type":      "account_busy",
 		"code":      code,
-		"message":   "account pool credential is temporarily saturated",
+		"message":   "account credential is temporarily saturated",
 		"retryable": retryable,
 	}})
 	return &AdmitResult{Terminate: true, StatusCode: status, Body: body}

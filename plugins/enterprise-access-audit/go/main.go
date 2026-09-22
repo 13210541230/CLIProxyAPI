@@ -42,6 +42,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/accountpool"
@@ -267,7 +268,7 @@ func pluginRegistration() registration {
 				{Name: "default_audit_enabled", Type: "boolean", Description: "Default audit state for an absent policy."},
 				{Name: "max_text_bytes", Type: "integer", Description: "Maximum persisted user-text bytes (1-1048576)."},
 				{Name: "cleanup_interval_seconds", Type: "integer", Description: "Automatic cleanup interval in seconds."},
-				{Name: "account_pool.enabled", Type: "boolean", Description: "Enable account-pool Codex scheduling and admission (registers the scheduler capability)."},
+				{Name: "account_pool.enabled", Type: "boolean", Description: "Enable account-pool Codex scheduling (registers the scheduler capability). Per-account concurrency limits and live stats apply regardless of this switch."},
 				{Name: "account_pool.data_dir", Type: "string", Description: "Account-pool state directory; defaults to <data_dir>/account-pool."},
 				{Name: "account_pool.reserve_seconds", Type: "integer", Description: "Scheduler reservation seconds guarding against pick bursts (default 10)."},
 				{Name: "account_pool.window_seconds", Type: "integer", Description: "Default rolling admission window seconds (default 15)."},
@@ -315,16 +316,36 @@ func interceptRequest(raw []byte, afterAuth bool) ([]byte, error) {
 	return okEnvelope(result)
 }
 
-// accountPoolAdmit gates a selected request when account-pool scheduling is active.
+// admitDebug appends one admission diagnostic line when ACCOUNTPOOL_DEBUG_FILE
+// is set (the smoke harness wires it); it is a no-op otherwise.
+func admitDebug(format string, args ...any) {
+	path := strings.TrimSpace(os.Getenv("ACCOUNTPOOL_DEBUG_FILE"))
+	if path == "" {
+		return
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer func() { _ = file.Close() }()
+	_, _ = fmt.Fprintf(file, "[%s] %s\n", time.Now().Format("15:04:05.000"), fmt.Sprintf(format, args...))
+}
+
+// accountPoolAdmit gates a selected request at the after-auth stage.
 func accountPoolAdmit(request intercept.Request) *intercept.Response {
 	svc := pluginState.AccountPool()
+	authID, _ := request.Metadata["selected_auth_id"].(string)
+	callerHash, _ := request.Metadata["quota_key_hash"].(string)
+	admitDebug("enter req=%q auth=%q hash=%q svc_nil=%v", request.RequestID, authID, callerHash, svc == nil)
 	if svc == nil {
 		return nil
 	}
 	result := svc.AdmitIntercept(request.RequestID, request.Metadata)
 	if result == nil {
+		admitDebug("pass req=%q", request.RequestID)
 		return nil
 	}
+	admitDebug("reject req=%q status=%d body=%s", request.RequestID, result.StatusCode, result.Body)
 	status := result.StatusCode
 	if status <= 0 {
 		status = http.StatusServiceUnavailable

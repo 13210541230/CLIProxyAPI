@@ -79,7 +79,7 @@ The plugin configuration fields are:
 | `default_audit_enabled` | `false` | Applies to a Key with no stored policy row; a stored per-Key switch still wins when the global switch is enabled. |
 | `max_text_bytes` | `32768` | Maximum persisted user-text size. Valid range is 1–1048576 bytes; truncation is recorded as metadata. |
 | `cleanup_interval_seconds` | `3600` | Periodic expiry cleanup interval. |
-| `account_pool.enabled` | `false` | Master switch. When enabled the plugin registers the `scheduler` capability and becomes the exclusive Codex scheduler owner, taking over department-pool routing, per-account concurrency, and admission; when disabled behavior is identical to the audit-only plugin. |
+| `account_pool.enabled` | `false` | Master switch for account-pool **scheduling**: when enabled the plugin registers the `scheduler` capability and becomes the exclusive Codex scheduler owner, taking over department-pool routing; when disabled behavior is identical to the audit-only plugin. Per-account concurrency limits, admission, and live in-flight stats are **independent of this switch** and stay active whenever limits are configured. |
 | `account_pool.data_dir` | `<data_dir>/account-pool` | Directory for account-pool policy and concurrency limits (`account-pool-policy.json` / `account-pool-limits.json`). |
 | `account_pool.reserve_seconds` | `10` | Scheduler reservation seconds that guard against pick bursts. |
 | `account_pool.window_seconds` | `15` | Default rolling admission window width in seconds. |
