@@ -599,6 +599,8 @@
         try {
           const snapshot = await callHost('GET', AP);
           const filesPayload = await callHost('GET', '/v0/management/auth-files');
+          const credsPayload = await callHost('GET', '/v0/management/auth-credentials');
+          state.ap.credentials = Array.isArray(credsPayload && credsPayload.credentials) ? credsPayload.credentials : [];
           state.ap.policy = (snapshot && snapshot.policy) || null;
           state.ap.status = (snapshot && snapshot.status) || null;
           state.ap.authFiles = Array.isArray(filesPayload && filesPayload.files) ? filesPayload.files : [];
@@ -686,23 +688,28 @@
         return { pools: pools.length, members, bindings: ((state.ap.policy && state.ap.policy.bindings) || []).length, active, waiting };
       };
       const apCodexAuthFiles = () => state.ap.authFiles.filter((file) => String(file.type || file.provider).toLowerCase() === 'codex');
-      const apLiveAuthIds = () => Array.from(new Set([].concat(apCodexAuthFiles().map((file) => apAuthId(file)), apPools().flatMap((pool) => apMembers(pool.id)), (state.ap.limits || []).map((item) => item.authId)))).filter((id) => String(id || '').trim());
+      const apCredTypeLabel = (cred) => { const kind = cred.auth_kind === 'apikey' ? 'API Key' : (cred.auth_kind === 'oauth' ? 'OAuth' : ''); const src = cred.source === 'config' ? 'Provider 配置' : cred.source === 'file' ? '认证文件' : cred.source === 'memory' ? '运行时' : (cred.source || ''); return (kind && src) ? kind + ' · ' + src : (kind || src || '未知类型'); };
+      const apCredential = (authId) => (state.ap.credentials || []).find((cred) => cred.id === authId) || null;
+      const apLiveAuthIds = () => Array.from(new Set([].concat(apCodexAuthFiles().map((file) => apAuthId(file)), (state.ap.credentials || []).map((cred) => cred.id), apPools().flatMap((pool) => apMembers(pool.id)), (state.ap.limits || []).map((item) => item.authId)))).filter((id) => String(id || '').trim());
       const buildLiveRows = () => {
         const statNum = (value) => escapeHTML(value == null ? '-' : value);
         const codexFiles = apCodexAuthFiles();
         const liveIds = apLiveAuthIds();
-        if (!liveIds.length) return '<tr><td colspan="9" class="empty">暂无 Codex 认证文件，请先到“认证文件”页面导入或登录 Codex 账号。</td></tr>';
+        if (!liveIds.length) return '<tr><td colspan="9" class="empty">暂无账号凭据，请先导入认证文件或在配置中添加 Provider 凭据。</td></tr>';
         return liveIds.map((authId) => {
           const limit = apLimitFor(authId);
           const file = codexFiles.find((item) => apAuthId(item) === authId);
-          const info = file ? apAuthLabel(file) : apAuthDisplay(authId, codexFiles);
+          const cred = apCredential(authId);
+          const info = file ? apAuthLabel(file) : (cred ? { title: cred.name || cred.id, meta: cred.id + (cred.provider ? ' · ' + cred.provider : '') + ' · ' + apCredTypeLabel(cred) } : apAuthDisplay(authId, codexFiles));
           const snapshot = apStateFor(authId) || {};
           const queueHot = (snapshot.waiting || 0) > 0 ? ' ap-queue-hot' : '';
           const statusCell = file
             ? (file.disabled ? '<span class="ap-auth-state danger">已停用</span>' : '<span class="ap-auth-state success">启用中</span>')
-            : ((state.ap.limits || []).some((item) => item.authId === authId)
-              ? '<span class="ap-auth-state">已配置限制</span>'
-              : '<span class="ap-auth-state">池成员</span>');
+            : (cred
+              ? (cred.disabled ? '<span class="ap-auth-state danger">已停用</span>' : '<span class="ap-auth-state success">启用中</span>')
+              : ((state.ap.limits || []).some((item) => item.authId === authId)
+                ? '<span class="ap-auth-state">已配置限制</span>'
+                : '<span class="ap-auth-state">池成员</span>'));
           return '<tr>' +
             '<td><div class="ap-auth-cell"><strong title="' + escapeHTML(info.fileName || info.title) + '">' + escapeHTML(info.title) + '</strong><small class="mono">' + escapeHTML(info.meta) + '</small></div></td>' +
             '<td>' + statusCell + '</td>' +
@@ -778,10 +785,10 @@
       const renderAccountStatus = () => {
         const liveRows = buildLiveRows();
         return '<section class="panel account-pool-panel">' +
-          '<div class="panel-head"><div><h2>账号状态概览</h2><p class="ap-subtitle">全局查看每个认证账号的并发限制与实时在线请求数（活动 / 排队 / 预留 / 窗口命中）；与是否启用账号池无关，每 5 秒自动刷新。</p></div><div class="actions">' + (state.ap.busy ? '<span class="badge warn"><span class="spinner"></span>正在保存</span>' : '') + '<button class="small" data-action="ap-reload">刷新</button><button class="small" data-action="ap-refresh-states">刷新状态</button></div></div>' +
+          '<div class="panel-head"><div><h2>账号状态概览</h2><p class="ap-subtitle">全局查看每个账号凭据（认证文件与 Provider 配置条目均可限流）的并发限制与实时在线请求数（活动 / 排队 / 预留 / 窗口命中）；与是否启用账号池无关，每 5 秒自动刷新。</p></div><div class="actions">' + (state.ap.busy ? '<span class="badge warn"><span class="spinner"></span>正在保存</span>' : '') + '<button class="small" data-action="ap-reload">刷新</button><button class="small" data-action="ap-refresh-states">刷新状态</button></div></div>' +
           (state.ap.apError ? '<p class="error-text">' + escapeHTML(state.ap.apError) + '</p>' : '') +
-          '<section class="ap-step"><div class="ap-step-head"><div><h3>账号并发与排队</h3><p>左侧编辑并发限制（0 = 不限制），右侧为实时状态。保存后立即对所有请求生效，无需启用账号池。</p></div></div>' +
-          '<div class="table-wrap"><table class="table ap-live-table"><thead><tr><th>认证文件 / 账号</th><th>状态</th><th>最大并发</th><th>窗口内最大请求</th><th>窗口秒</th><th>活动</th><th>排队</th><th>预留</th><th>窗口命中</th></tr></thead><tbody>' + liveRows + '</tbody></table></div>' +
+          '<section class="ap-step"><div class="ap-step-head"><div><h3>账号并发与排队</h3><p>左侧编辑并发限制（0 = 不限制），右侧为实时状态。认证文件和 Provider 配置凭据都可设置，保存后立即对所有请求生效，无需启用账号池。</p></div></div>' +
+          '<div class="table-wrap"><table class="table ap-live-table"><thead><tr><th>凭据 / 账号</th><th>状态</th><th>最大并发</th><th>窗口内最大请求</th><th>窗口秒</th><th>活动</th><th>排队</th><th>预留</th><th>窗口命中</th></tr></thead><tbody>' + liveRows + '</tbody></table></div>' +
           '<div class="ap-actions"><button class="primary" data-action="ap-save-limits" ' + (state.ap.busy ? 'disabled' : '') + '>保存并发限制</button></div>' +
           '</section></section>';
       };
