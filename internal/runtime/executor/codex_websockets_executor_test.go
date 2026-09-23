@@ -380,12 +380,15 @@ func TestCodexWebsocketsExecutePreservesPreviousResponseIDUpstream(t *testing.T)
 	}
 }
 
-func TestCodexWebsocketsExecuteStreamUpgradeRequiredReturnsWithoutLockingSession(t *testing.T) {
+func TestCodexWebsocketsExecuteStreamUpgradeRequiredFallsBackToHTTPWithoutLockingSession(t *testing.T) {
 	upgradeAttempts := make(chan struct{}, 2)
+	fallbackRequests := make(chan struct{}, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-			t.Errorf("unexpected HTTP fallback request: %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusInternalServerError)
+			// HTTP-only upstream: the websocket upgrade is refused with 426, so
+			// the executor must transparently fall back to the HTTP transport.
+			fallbackRequests <- struct{}{}
+			http.Error(w, "upstream degraded", http.StatusInternalServerError)
 			return
 		}
 		upgradeAttempts <- struct{}{}
@@ -428,11 +431,11 @@ func TestCodexWebsocketsExecuteStreamUpgradeRequiredReturnsWithoutLockingSession
 		select {
 		case errExecute := <-done:
 			if errExecute == nil {
-				t.Fatal("upgrade-required error = nil")
+				t.Fatal("fallback error = nil")
 			}
 			statusErr, ok := errExecute.(interface{ StatusCode() int })
-			if !ok || statusErr.StatusCode() != http.StatusUpgradeRequired {
-				t.Fatalf("upgrade-required error = %T %v, want status 426", errExecute, errExecute)
+			if !ok || statusErr.StatusCode() != http.StatusInternalServerError {
+				t.Fatalf("fallback error = %T %v, want HTTP fallback status 500", errExecute, errExecute)
 			}
 		case <-time.After(5 * time.Second):
 			t.Fatal("timed out waiting for upgrade-required error; execution session may still be locked")
@@ -444,6 +447,9 @@ func TestCodexWebsocketsExecuteStreamUpgradeRequiredReturnsWithoutLockingSession
 
 	if got := len(upgradeAttempts); got != 2 {
 		t.Fatalf("websocket upgrade attempts = %d, want 2", got)
+	}
+	if got := len(fallbackRequests); got != 2 {
+		t.Fatalf("HTTP fallback requests = %d, want 2", got)
 	}
 }
 

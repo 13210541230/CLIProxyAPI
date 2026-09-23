@@ -154,7 +154,11 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			helps.RecordAPIWebsocketUpgradeRejection(ctx, e.cfg, websocketUpgradeRequestLog(wsReqLog), respHS.StatusCode, respHS.Header.Clone(), bodyErr)
 		}
 		if respHS != nil && respHS.StatusCode == http.StatusUpgradeRequired {
-			if opts.ExecutionLifecycle == nil && !cliproxyexecutor.DownstreamWebsocket(ctx) {
+			if opts.ExecutionLifecycle == nil {
+				// The upstream refused the websocket upgrade (e.g. an HTTP-only
+				// gateway returning 426). Fall back to the legacy HTTP transport;
+				// downstream websocket requests are served by the HTTP executor
+				// whenever websocket transport is disabled anyway.
 				return e.CodexExecutor.Execute(ctx, auth, req, opts)
 			}
 			if cliproxyexecutor.UpstreamAttempted(dialCtx) {

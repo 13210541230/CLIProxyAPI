@@ -1525,6 +1525,12 @@ func shouldSkipCredentialCooldown(err *Error) bool {
 	if err != nil && err.Code == ErrorCodeForceCooldown {
 		return false
 	}
+	if statusCodeFromResult(err) == http.StatusUpgradeRequired {
+		// The upstream refused the websocket upgrade (HTTP-only gateway or
+		// protocol mismatch). This is transport evidence, never credential
+		// evidence, so it must not cool or exclude the account.
+		return true
+	}
 	return isRequestScopedResultError(err) || isConnectionLifecycleResultError(err) || isTransientUpstreamResultError(err) || isTransientTransportResultError(err)
 }
 

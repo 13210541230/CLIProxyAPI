@@ -20,6 +20,7 @@ func TestManager_MarkResult_TransientUpstreamNoCooldown(t *testing.T) {
 		err  *Error
 	}{
 		{name: "500 empty stream", err: &Error{HTTPStatus: http.StatusInternalServerError, Message: "empty_stream: upstream stream closed before first payload"}},
+		{name: "426 upgrade required", err: &Error{HTTPStatus: http.StatusUpgradeRequired, Message: `{"detail":"Upgrade Required"}`}},
 		{name: "502 bad gateway", err: &Error{HTTPStatus: http.StatusBadGateway, Message: "upstream stream ended with incomplete SSE data frame"}},
 		{name: "503 service unavailable", err: &Error{HTTPStatus: http.StatusServiceUnavailable, Message: `{"error":{"code":"server_is_overloaded"}}`}},
 		{name: "504 gateway timeout", err: &Error{HTTPStatus: http.StatusGatewayTimeout, Message: "stream error: stream disconnected before completion"}},
