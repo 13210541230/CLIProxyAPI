@@ -42,6 +42,36 @@ func (m *Manager) hasPluginScheduler() bool {
 	return true
 }
 
+// pluginSchedulerExcludesFastPath reports whether an exclusive provider claim
+// forces the legacy path: a live claim must always reach PickAuth so a broken
+// owner fails closed instead of the native fast path selecting globally.
+func (m *Manager) pluginSchedulerExcludesFastPath(provider string) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.RLock()
+	scheduler := m.pluginScheduler
+	m.mu.RUnlock()
+	if scheduler == nil {
+		return false
+	}
+	if gate, ok := scheduler.(PluginSchedulerExcludesFastPath); ok {
+		return gate.SchedulerExcludesFastPath(provider)
+	}
+	return false
+}
+
+// pluginSchedulerExcludesFastPathAny reports whether any listed provider is
+// exclusively claimed (used by the mixed-provider fast path).
+func (m *Manager) pluginSchedulerExcludesFastPathAny(providers []string) bool {
+	for _, provider := range providers {
+		if m.pluginSchedulerExcludesFastPath(provider) {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Manager) pluginSchedulerWantsAcrossPrioritiesLocked() bool {
 	if m == nil || m.pluginScheduler == nil {
 		return false
@@ -1995,7 +2025,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = provider
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model
 
-	if m.hasPluginScheduler() || !m.useSchedulerFastPath() {
+	if m.hasPluginScheduler() || !m.useSchedulerFastPath() || m.pluginSchedulerExcludesFastPath(provider) {
 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
@@ -2168,7 +2198,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = "mixed"
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model
 
-	if m.hasPluginScheduler() || !m.useSchedulerFastPath() {
+	if m.hasPluginScheduler() || !m.useSchedulerFastPath() || m.pluginSchedulerExcludesFastPathAny(providers) {
 		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 	}
 

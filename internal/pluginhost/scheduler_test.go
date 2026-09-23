@@ -339,11 +339,11 @@ func TestHostExclusiveSchedulerRequiresCanonicalCallerHash(t *testing.T) {
 	}
 }
 
-// An owner that is still loaded but dropped its scheduler capability entirely
-// (e.g. the account pool was switched off while the exclusive declaration
-// remains in config) has relinquished the claim: scheduling falls back to the
-// built-in selector instead of failing closed.
-func TestHostExclusiveSchedulerRelinquishedOwnerFallsBackToBuiltin(t *testing.T) {
+// An exclusive claim with an owner record that lost its scheduler capability
+// is an accidental failure (load error, fuse, capability loss) — it must fail
+// closed. Deliberate releases remove the claim in config and never reach
+// PickAuth as exclusive (see runtimeConfigFromConfig).
+func TestHostExclusiveSchedulerBrokenOwnerFailsClosed(t *testing.T) {
 	host := newHostWithRecords(capabilityRecord{
 		id:       "pool-scheduler",
 		priority: 1,
@@ -355,8 +355,30 @@ func TestHostExclusiveSchedulerRelinquishedOwnerFallsBackToBuiltin(t *testing.T)
 	req.Provider = "codex"
 	req.Options.Metadata = map[string]any{"quota_key_hash": "abcdef12"}
 	_, handled, errPick := host.PickAuth(context.Background(), req)
-	if handled || errPick != nil {
-		t.Fatalf("PickAuth() = handled %v, err %v, want built-in fallback (handled=false, err=nil)", handled, errPick)
+	var authErr interface {
+		Error() string
+		StatusCode() int
+	}
+	if !handled || !errors.As(errPick, &authErr) || authErr.StatusCode() != 503 || !strings.Contains(errPick.Error(), "policy_unavailable") {
+		t.Fatalf("PickAuth() = handled %v, err %v, want policy_unavailable/503 fail-closed", handled, errPick)
+	}
+}
+
+// The fast-path gate must force the legacy path whenever a live exclusive
+// claim exists, so a broken owner fail-closes instead of the native fast path
+// selecting globally.
+func TestSchedulerExcludesFastPathFollowsClaim(t *testing.T) {
+	host := newHostWithRecords()
+	host.exclusiveOwners = map[string][]string{"codex": {"pool-scheduler"}}
+	if !host.SchedulerExcludesFastPath("codex") {
+		t.Fatal("SchedulerExcludesFastPath(codex) = false with live claim, want true")
+	}
+	if host.SchedulerExcludesFastPath("claude") {
+		t.Fatal("SchedulerExcludesFastPath(claude) = true without claim, want false")
+	}
+	host.exclusiveOwners = map[string][]string{}
+	if host.SchedulerExcludesFastPath("codex") {
+		t.Fatal("SchedulerExcludesFastPath(codex) = true after claim removal, want false")
 	}
 }
 

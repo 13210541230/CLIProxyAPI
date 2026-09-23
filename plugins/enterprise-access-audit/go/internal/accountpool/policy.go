@@ -122,10 +122,14 @@ func Normalize(p Policy) (Policy, error) {
 		if _, exists := poolIDs[binding.PoolID]; !exists {
 			return Policy{}, fmt.Errorf("account pool binding references unknown pool %q", binding.PoolID)
 		}
-		if _, exists := bindingIDs[binding.APIKeyHash]; exists {
+		// Dedupe by the runtime-canonical (first-8-hex) identity so a full-length
+		// hash and its short form can never coexist as two bindings pointing at
+		// different pools.
+		canonical := canonicalBindingHash(binding.APIKeyHash)
+		if _, exists := bindingIDs[canonical]; exists {
 			return Policy{}, fmt.Errorf("duplicate account pool binding %q", binding.APIKeyHash)
 		}
-		bindingIDs[binding.APIKeyHash] = struct{}{}
+		bindingIDs[canonical] = struct{}{}
 	}
 
 	sort.Slice(p.Pools, func(i, j int) bool { return p.Pools[i].ID < p.Pools[j].ID })

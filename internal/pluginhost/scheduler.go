@@ -22,13 +22,12 @@ func (h *Host) PickAuth(ctx context.Context, req pluginapi.SchedulerPickRequest)
 	record := h.schedulerRecordForRequest(provider, exclusive, ownerID, ownerConflict)
 	if record == nil {
 		if exclusive {
-			// An owner that is still loaded but no longer declares scheduler
-			// capability for this provider (e.g. the account pool was switched
-			// off) has relinquished its exclusive claim; fall back to built-in
-			// scheduling. A genuinely missing/failed owner keeps failing closed.
-			if !ownerConflict && h.ownerRelinquishedScheduler(ownerID, provider) {
-				return pluginapi.SchedulerPickResponse{}, false, nil
-			}
+			// Deliberate releases never reach this branch: disabling the plugin
+			// instance or removing the provider declaration removes the
+			// exclusive claim in config (see runtimeConfigFromConfig). A live
+			// claim without a serving record means an accidental failure (load
+			// error, fuse, capability loss) and must fail closed instead of
+			// leaking bound callers into global OAuth selection.
 			return pluginapi.SchedulerPickResponse{}, true, schedulerUnavailableError()
 		}
 		return pluginapi.SchedulerPickResponse{}, false, nil
@@ -264,26 +263,13 @@ func schedulerSupportsProvider(plugin pluginapi.Plugin, provider string) bool {
 	return false
 }
 
-// ownerRelinquishedScheduler reports whether the exclusive owner plugin is
-// loaded but no longer declares a scheduler for the provider, meaning its
-// exclusive claim has been released (as opposed to an owner that failed to
-// load, which must keep failing closed).
-func (h *Host) ownerRelinquishedScheduler(ownerID, provider string) bool {
-	if h == nil || ownerID == "" {
-		return false
-	}
-	for _, record := range h.activeRecords() {
-		if record.id != ownerID {
-			continue
-		}
-		// Only an owner that dropped its scheduler capability entirely has
-		// relinquished the claim. An owner still declaring a scheduler for a
-		// different scope keeps failing closed so configuration mismatches
-		// stay visible instead of silently falling back.
-		return record.plugin.Capabilities.Scheduler == nil
-	}
-	return false
-	return false
+// SchedulerExcludesFastPath reports whether an exclusive claim exists for the
+// provider. The conductor consults it before taking its native fast path so a
+// live claim always routes through PickAuth (which fail-closes when the owner
+// is broken) instead of silently selecting globally.
+func (h *Host) SchedulerExcludesFastPath(provider string) bool {
+	exclusive, _, _ := h.exclusiveScheduler(provider)
+	return exclusive
 }
 
 func schedulerCandidateExists(candidates []pluginapi.SchedulerAuthCandidate, authID string) bool {

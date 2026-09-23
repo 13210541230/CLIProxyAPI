@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
 	claudemodels "github.com/router-for-me/CLIProxyAPI/v7/internal/client/claude/models"
 	codexlive "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/live"
@@ -435,6 +436,59 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 	}
 	logging.SetGinCPATraceID(c, selected.EnsureIndex())
 
+	// Route the selected credential through the same after-auth admission the
+	// executor pipeline uses: OAuth accounts on this entry must honor the
+	// configured per-account concurrency limit instead of bypassing it.
+	admissionMeta := make(map[string]any, len(selectionMetadata)+2)
+	for key, value := range selectionMetadata {
+		admissionMeta[key] = value
+	}
+	admissionMeta[coreexecutor.SelectedAuthMetadataKey] = selected.ID
+	if sessionID := strings.TrimSpace(routing.ID); sessionID != "" {
+		admissionMeta[coreexecutor.CanonicalSessionIDMetadataKey] = sessionID
+	}
+	admitRequestID := ""
+	admitStartedAt := time.Now()
+	admitOutcome := pluginapi.RequestCompletionFailed
+	if s.pluginHost != nil {
+		admitRequestID = uuid.NewString()
+		admitResp := s.pluginHost.InterceptRequestAfterAuth(ctx, pluginapi.RequestInterceptRequest{
+			RequestID:      admitRequestID,
+			TraceID:        logging.GetRequestID(ctx),
+			SourceFormat:   codexAlphaSearchSourceFormat,
+			Model:          selectionModel,
+			RequestedModel: routing.Model,
+			Headers:        selectionHeaders,
+			Body:           upstreamRequestBody,
+			Metadata:       admissionMeta,
+		})
+		if admitResp.Terminate {
+			admitOutcome = pluginapi.RequestCompletionRejected
+			s.completeAlphaSearchAdmission(ctx, admitRequestID, admitStartedAt, admitOutcome, admitResp.StatusCode, admissionMeta, selectionModel, routing.Model)
+			if selection != nil {
+				selection.End("admission_rejected")
+			}
+			for name, values := range admitResp.ResponseHeaders {
+				for _, value := range values {
+					c.Writer.Header().Add(name, value)
+				}
+			}
+			status := admitResp.StatusCode
+			if status < 400 || status > 599 {
+				status = http.StatusServiceUnavailable
+			}
+			if c.Writer.Header().Get("Content-Type") == "" {
+				c.Header("Content-Type", "application/json")
+			}
+			c.Status(status)
+			_, _ = c.Writer.Write(admitResp.ResponseBody)
+			return
+		}
+		defer func() {
+			s.completeAlphaSearchAdmission(ctx, admitRequestID, admitStartedAt, admitOutcome, 0, admissionMeta, selectionModel, routing.Model)
+		}()
+	}
+
 	baseHeaders := make(http.Header)
 	baseHeaders.Set("Content-Type", "application/json")
 	baseHeaders.Set("Accept", "application/json")
@@ -546,6 +600,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		return
 	}
 	helps.AppendAPIResponseChunk(ctx, s.cfg, upstreamBody)
+	admitOutcome = pluginapi.RequestCompletionSucceeded
 	if selection != nil && resp.StatusCode == http.StatusUnauthorized {
 		s.handlers.AuthManager.ReportHomeUnauthorized(ctx, selected, "codex", selectionModel, upstreamBody)
 		log.WithField("status", resp.StatusCode).Warnf("codex alpha search upstream request failed: %s", logging.SafeDiagnosticForLog(string(upstreamBody)))
@@ -555,6 +610,26 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 	}
 	c.Status(resp.StatusCode)
 	_, _ = c.Writer.Write(upstreamBody)
+}
+
+// completeAlphaSearchAdmission releases the after-auth admission slot (and
+// notifies lifecycle plugins) for the alpha-search entry.
+func (s *Server) completeAlphaSearchAdmission(ctx context.Context, requestID string, startedAt time.Time, outcome pluginapi.RequestCompletionOutcome, statusCode int, metadata map[string]any, model, requestedModel string) {
+	if s == nil || s.pluginHost == nil || requestID == "" {
+		return
+	}
+	s.pluginHost.CompleteRequest(ctx, pluginapi.RequestCompletion{
+		RequestID:      requestID,
+		TraceID:        logging.GetRequestID(ctx),
+		SourceFormat:   codexAlphaSearchSourceFormat,
+		Model:          model,
+		RequestedModel: requestedModel,
+		Outcome:        outcome,
+		StatusCode:     statusCode,
+		StartedAt:      startedAt,
+		CompletedAt:    time.Now(),
+		Metadata:       metadata,
+	})
 }
 
 // AttachWebsocketRoute registers a websocket upgrade handler on the primary Gin engine.

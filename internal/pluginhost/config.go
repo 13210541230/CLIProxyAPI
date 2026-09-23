@@ -54,15 +54,20 @@ func runtimeConfigFromConfig(cfg *config.Config) (runtimeConfig, error) {
 
 	for _, id := range ids {
 		item := cfg.Plugins.Configs[id]
-		for _, provider := range exclusiveSchedulerProviders(item) {
-			out.ExclusiveSchedulers[provider] = append(out.ExclusiveSchedulers[provider], id)
-		}
 		if !out.Enabled {
 			continue
 		}
 		enabled := false
 		if item.Enabled != nil {
 			enabled = *item.Enabled
+		}
+		// Exclusive claims belong to deliberately enabled plugin instances
+		// only: disabling the instance (or the whole plugin system) is an
+		// explicit operator action that releases the provider back to default.
+		if enabled {
+			for _, provider := range exclusiveSchedulerProviders(item) {
+				out.ExclusiveSchedulers[provider] = append(out.ExclusiveSchedulers[provider], id)
+			}
 		}
 
 		out.Items[id] = runtimeItemConfig{

@@ -264,18 +264,18 @@ func TestServiceAdmitScope(t *testing.T) {
 		t.Fatalf("Apply() error = %v", err)
 	}
 	// Without configured limits every identified request passes regardless of binding.
-	if result := svc.AdmitIntercept("req-1", map[string]any{"quota_key_hash": "12345678", "selected_auth_id": "auth-a"}); result != nil {
+	if result := svc.AdmitIntercept("req-1", nil, map[string]any{"quota_key_hash": "12345678", "selected_auth_id": "auth-a"}); result != nil {
 		t.Fatalf("unbound admit = %+v", result)
 	}
-	if result := svc.AdmitIntercept("req-2", map[string]any{"quota_key_hash": "abcd1234", "selected_auth_id": "auth-a"}); result != nil {
+	if result := svc.AdmitIntercept("req-2", nil, map[string]any{"quota_key_hash": "abcd1234", "selected_auth_id": "auth-a"}); result != nil {
 		t.Fatalf("bound admit = %+v", result)
 	}
 	// Same request id duplicates are idempotent.
-	if result := svc.AdmitIntercept("req-2", map[string]any{"quota_key_hash": "abcd1234", "selected_auth_id": "auth-a"}); result != nil {
+	if result := svc.AdmitIntercept("req-2", nil, map[string]any{"quota_key_hash": "abcd1234", "selected_auth_id": "auth-a"}); result != nil {
 		t.Fatalf("duplicate admit = %+v", result)
 	}
 	// Missing selected auth is never gated.
-	if result := svc.AdmitIntercept("req-3", map[string]any{"quota_key_hash": "abcd1234"}); result != nil {
+	if result := svc.AdmitIntercept("req-3", nil, map[string]any{"quota_key_hash": "abcd1234"}); result != nil {
 		t.Fatalf("no selected auth admit = %+v", result)
 	}
 	svc.Complete("req-1")
@@ -283,13 +283,13 @@ func TestServiceAdmitScope(t *testing.T) {
 
 	// A configured limit applies to unbound callers too: pool binding is irrelevant.
 	svc.engine.Configure(map[string]Limit{"auth-a": {Max: 1, Window: time.Second}})
-	if result := svc.AdmitIntercept("req-4", map[string]any{"quota_key_hash": "12345678", "selected_auth_id": "auth-a"}); result != nil {
+	if result := svc.AdmitIntercept("req-4", nil, map[string]any{"quota_key_hash": "12345678", "selected_auth_id": "auth-a"}); result != nil {
 		t.Fatalf("unbound first admit = %+v", result)
 	}
 	if active := svc.StateSnapshot("auth-a").Active; active != 1 {
 		t.Fatalf("Active = %d, want 1 (live stats independent of binding)", active)
 	}
-	rejected := svc.AdmitIntercept("req-5", map[string]any{"quota_key_hash": "12345678", "selected_auth_id": "auth-a"})
+	rejected := svc.AdmitIntercept("req-5", nil, map[string]any{"quota_key_hash": "12345678", "selected_auth_id": "auth-a"})
 	if rejected == nil || rejected.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("unbound second admit = %+v, want 503 account_busy", rejected)
 	}
@@ -298,7 +298,7 @@ func TestServiceAdmitScope(t *testing.T) {
 	}
 	// Complete releases the active slot.
 	svc.Complete("req-4")
-	if result := svc.AdmitIntercept("req-6", map[string]any{"selected_auth_id": "auth-a"}); result != nil {
+	if result := svc.AdmitIntercept("req-6", nil, map[string]any{"selected_auth_id": "auth-a"}); result != nil {
 		t.Fatalf("admit after complete = %+v", result)
 	}
 }
@@ -313,22 +313,22 @@ func TestAdmitInterceptWorksWhenPoolDisabled(t *testing.T) {
 		t.Fatal("service unexpectedly enabled")
 	}
 	svc.engine.Configure(map[string]Limit{"auth-x": {Max: 1, Window: time.Second}})
-	if result := svc.AdmitIntercept("r1", map[string]any{"selected_auth_id": "auth-x"}); result != nil {
+	if result := svc.AdmitIntercept("r1", nil, map[string]any{"selected_auth_id": "auth-x"}); result != nil {
 		t.Fatalf("first admit = %+v", result)
 	}
 	if active := svc.StateSnapshot("auth-x").Active; active != 1 {
 		t.Fatalf("Active = %d, want 1 with pool disabled", active)
 	}
-	rejected := svc.AdmitIntercept("r2", map[string]any{"selected_auth_id": "auth-x"})
+	rejected := svc.AdmitIntercept("r2", nil, map[string]any{"selected_auth_id": "auth-x"})
 	if rejected == nil || rejected.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("second admit = %+v, want 503 with pool disabled", rejected)
 	}
 	// Accounts without configured limits are never gated.
-	if result := svc.AdmitIntercept("r3", map[string]any{"selected_auth_id": "auth-other"}); result != nil {
+	if result := svc.AdmitIntercept("r3", nil, map[string]any{"selected_auth_id": "auth-other"}); result != nil {
 		t.Fatalf("unlimited admit = %+v", result)
 	}
 	svc.Complete("r1")
-	if result := svc.AdmitIntercept("r4", map[string]any{"selected_auth_id": "auth-x"}); result != nil {
+	if result := svc.AdmitIntercept("r4", nil, map[string]any{"selected_auth_id": "auth-x"}); result != nil {
 		t.Fatalf("admit after complete = %+v", result)
 	}
 }
@@ -344,17 +344,17 @@ func TestEngineConcurrencyGate(t *testing.T) {
 	if authID := engine.Pick(req); authID != "auth-a" {
 		t.Fatalf("Pick() = %q", authID)
 	}
-	if code, status, _, ok := engine.Admit("r1", "auth-a"); !ok || code != "" || status != 0 {
+	if code, status, _, ok := engine.Admit("r1", "auth-a", ""); !ok || code != "" || status != 0 {
 		t.Fatalf("Admit(r1) = %q %d %v", code, status, ok)
 	}
 	// Second concurrent admit on the same account must be rejected (Max=1, wait expires fast).
-	code, status, retryable, ok := engine.Admit("r2", "auth-a")
+	code, status, retryable, ok := engine.Admit("r2", "auth-a", "")
 	if ok || code != "account_busy" || status != 503 || !retryable {
 		t.Fatalf("Admit(r2) = %q %d retry=%v ok=%v", code, status, retryable, ok)
 	}
 	// Completing the first releases the slot.
 	engine.Complete("r1")
-	code, status, _, ok = engine.Admit("r3", "auth-a")
+	code, status, _, ok = engine.Admit("r3", "auth-a", "")
 	if !ok || code != "" || status != 0 {
 		t.Fatalf("Admit(r3 after release) = %q %d %v", code, status, ok)
 	}

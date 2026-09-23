@@ -25,9 +25,9 @@ func newStickyEngine(t *testing.T, sessionFn func(schedulerPickRequest) string) 
 	return engine
 }
 
-func mustBusy(t *testing.T, engine *Engine, requestID string) {
+func mustBusy(t *testing.T, engine *Engine, requestID, sessionKey string) {
 	t.Helper()
-	code, status, retryable, ok := engine.Admit(requestID, "a")
+	code, status, retryable, ok := engine.Admit(requestID, "a", sessionKey)
 	if ok || code != "account_busy" || status != 503 || !retryable {
 		t.Fatalf("Admit(%s) = %q %d retry=%v ok=%v, want account_busy/503", requestID, code, status, retryable, ok)
 	}
@@ -42,12 +42,13 @@ func TestStickySessionKeepsAccountForTransientBusy(t *testing.T) {
 	}
 	engine := newStickyEngine(t, sessionFn)
 	meta := map[string]any{"session_id": "sess-transient"}
+	sessKey := sessionFn(stickySessionRequest(meta))
 
 	first := engine.Pick(stickySessionRequest(meta))
 	if first != "a" {
 		t.Fatalf("first Pick = %q, want a", first)
 	}
-	if code, _, _, ok := engine.Admit("hold", "a"); !ok || code != "" {
+	if code, _, _, ok := engine.Admit("hold", "a", sessKey); !ok || code != "" {
 		t.Fatalf("hold admit = %q ok=%v", code, ok)
 	}
 
@@ -57,7 +58,7 @@ func TestStickySessionKeepsAccountForTransientBusy(t *testing.T) {
 		if got := engine.Pick(stickySessionRequest(meta)); got != "a" {
 			t.Fatalf("retry pick %d = %q, want sticky a", i, got)
 		}
-		mustBusy(t, engine, fmt.Sprintf("busy-%d", i))
+		mustBusy(t, engine, fmt.Sprintf("busy-%d", i), sessKey)
 		if got := engine.Pick(stickySessionRequest(meta)); got != "a" {
 			t.Fatalf("pick after %d rejections = %q, want a", i, got)
 		}
@@ -73,16 +74,17 @@ func TestStickySessionFailsOverAfterPersistentBusy(t *testing.T) {
 	}
 	engine := newStickyEngine(t, sessionFn)
 	meta := map[string]any{"session_id": "sess-persistent"}
+	sessKey := sessionFn(stickySessionRequest(meta))
 
 	if got := engine.Pick(stickySessionRequest(meta)); got != "a" {
 		t.Fatalf("first Pick = %q, want a", got)
 	}
-	if code, _, _, ok := engine.Admit("hold", "a"); !ok || code != "" {
+	if code, _, _, ok := engine.Admit("hold", "a", sessKey); !ok || code != "" {
 		t.Fatalf("hold admit = %q ok=%v", code, ok)
 	}
 
 	for i := 1; i <= 3; i++ {
-		mustBusy(t, engine, fmt.Sprintf("pb-%d", i))
+		mustBusy(t, engine, fmt.Sprintf("pb-%d", i), sessKey)
 	}
 
 	got := engine.Pick(stickySessionRequest(meta))
@@ -100,32 +102,33 @@ func TestBusyCounterResetsOnSuccessfulAdmission(t *testing.T) {
 	}
 	engine := newStickyEngine(t, sessionFn)
 	meta := map[string]any{"session_id": "sess-reset"}
+	sessKey := sessionFn(stickySessionRequest(meta))
 
 	if got := engine.Pick(stickySessionRequest(meta)); got != "a" {
 		t.Fatalf("first Pick = %q, want a", got)
 	}
-	if code, _, _, ok := engine.Admit("hold", "a"); !ok || code != "" {
+	if code, _, _, ok := engine.Admit("hold", "a", sessKey); !ok || code != "" {
 		t.Fatalf("hold admit = %q ok=%v", code, ok)
 	}
 
 	// Two rejections, then a success: the streak must restart at zero. The
 	// success stays active so the slot remains occupied for later rejections.
-	mustBusy(t, engine, "reset-busy-1")
-	mustBusy(t, engine, "reset-busy-2")
+	mustBusy(t, engine, "reset-busy-1", sessKey)
+	mustBusy(t, engine, "reset-busy-2", sessKey)
 	engine.Complete("hold")
-	if code, _, _, ok := engine.Admit("success", "a"); !ok || code != "" {
+	if code, _, _, ok := engine.Admit("success", "a", sessKey); !ok || code != "" {
 		t.Fatalf("success admit = %q ok=%v", code, ok)
 	}
 
 	// Two more rejections stay below the budget because the success cleared
 	// the earlier two; without the reset the session would fail over here.
-	mustBusy(t, engine, "reset-busy-3")
-	mustBusy(t, engine, "reset-busy-4")
+	mustBusy(t, engine, "reset-busy-3", sessKey)
+	mustBusy(t, engine, "reset-busy-4", sessKey)
 	if got := engine.Pick(stickySessionRequest(meta)); got != "a" {
 		t.Fatalf("pick after reset+2 rejections = %q, want a", got)
 	}
 
-	mustBusy(t, engine, "reset-busy-5")
+	mustBusy(t, engine, "reset-busy-5", sessKey)
 	if got := engine.Pick(stickySessionRequest(meta)); got == "a" || got == "" {
 		t.Fatalf("pick after unbroken streak of 3 = %q, want failover", got)
 	}

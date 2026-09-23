@@ -104,26 +104,63 @@ func TestRuntimeConfigFromConfigDerivesStoreVersionFromReleaseTag(t *testing.T) 
 	}
 }
 
-func TestRuntimeConfigFromConfigExtractsExclusiveSchedulerProvidersWhenDisabled(t *testing.T) {
+// Deliberate releases extract no claim: disabling the whole plugin system (or
+// the instance itself) while keeping exclusive-scheduler-providers in the
+// config is an explicit operator action that returns providers to default
+// scheduling. Claims are only honored for deliberately enabled instances.
+func TestRuntimeConfigFromConfigReleasesExclusiveClaimsWhenDisabled(t *testing.T) {
 	var node yaml.Node
 	if errDecode := yaml.Unmarshal([]byte("exclusive-scheduler-providers: [codex, codex]\n"), &node); errDecode != nil {
 		t.Fatalf("yaml.Unmarshal() error = %v", errDecode)
 	}
-	cfg := &config.Config{
+	disabled := &config.Config{
 		Plugins: config.PluginsConfig{
 			Enabled: false,
 			Configs: map[string]config.PluginInstanceConfig{
-				"pool": {Raw: *node.Content[0]},
+				"pool": {Enabled: boolPtr(true), Raw: *node.Content[0]},
 			},
 		},
 	}
-
-	got, errRuntimeConfig := runtimeConfigFromConfig(cfg)
-	if errRuntimeConfig != nil {
-		t.Fatalf("runtimeConfigFromConfig() error = %v", errRuntimeConfig)
+	gotDisabled, errDisabled := runtimeConfigFromConfig(disabled)
+	if errDisabled != nil {
+		t.Fatalf("runtimeConfigFromConfig(disabled) error = %v", errDisabled)
 	}
-	owners := got.ExclusiveSchedulers["codex"]
+	if owners := gotDisabled.ExclusiveSchedulers["codex"]; len(owners) != 0 {
+		t.Fatalf("exclusive owners with plugins disabled = %#v, want none (deliberate release)", owners)
+	}
+
+	instanceOff := &config.Config{
+		Plugins: config.PluginsConfig{
+			Enabled: true,
+			Configs: map[string]config.PluginInstanceConfig{
+				"pool": {Enabled: boolPtr(false), Raw: *node.Content[0]},
+			},
+		},
+	}
+	gotInstanceOff, errInstanceOff := runtimeConfigFromConfig(instanceOff)
+	if errInstanceOff != nil {
+		t.Fatalf("runtimeConfigFromConfig(instance off) error = %v", errInstanceOff)
+	}
+	if owners := gotInstanceOff.ExclusiveSchedulers["codex"]; len(owners) != 0 {
+		t.Fatalf("exclusive owners with instance disabled = %#v, want none (deliberate release)", owners)
+	}
+
+	enabled := &config.Config{
+		Plugins: config.PluginsConfig{
+			Enabled: true,
+			Configs: map[string]config.PluginInstanceConfig{
+				"pool": {Enabled: boolPtr(true), Raw: *node.Content[0]},
+			},
+		},
+	}
+	gotEnabled, errEnabled := runtimeConfigFromConfig(enabled)
+	if errEnabled != nil {
+		t.Fatalf("runtimeConfigFromConfig(enabled) error = %v", errEnabled)
+	}
+	owners := gotEnabled.ExclusiveSchedulers["codex"]
 	if len(owners) != 1 || owners[0] != "pool" {
-		t.Fatalf("exclusive scheduler owners = %#v, want [pool]", owners)
+		t.Fatalf("exclusive scheduler owners = %#v, want [pool] (deduped)", owners)
 	}
 }
+
+func boolPtr(value bool) *bool { return &value }

@@ -16,10 +16,18 @@ var (
 
 const sessionKeyMaxLen = 128
 
-// sessionKey validates and returns a bounded printable session identity.
-func sessionKey(request schedulerPickRequest) string {
+// sessionNamespaceKey carries the routing-layer namespace injected by the
+// service into the scoped pick request (pool id, policy version, caller hash,
+// or the api-key layer marker). It isolates session bindings so different
+// callers (or layers) that reuse the same conversation id never overwrite
+// each other's account binding.
+const sessionNamespaceKey = "account_pool_session_ns"
+
+// baseSessionKey validates and returns a bounded printable session identity
+// from headers and metadata, ignoring any namespace.
+func baseSessionKey(headers map[string][]string, metadata map[string]any) string {
 	for _, name := range sessionHeaderKeys {
-		for header, values := range request.Options.Headers {
+		for header, values := range headers {
 			if !strings.EqualFold(header, name) {
 				continue
 			}
@@ -31,11 +39,60 @@ func sessionKey(request schedulerPickRequest) string {
 		}
 	}
 	for _, name := range sessionMetadataKeys {
-		if key := normalizeSessionKey(metadataString(request.Options.Metadata, name)); key != "" {
+		if key := normalizeSessionKey(metadataString(metadata, name)); key != "" {
 			return key
 		}
 	}
 	return ""
+}
+
+// sessionKey returns the namespaced session identity for scheduler requests.
+// The namespace isolates callers and routing layers; without it two callers
+// reusing one conversation id would share (and overwrite) one binding.
+func sessionKey(request schedulerPickRequest) string {
+	raw := baseSessionKey(request.Options.Headers, request.Options.Metadata)
+	if raw == "" {
+		return ""
+	}
+	ns := normalizeNamespace(metadataString(request.Options.Metadata, sessionNamespaceKey))
+	if ns == "" {
+		return raw
+	}
+	return ns + "|" + raw
+}
+
+// sessionKeyFrom derives the same namespaced identity at admission time from
+// the same inputs Pick sees (headers first, then metadata), using the
+// service-computed namespace.
+func sessionKeyFrom(headers map[string][]string, metadata map[string]any, namespace string) string {
+	raw := baseSessionKey(headers, metadata)
+	if raw == "" {
+		return ""
+	}
+	ns := normalizeNamespace(namespace)
+	if ns == "" {
+		return raw
+	}
+	return ns + "|" + raw
+}
+
+// callerNamespace builds the caller-hash namespace fragment (empty when the
+// caller hash is unavailable).
+func callerNamespace(metadata map[string]any) string {
+	return normalizeNamespace(metadataString(metadata, metadataKeyHash))
+}
+
+func normalizeNamespace(value string) string {
+	key := strings.TrimSpace(value)
+	if key == "" || len(key) > 256 {
+		return ""
+	}
+	for index := 0; index < len(key); index++ {
+		if key[index] < 0x20 || key[index] > 0x7e {
+			return ""
+		}
+	}
+	return key
 }
 
 func normalizeSessionKey(value string) string {

@@ -60,16 +60,31 @@ func (m *Manager) Configure(ctx context.Context, cfg config.Config) error {
 		return fmt.Errorf("cleanup expired enterprise access audit records on startup: %w", errCleanup)
 	}
 	newState := &activeState{store: newStore, stop: make(chan struct{}), cleanupDone: make(chan struct{}), interval: cfg.CleanupInterval}
-	accountPool := accountpool.New(accountpool.Options{
+	accountPoolOpts := accountpool.Options{
 		DataDir: cfg.AccountPool.DataDir,
 		Reserve: time.Duration(cfg.AccountPool.ReserveSeconds) * time.Second,
 		MaxWait: time.Duration(cfg.AccountPool.MaxWaitSeconds) * time.Second,
 		MaxBusy: cfg.AccountPool.MaxBusyRejections,
 		Enabled: cfg.AccountPool.Enabled,
-	})
-	if errReload := accountPool.Reload(); errReload != nil {
-		_ = newStore.Close()
-		return fmt.Errorf("reload account pool state: %w", errReload)
+	}
+	// Reuse the live account-pool service across reconfigures so in-flight
+	// counters, reservations, and session bindings survive a hot reload.
+	m.mu.RLock()
+	existingPool := m.accountPool
+	m.mu.RUnlock()
+	var accountPool *accountpool.Service
+	if existingPool != nil {
+		if errReconfigure := existingPool.Reconfigure(accountPoolOpts); errReconfigure != nil {
+			_ = newStore.Close()
+			return fmt.Errorf("reconfigure account pool state: %w", errReconfigure)
+		}
+		accountPool = existingPool
+	} else {
+		accountPool = accountpool.New(accountPoolOpts)
+		if errReload := accountPool.Reload(); errReload != nil {
+			_ = newStore.Close()
+			return fmt.Errorf("reload account pool state: %w", errReload)
+		}
 	}
 
 	m.mu.RLock()

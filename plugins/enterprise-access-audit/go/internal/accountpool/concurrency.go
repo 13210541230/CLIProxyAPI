@@ -96,6 +96,53 @@ func (e *Engine) SetMaxBusy(n int) {
 	e.mu.Unlock()
 }
 
+// ResetPoolSessions clears OAuth/pool-routed session bindings and busy streaks
+// while leaving api-key layer sessions untouched. It is called when a new
+// policy version activates: namespaced pool keys embed the policy version, so
+// every pre-activation pool binding is dead by construction — dropping them
+// eagerly keeps the maps from accumulating orphaned entries, and scoping the
+// reset to pool namespaces means a pool publication never disturbs
+// provider-configured api-key stickiness.
+func (e *Engine) ResetPoolSessions() {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for key := range e.sessions {
+		if strings.HasPrefix(key, "apikey:") {
+			continue
+		}
+		delete(e.sessions, key)
+		delete(e.busyRejections, key)
+	}
+	for key := range e.busyRejections {
+		if strings.HasPrefix(key, "apikey:") {
+			continue
+		}
+		delete(e.busyRejections, key)
+	}
+}
+
+// SetTimings updates reservation and admission-wait windows in place.
+// Existing in-flight state (active, waiters, sessions) is preserved so a
+// hot reconfigure never drops counters or unbinds sessions.
+func (e *Engine) SetTimings(reserve, maxWait time.Duration) {
+	if e == nil {
+		return
+	}
+	if reserve <= 0 {
+		reserve = 10 * time.Second
+	}
+	if maxWait <= 0 {
+		maxWait = 30 * time.Second
+	}
+	e.mu.Lock()
+	e.cfg.Reserve = reserve
+	e.cfg.MaxWait = maxWait
+	e.mu.Unlock()
+}
+
 // Configure atomically replaces limits and invalidates in-flight waiters.
 func (e *Engine) Configure(limits map[string]Limit) {
 	if e == nil {
@@ -223,7 +270,7 @@ func (e *Engine) Pick(request schedulerPickRequest) string {
 // true when the request may proceed (empty rejection). Transient rejections
 // keep the session on its account; only a persistent streak of rejections
 // (maxBusy consecutive, reset by any success) fails the session over in-pool.
-func (e *Engine) Admit(requestID, authID string) (code string, status int, retryable bool, admitted bool) {
+func (e *Engine) Admit(requestID, authID, sessionKey string) (code string, status int, retryable bool, admitted bool) {
 	if e == nil {
 		return "account_pool_unavailable", 503, true, false
 	}
@@ -263,44 +310,27 @@ func (e *Engine) Admit(requestID, authID string) (code string, status int, retry
 			if limit.Max15s > 0 {
 				e.appendWindowLocked(authID, now)
 			}
-			// Store session key in the admission record for retry tracking.
-			sessKey := ""
-			for sk, sa := range e.sessions {
-				if sa == authID {
-					sessKey = sk
-					break
-				}
+			// The caller's own namespaced session key is provided by the service;
+			// never scan the shared sessions map (it can hold other callers'
+			// sessions bound to this account and misattribute streaks).
+			if sessionKey != "" {
+				e.busyRejections[sessionKey] = 0 // a success clears the failure streak
 			}
-			if sessKey != "" {
-				e.busyRejections[sessKey] = 0 // a success clears the failure streak
-			}
-			e.requests[requestID] = admissionRecord{AuthID: authID, SessionKey: sessKey}
+			e.requests[requestID] = admissionRecord{AuthID: authID, SessionKey: sessionKey}
 			e.mu.Unlock()
 			return "", 0, false, true
 		}
 
 		if !now.Before(deadline) {
-			// Count one full queue timeout for the session. Only a persistent
-			// streak (maxBusy consecutive rejections with no success between)
-			// releases the binding, so transient overload never hops accounts
-			// while a dead account can never strand its sessions forever.
-			sk := ""
-			if record, exists := e.requests[requestID]; exists {
-				sk = record.SessionKey
-			}
-			if sk == "" {
-				for sessKey, sessAuth := range e.sessions {
-					if sessAuth == authID {
-						sk = sessKey
-						break
-					}
-				}
-			}
-			if sk != "" {
-				e.busyRejections[sk]++
-				if e.busyRejections[sk] >= e.maxBusy {
-					delete(e.sessions, sk)
-					delete(e.busyRejections, sk)
+			// Count one full queue timeout for the caller's own session. Only a
+			// persistent streak (maxBusy consecutive rejections with no success
+			// between) releases the binding, so transient overload never hops
+			// accounts while a dead account can never strand its sessions forever.
+			if sessionKey != "" {
+				e.busyRejections[sessionKey]++
+				if e.busyRejections[sessionKey] >= e.maxBusy {
+					delete(e.sessions, sessionKey)
+					delete(e.busyRejections, sessionKey)
 				}
 			}
 			e.mu.Unlock()

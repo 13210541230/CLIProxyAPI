@@ -20,7 +20,7 @@ func TestAdmitQueueDrainsByCompletionNotTimeout(t *testing.T) {
 
 	// Fill the account: active = 3.
 	for _, id := range []string{"r1", "r2", "r3"} {
-		if code, status, _, ok := engine.Admit(id, "acct"); !ok || code != "" || status != 0 {
+		if code, status, _, ok := engine.Admit(id, "acct", ""); !ok || code != "" || status != 0 {
 			t.Fatalf("%s admit = (%q,%d,ok), want immediate", id, code, status)
 		}
 	}
@@ -34,7 +34,7 @@ func TestAdmitQueueDrainsByCompletionNotTimeout(t *testing.T) {
 	results := make(chan result, 4)
 	for _, id := range []string{"r4", "r5", "r6", "r7"} {
 		go func(requestID string) {
-			code, _, _, ok := engine.Admit(requestID, "acct")
+			code, _, _, ok := engine.Admit(requestID, "acct", "")
 			results <- result{id: requestID, code: code, ok: ok}
 		}(id)
 	}

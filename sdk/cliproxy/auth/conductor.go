@@ -87,6 +87,14 @@ type pluginSchedulerState interface {
 	HasScheduler() bool
 }
 
+// PluginSchedulerExcludesFastPath is an optional interface implemented by
+// schedulers that know an exclusive provider claim exists. The conductor must
+// then route through PickAuth even when no scheduler record is currently
+// serving (broken owner fail-closes there) instead of selecting globally.
+type PluginSchedulerExcludesFastPath interface {
+	SchedulerExcludesFastPath(provider string) bool
+}
+
 // StoppableSelector is an optional interface for selectors that hold resources.
 // Selectors that implement this interface will have Stop called during shutdown.
 type StoppableSelector interface {

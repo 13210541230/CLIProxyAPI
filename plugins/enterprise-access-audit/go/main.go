@@ -249,12 +249,11 @@ func configure(raw []byte) error {
 func pluginRegistration() registration {
 	version := "0.2.0"
 	capabilities := registrationCapability{RequestInterceptor: true, RequestLifecyclePlugin: true, ManagementAPI: true}
-	if pluginState.Config().AccountPool.Enabled {
+	providers, across := schedulerCapabilityFor(pluginState.Config())
+	if len(providers) > 0 {
 		capabilities.Scheduler = true
-		capabilities.SchedulerExclusiveProviders = []string{accountpool.ExclusiveProvider}
-		// Layered api-key/OAuth scheduling needs the full candidate set across
-		// priority tiers; without it the host pre-filters to one tier.
-		capabilities.SchedulerAcrossPriorities = true
+		capabilities.SchedulerExclusiveProviders = providers
+		capabilities.SchedulerAcrossPriorities = across
 	}
 	return registration{
 		SchemaVersion: schemaVersion,
@@ -281,6 +280,50 @@ func pluginRegistration() registration {
 		},
 		Capabilities: capabilities,
 	}
+}
+
+// schedulerCapabilityFor decides scheduler registration from plugin config.
+// Keep the capability registered while either the pool is on or a host-side
+// exclusive claim exists: a disabled pool with a live claim answers picks with
+// transparent global selection instead of going silent (silence under a live
+// claim reads as an accidental failure and the host fail-closes, which would
+// break deliberate pool shutdowns).
+func schedulerCapabilityFor(cfg config.Config) (providers []string, acrossPriorities bool) {
+	providers = normalizeRegistrationProviders(cfg.ExclusiveSchedulerProviders)
+	if len(providers) == 0 && cfg.AccountPool.Enabled {
+		providers = []string{accountpool.ExclusiveProvider}
+	}
+	if len(providers) == 0 {
+		return nil, false
+	}
+	// Layered api-key/OAuth scheduling needs the full candidate set across
+	// priority tiers; without it the host pre-filters to one tier.
+	return providers, true
+}
+
+// normalizeRegistrationProviders lowercases, trims, and dedupes the exclusive
+// provider claim list reported by the host config.
+func normalizeRegistrationProviders(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		provider := strings.ToLower(strings.TrimSpace(value))
+		if provider == "" {
+			continue
+		}
+		if _, exists := seen[provider]; exists {
+			continue
+		}
+		seen[provider] = struct{}{}
+		out = append(out, provider)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func schedulerPick(raw []byte) ([]byte, error) {
@@ -344,7 +387,7 @@ func accountPoolAdmit(request intercept.Request) *intercept.Response {
 	if svc == nil {
 		return nil
 	}
-	result := svc.AdmitIntercept(request.RequestID, request.Metadata)
+	result := svc.AdmitIntercept(request.RequestID, request.Headers, request.Metadata)
 	if result == nil {
 		admitDebug("pass req=%q", request.RequestID)
 		return nil

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -51,6 +52,13 @@ type Config struct {
 	MaxTextBytes        int
 	CleanupInterval     time.Duration
 	AccountPool         AccountPoolConfig
+	// ExclusiveSchedulerProviders echoes the host-side exclusive claim
+	// (plugins.configs.<id>.exclusive-scheduler-providers) so the plugin keeps
+	// its scheduler capability registered while a claim exists even when the
+	// pool itself is disabled — a disabled pool then answers with transparent
+	// global picks instead of going silent (which the host would treat as an
+	// accidental failure and fail closed).
+	ExclusiveSchedulerProviders []string
 }
 
 // Default returns deterministic plugin defaults before path resolution.
@@ -83,6 +91,9 @@ type yamlConfig struct {
 	AccountPoolWindowFlat  int    `yaml:"account_pool.window_seconds"`
 	AccountPoolMaxWaitFlat int    `yaml:"account_pool.max_wait_seconds"`
 	AccountPoolMaxBusyFlat int    `yaml:"account_pool.max_busy_rejections"`
+	// ExclusiveSchedulerProviders mirrors the host-owned claim key; the host
+	// passes the full plugin YAML subtree through unchanged.
+	ExclusiveSchedulerProviders []string `yaml:"exclusive-scheduler-providers"`
 }
 
 type accountPoolYAML struct {
@@ -123,7 +134,32 @@ func ParseYAML(raw []byte, workingDir string) (Config, error) {
 		defaults.CleanupInterval = time.Duration(decoded.CleanupInterval) * time.Second
 	}
 	defaults.AccountPool = accountPoolConfigFromYAML(effectiveAccountPool(decoded), defaults.DataDir)
+	defaults.ExclusiveSchedulerProviders = normalizeProviderList(decoded.ExclusiveSchedulerProviders)
 	return Normalize(defaults, workingDir)
+}
+
+// normalizeProviderList lowercases, trims, and dedupes a provider claim list.
+func normalizeProviderList(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		provider := strings.ToLower(strings.TrimSpace(value))
+		if provider == "" {
+			continue
+		}
+		if _, exists := seen[provider]; exists {
+			continue
+		}
+		seen[provider] = struct{}{}
+		out = append(out, provider)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // effectiveAccountPool merges the flat dotted account_pool.* keys into the

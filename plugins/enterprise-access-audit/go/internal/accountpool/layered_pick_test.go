@@ -197,7 +197,7 @@ func TestServicePick_LayeredSelectionStillAdmits(t *testing.T) {
 	if resp.Decision != "selected" || resp.AuthID != "key-1" {
 		t.Fatalf("pick = %+v", resp)
 	}
-	if result := svc.AdmitIntercept("req-1", map[string]any{metadataSelectedAuthID: "key-1"}); result != nil {
+	if result := svc.AdmitIntercept("req-1", nil, map[string]any{metadataSelectedAuthID: "key-1"}); result != nil {
 		t.Fatalf("unlimited account must admit, got %+v", result)
 	}
 	if resp.HTTPStatus != 0 && resp.HTTPStatus < http.StatusOK {

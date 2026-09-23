@@ -107,6 +107,28 @@ func (s *Service) Reload() error {
 	return nil
 }
 
+// Reconfigure applies new options in place while preserving live engine
+// state (active requests, waiters, reservations, session bindings). A hot
+// reconfigure must never drop counters or rebind sessions; only persisted
+// inputs (data dir, policy, limits) and timing budgets are refreshed.
+func (s *Service) Reconfigure(opts Options) error {
+	if s == nil {
+		return errors.New("account pool service is unavailable")
+	}
+	s.mu.Lock()
+	changedDir := opts.DataDir != "" && (s.persist == nil || s.persist.dataDir != opts.DataDir)
+	if changedDir {
+		s.persist = newPersistence(opts.DataDir)
+	}
+	s.enabled = opts.Enabled
+	s.mu.Unlock()
+	s.engine.SetTimings(opts.Reserve, opts.MaxWait)
+	if opts.MaxBusy > 0 {
+		s.engine.SetMaxBusy(opts.MaxBusy)
+	}
+	return s.Reload()
+}
+
 // EnabledWithDataDir is a convenience for tests: enable and re-root the service.
 func (s *Service) EnabledWithDataDir(enabled bool, dataDir string) {
 	if s == nil {
@@ -147,33 +169,42 @@ func (s *Service) Apply(raw []byte) (Status, error) {
 		s.setError(errValidate)
 		return Status{}, errValidate
 	}
-	s.mu.RLock()
-	current := s.policy
-	ready := s.ready
-	s.mu.RUnlock()
-	if ready && next.Version < current.Version {
-		err := fmt.Errorf("stale account pool policy version %d; active version is %d", next.Version, current.Version)
-		s.setError(err)
+	// Hold the write lock across check + persist + activate so concurrent
+	// publishers cannot interleave (an older version must never overwrite a
+	// newer one on disk, and memory/disk cannot diverge).
+	s.mu.Lock()
+	current, ready := s.policy, s.ready
+	failLocked := func(err error) (Status, error) {
+		s.lastErr = err.Error()
+		s.mu.Unlock()
 		return Status{}, err
+	}
+	if ready && next.Version < current.Version {
+		_, errStale := failLocked(fmt.Errorf("stale account pool policy version %d; active version is %d", next.Version, current.Version))
+		return Status{}, errStale
 	}
 	if ready && next.Version == current.Version {
 		if next.Hash != current.Hash {
-			err := errors.New("conflicting account pool policy for the active version")
-			s.setError(err)
-			return Status{}, err
+			_, errConflict := failLocked(errors.New("conflicting account pool policy for the active version"))
+			return Status{}, errConflict
 		}
-		return s.status(), nil
+		status := policyStatus(s.policy, s.ready, s.lastErr)
+		s.mu.Unlock()
+		return status, nil
 	}
 	if errPersist := s.persist.savePolicy(next); errPersist != nil {
-		s.setError(errPersist)
-		return Status{}, errPersist
+		_, errSave := failLocked(errPersist)
+		return Status{}, errSave
 	}
-	s.mu.Lock()
 	s.policy = next
 	s.ready = true
 	s.lastErr = ""
+	status := policyStatus(s.policy, s.ready, s.lastErr)
 	s.mu.Unlock()
-	return s.status(), nil
+	// A new version invalidates every namespaced pool session key; rebind
+	// fresh. Api-key layer sessions are policy-independent and survive.
+	s.engine.ResetPoolSessions()
+	return status, nil
 }
 
 // PutLimits replaces the per-account concurrency limits and persists them.
@@ -198,6 +229,9 @@ func (s *Service) PutLimits(items []AccountLimit) error {
 			window = 15
 		}
 		item.WindowSeconds = window
+		// Persist under the trimmed id: the memory map key is already trimmed,
+		// so a spaced AuthID field would restart as an unconfigured account.
+		item.AuthID = authID
 		persisted[authID] = item
 	}
 	if errPersist := s.persist.saveLimits(persisted); errPersist != nil {
@@ -236,10 +270,11 @@ func (s *Service) Pick(request SchedulerPickRequest) SchedulerPickResponse {
 	// credentials are never constrained by pool membership; pool semantics
 	// apply only to OAuth authentication-file credentials.
 	apiKeyCands, oauthCands := splitSchedulerCandidates(request.Candidates)
+	caller := callerNamespace(request.Options.Metadata)
 
 	var apiKeyResp *SchedulerPickResponse
 	if len(apiKeyCands) > 0 {
-		scoped := request
+		scoped := withSessionNamespace(request, nsJoin("apikey", caller))
 		scoped.Candidates = apiKeyCands
 		if authID := s.engine.Pick(scoped); authID != "" {
 			resp := selected(authID)
@@ -260,7 +295,9 @@ func (s *Service) pickOAuthLayer(request SchedulerPickRequest, candidates []sche
 	}
 	scoped := request
 	scoped.Candidates = candidates
-	globalPick := func() *SchedulerPickResponse {
+	caller := callerNamespace(request.Options.Metadata)
+	globalPick := func(namespace string) *SchedulerPickResponse {
+		scoped = withSessionNamespace(scoped, namespace)
 		if authID := s.engine.Pick(scoped); authID != "" {
 			resp := selected(authID)
 			return &resp
@@ -271,7 +308,7 @@ func (s *Service) pickOAuthLayer(request SchedulerPickRequest, candidates []sche
 	// Pool disabled: transparent global selection (mirrors the empty-policy
 	// passthrough so turning the pool off restores unrestricted scheduling).
 	if !s.enabled {
-		return globalPick()
+		return globalPick(oauthNamespace(false, false, Policy{}, "", caller))
 	}
 
 	s.mu.RLock()
@@ -282,7 +319,7 @@ func (s *Service) pickOAuthLayer(request SchedulerPickRequest, candidates []sche
 	// Empty policy: nothing to enforce. Pass codex through to the global
 	// selector so the service stays usable before any pool is configured.
 	if !ready {
-		return globalPick()
+		return globalPick(oauthNamespace(true, false, Policy{}, "", caller))
 	}
 
 	callerHash := callerHashOf(request)
@@ -292,7 +329,7 @@ func (s *Service) pickOAuthLayer(request SchedulerPickRequest, candidates []sche
 	}
 	poolID, bound := BindingPool(p, callerHash)
 	if !bound {
-		return globalPick()
+		return globalPick(oauthNamespace(true, true, p, "", caller))
 	}
 	pool, ok := PoolByID(p, poolID)
 	if !ok || !pool.Enabled {
@@ -319,6 +356,7 @@ func (s *Service) pickOAuthLayer(request SchedulerPickRequest, candidates []sche
 		return &resp
 	}
 	scoped.Candidates = filtered
+	scoped = withSessionNamespace(scoped, oauthNamespace(true, true, p, poolID, caller))
 	if authID := s.engine.Pick(scoped); authID != "" {
 		resp := selected(authID)
 		return &resp
@@ -353,6 +391,79 @@ func candidateIsProviderAPIKey(candidate schedulerAuthCandidate) bool {
 		return true
 	}
 	return strings.TrimSpace(attrs["config_index"]) != ""
+}
+
+// isProviderAPIKeyAuthID reports whether a selected auth id belongs to the
+// provider-configured api-key layer (synthesized ids embed ":apikey:").
+func isProviderAPIKeyAuthID(authID string) bool {
+	return strings.Contains(authID, ":apikey:")
+}
+
+// nsJoin builds a bounded printable namespace fragment sequence.
+func nsJoin(parts ...string) string {
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			continue
+		}
+		out = append(out, value)
+	}
+	return strings.Join(out, ":")
+}
+
+// withSessionNamespace returns a pick request whose metadata carries the
+// routing-layer namespace (metadata map is cloned, never mutated in place).
+func withSessionNamespace(request schedulerPickRequest, namespace string) schedulerPickRequest {
+	scoped := request
+	if namespace == "" {
+		return scoped
+	}
+	metadata := make(map[string]any, len(request.Options.Metadata)+1)
+	for key, value := range request.Options.Metadata {
+		metadata[key] = value
+	}
+	metadata[sessionNamespaceKey] = namespace
+	scoped.Options.Metadata = metadata
+	return scoped
+}
+
+// oauthNamespace builds the OAuth-layer session namespace for a pick. It is
+// mirrored byte-for-byte by admissionNamespace so Pick and Admit always agree
+// on the caller's session key (pool + policy version + caller hash per the
+// affinity decision).
+func oauthNamespace(enabled, ready bool, p Policy, poolID, boundCaller string) string {
+	caller := normalizeNamespace(boundCaller)
+	switch {
+	case !enabled:
+		return nsJoin("oauth-off", caller)
+	case !ready:
+		return nsJoin("oauth-empty", caller)
+	case poolID != "":
+		return nsJoin("pool", poolID, fmt.Sprintf("v%d", p.Version), caller)
+	default:
+		return nsJoin("oauth-glob", caller)
+	}
+}
+
+// admissionNamespace recomputes the pick-time namespace from execution
+// metadata. It intentionally mirrors Pick's branch order.
+func (s *Service) admissionNamespace(authID string, metadata map[string]any) string {
+	caller := callerNamespace(metadata)
+	if isProviderAPIKeyAuthID(authID) {
+		return nsJoin("apikey", caller)
+	}
+	s.mu.RLock()
+	enabled, ready, p := s.enabled, s.ready, s.policy
+	s.mu.RUnlock()
+	poolID, bound := "", false
+	if enabled && ready && caller != "" {
+		poolID, bound = BindingPool(p, caller)
+	}
+	if !bound {
+		poolID = ""
+	}
+	return oauthNamespace(enabled, ready, p, poolID, caller)
 }
 
 // decideLayeredPick merges both layers by provider priority: the higher
@@ -394,7 +505,7 @@ func priorityOfCandidate(request SchedulerPickRequest, authID string) int {
 // whose executor published a selected auth id, whether or not pool
 // scheduling is enabled and whether or not the caller is pool-bound.
 // It returns nil when the request may proceed; otherwise a termination result.
-func (s *Service) AdmitIntercept(requestID string, metadata map[string]any) *AdmitResult {
+func (s *Service) AdmitIntercept(requestID string, headers map[string][]string, metadata map[string]any) *AdmitResult {
 	if s == nil || requestID == "" {
 		return nil
 	}
@@ -402,7 +513,11 @@ func (s *Service) AdmitIntercept(requestID string, metadata map[string]any) *Adm
 	if authID == "" {
 		return nil
 	}
-	code, status, retryable, admitted := s.engine.Admit(requestID, authID)
+	// Recompute the caller's own namespaced session key exactly like Pick does
+	// (headers first, then metadata) so streak accounting never borrows
+	// another caller's session.
+	sessionKey := sessionKeyFrom(headers, metadata, s.admissionNamespace(authID, metadata))
+	code, status, retryable, admitted := s.engine.Admit(requestID, authID, sessionKey)
 	if admitted {
 		return nil
 	}
