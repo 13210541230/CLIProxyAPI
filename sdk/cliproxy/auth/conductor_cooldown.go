@@ -102,6 +102,13 @@ func nextTransientErrorRetryAfter(now time.Time) time.Time {
 	return recoverableFailureRetryAfterWithHint(now, nil, false)
 }
 
+// modelNotFoundCooldown is the probe window for an explicit upstream
+// model_not_found response. The account×model pair may recover between
+// attempts (gray-gated models, multi-backend relays with uneven access),
+// so a short window avoids locking a previously working model all day
+// while still suppressing a full-candidate probe storm.
+const modelNotFoundCooldown = 30 * time.Minute
+
 func recoverableFailureRetryAfter(now time.Time, disableCooling bool) time.Time {
 	return recoverableFailureRetryAfterWithHint(now, nil, disableCooling)
 }
@@ -366,6 +373,12 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 	}
 	reason := strings.TrimSpace(record.Reason)
 	model := strings.TrimSpace(record.Model)
+	if record.LastError != nil && record.LastError.Code == "model_not_found" &&
+		record.NextRetryAfter.Sub(now) > modelNotFoundCooldown {
+		// Re-open legacy half-day model_not_found locks early so upgraded
+		// deployments recover under the short probe window after restart.
+		record.NextRetryAfter = now.Add(modelNotFoundCooldown)
+	}
 	quota := record.Quota
 	if quota.Exceeded && quota.NextRecoverAt.IsZero() {
 		quota.NextRecoverAt = record.NextRetryAfter
@@ -823,7 +836,17 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					}
 
 					statusCode := statusCodeFromResult(result.Error)
-					if isModelSupportResultError(result.Error) {
+					if result.Error != nil && result.Error.Code == "model_not_found" {
+						// Explicit structured model_not_found gets a short probe
+						// window: gray-gated models and multi-backend relays fail
+						// intermittently, so a half-day lock would strand a model
+						// that still works most of the time.
+						if disableCooling {
+							state.NextRetryAfter = time.Time{}
+						} else {
+							state.NextRetryAfter = now.Add(modelNotFoundCooldown)
+						}
+					} else if isModelSupportResultError(result.Error) {
 						if disableCooling {
 							state.NextRetryAfter = time.Time{}
 						} else {
@@ -2349,6 +2372,8 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			auth.StatusMessage = "not_found"
 			if disableCooling {
 				auth.NextRetryAfter = time.Time{}
+			} else if resultErr != nil && resultErr.Code == "model_not_found" {
+				auth.NextRetryAfter = now.Add(modelNotFoundCooldown)
 			} else {
 				auth.NextRetryAfter = now.Add(12 * time.Hour)
 			}

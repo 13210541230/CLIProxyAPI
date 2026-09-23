@@ -1899,8 +1899,8 @@ func TestManager_ExecuteCount_ExplicitModelNotFoundSuspendsModel(t *testing.T) {
 		t.Fatalf("hook results = %#v, want preserved model_not_found code", results)
 	}
 	remaining := time.Until(state.NextRetryAfter)
-	if remaining < 11*time.Hour || remaining > 12*time.Hour {
-		t.Fatalf("model-not-found cooldown = %v, want about 12h", remaining)
+	if remaining < 25*time.Minute || remaining > 35*time.Minute {
+		t.Fatalf("model-not-found cooldown = %v, want about 30m probe window", remaining)
 	}
 	if count := reg.GetModelCount(model); count != 0 {
 		t.Fatalf("available model count = %d, want 0", count)

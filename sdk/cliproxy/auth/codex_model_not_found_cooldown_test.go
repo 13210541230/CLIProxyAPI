@@ -83,8 +83,8 @@ func TestCodexStructuredModelNotFound_ClassificationAndCooldown(t *testing.T) {
 				t.Fatalf("state.LastError = %#v, want code model_not_found", state.LastError)
 			}
 			remaining := time.Until(state.NextRetryAfter)
-			if remaining < 11*time.Hour || remaining > 13*time.Hour {
-				t.Fatalf("expected ~12h cooldown, got remaining=%v", remaining)
+			if remaining < 25*time.Minute || remaining > 35*time.Minute {
+				t.Fatalf("expected ~30m model_not_found probe cooldown, got remaining=%v", remaining)
 			}
 		})
 	}
@@ -205,6 +205,50 @@ func TestCodexModelNotFound_Generic404NotModelNotFound(t *testing.T) {
 	state := updated.ModelStates[model]
 	if state != nil && state.LastError != nil && state.LastError.Code == "model_not_found" {
 		t.Fatalf("generic 404 should not have model_not_found error code, got %v", state.LastError.Code)
+	}
+	if state == nil || state.NextRetryAfter.IsZero() {
+		t.Fatal("generic 404 should still cool the model")
+	}
+	remaining := time.Until(state.NextRetryAfter)
+	if remaining < 11*time.Hour || remaining > 13*time.Hour {
+		t.Fatalf("generic 404 must keep the ~12h cooldown, got remaining=%v", remaining)
+	}
+}
+
+func TestRestoreCooldownRecord_ClampsLegacyModelNotFoundLock(t *testing.T) {
+	previous := quotaCooldownDisabled.Load()
+	quotaCooldownDisabled.Store(false)
+	t.Cleanup(func() { quotaCooldownDisabled.Store(previous) })
+
+	m := NewManager(nil, nil, nil)
+	auth := &Auth{ID: "auth-restore-clamp", Provider: "codex"}
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	now := time.Now()
+	record := CooldownStateRecord{
+		AuthID:         auth.ID,
+		Model:          "gpt-6-sol",
+		NextRetryAfter: now.Add(11 * time.Hour),
+		UpdatedAt:      now,
+		LastError:      &Error{HTTPStatus: http.StatusNotFound, Code: "model_not_found", Message: "model_not_found"},
+	}
+	if !m.restoreCooldownRecordLocked(record, now) {
+		t.Fatal("expected the legacy record to be restored")
+	}
+
+	updated, ok := m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("auth missing")
+	}
+	state := updated.ModelStates["gpt-6-sol"]
+	if state == nil || state.NextRetryAfter.IsZero() {
+		t.Fatal("expected model state after restore")
+	}
+	remaining := time.Until(state.NextRetryAfter)
+	if remaining > 35*time.Minute {
+		t.Fatalf("legacy 11h model_not_found lock must be clamped to ~30m, got remaining=%v", remaining)
 	}
 }
 
