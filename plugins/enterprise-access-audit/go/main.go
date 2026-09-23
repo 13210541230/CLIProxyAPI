@@ -107,6 +107,7 @@ type registrationCapability struct {
 	ManagementAPI               bool     `json:"management_api"`
 	Scheduler                   bool     `json:"scheduler,omitempty"`
 	SchedulerExclusiveProviders []string `json:"scheduler_exclusive_providers,omitempty"`
+	SchedulerAcrossPriorities   bool     `json:"scheduler_across_priorities,omitempty"`
 }
 
 type managementRegistrationRequest struct {
@@ -251,6 +252,9 @@ func pluginRegistration() registration {
 	if pluginState.Config().AccountPool.Enabled {
 		capabilities.Scheduler = true
 		capabilities.SchedulerExclusiveProviders = []string{accountpool.ExclusiveProvider}
+		// Layered api-key/OAuth scheduling needs the full candidate set across
+		// priority tiers; without it the host pre-filters to one tier.
+		capabilities.SchedulerAcrossPriorities = true
 	}
 	return registration{
 		SchemaVersion: schemaVersion,

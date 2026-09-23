@@ -22,6 +22,13 @@ func (h *Host) PickAuth(ctx context.Context, req pluginapi.SchedulerPickRequest)
 	record := h.schedulerRecordForRequest(provider, exclusive, ownerID, ownerConflict)
 	if record == nil {
 		if exclusive {
+			// An owner that is still loaded but no longer declares scheduler
+			// capability for this provider (e.g. the account pool was switched
+			// off) has relinquished its exclusive claim; fall back to built-in
+			// scheduling. A genuinely missing/failed owner keeps failing closed.
+			if !ownerConflict && h.ownerRelinquishedScheduler(ownerID, provider) {
+				return pluginapi.SchedulerPickResponse{}, false, nil
+			}
 			return pluginapi.SchedulerPickResponse{}, true, schedulerUnavailableError()
 		}
 		return pluginapi.SchedulerPickResponse{}, false, nil
@@ -246,11 +253,36 @@ func (h *Host) exclusiveScheduler(provider string) (bool, string, bool) {
 
 func schedulerSupportsProvider(plugin pluginapi.Plugin, provider string) bool {
 	provider = strings.ToLower(strings.TrimSpace(provider))
+	if plugin.Capabilities.Scheduler == nil {
+		return false
+	}
 	for _, candidate := range plugin.Capabilities.SchedulerExclusiveProviders {
 		if strings.ToLower(strings.TrimSpace(candidate)) == provider {
 			return true
 		}
 	}
+	return false
+}
+
+// ownerRelinquishedScheduler reports whether the exclusive owner plugin is
+// loaded but no longer declares a scheduler for the provider, meaning its
+// exclusive claim has been released (as opposed to an owner that failed to
+// load, which must keep failing closed).
+func (h *Host) ownerRelinquishedScheduler(ownerID, provider string) bool {
+	if h == nil || ownerID == "" {
+		return false
+	}
+	for _, record := range h.activeRecords() {
+		if record.id != ownerID {
+			continue
+		}
+		// Only an owner that dropped its scheduler capability entirely has
+		// relinquished the claim. An owner still declaring a scheduler for a
+		// different scope keeps failing closed so configuration mismatches
+		// stay visible instead of silently falling back.
+		return record.plugin.Capabilities.Scheduler == nil
+	}
+	return false
 	return false
 }
 

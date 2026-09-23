@@ -339,6 +339,27 @@ func TestHostExclusiveSchedulerRequiresCanonicalCallerHash(t *testing.T) {
 	}
 }
 
+// An owner that is still loaded but dropped its scheduler capability entirely
+// (e.g. the account pool was switched off while the exclusive declaration
+// remains in config) has relinquished the claim: scheduling falls back to the
+// built-in selector instead of failing closed.
+func TestHostExclusiveSchedulerRelinquishedOwnerFallsBackToBuiltin(t *testing.T) {
+	host := newHostWithRecords(capabilityRecord{
+		id:       "pool-scheduler",
+		priority: 1,
+		plugin:   pluginapi.Plugin{Capabilities: pluginapi.Capabilities{Scheduler: nil}},
+	})
+	host.exclusiveOwners = map[string][]string{"codex": {"pool-scheduler"}}
+
+	req := schedulerRequest("auth-1")
+	req.Provider = "codex"
+	req.Options.Metadata = map[string]any{"quota_key_hash": "abcdef12"}
+	_, handled, errPick := host.PickAuth(context.Background(), req)
+	if handled || errPick != nil {
+		t.Fatalf("PickAuth() = handled %v, err %v, want built-in fallback (handled=false, err=nil)", handled, errPick)
+	}
+}
+
 func TestHostExclusiveSchedulerRejectsOwnerScopeMismatch(t *testing.T) {
 	host := newHostWithRecords(capabilityRecord{
 		id:       "pool-scheduler",

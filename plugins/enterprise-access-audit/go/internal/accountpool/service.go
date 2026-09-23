@@ -225,12 +225,55 @@ func (s *Service) LimitsView() map[string]AccountLimit {
 // are restricted to their pool members, and unbound callers are also handled
 // globally in-process (the host builtin is not reachable under exclusivity).
 func (s *Service) Pick(request SchedulerPickRequest) SchedulerPickResponse {
-	if s == nil || !s.enabled {
+	if s == nil {
 		return notHandled()
 	}
 	if !requestIsCodex(request) {
 		return notHandled()
 	}
+
+	// Candidate layers (binding decision): provider-configured api-key
+	// credentials are never constrained by pool membership; pool semantics
+	// apply only to OAuth authentication-file credentials.
+	apiKeyCands, oauthCands := splitSchedulerCandidates(request.Candidates)
+
+	var apiKeyResp *SchedulerPickResponse
+	if len(apiKeyCands) > 0 {
+		scoped := request
+		scoped.Candidates = apiKeyCands
+		if authID := s.engine.Pick(scoped); authID != "" {
+			resp := selected(authID)
+			apiKeyResp = &resp
+		}
+	}
+
+	oauthResp := s.pickOAuthLayer(request, oauthCands)
+	return decideLayeredPick(request, oauthResp, apiKeyResp)
+}
+
+// pickOAuthLayer applies pool semantics to OAuth candidates: disabled or
+// unconfigured pools fall back to global selection so a stale exclusive
+// registration keeps serving requests instead of failing closed.
+func (s *Service) pickOAuthLayer(request SchedulerPickRequest, candidates []schedulerAuthCandidate) *SchedulerPickResponse {
+	if len(candidates) == 0 {
+		return nil
+	}
+	scoped := request
+	scoped.Candidates = candidates
+	globalPick := func() *SchedulerPickResponse {
+		if authID := s.engine.Pick(scoped); authID != "" {
+			resp := selected(authID)
+			return &resp
+		}
+		return nil
+	}
+
+	// Pool disabled: transparent global selection (mirrors the empty-policy
+	// passthrough so turning the pool off restores unrestricted scheduling).
+	if !s.enabled {
+		return globalPick()
+	}
+
 	s.mu.RLock()
 	p := s.policy
 	ready := s.ready
@@ -239,55 +282,109 @@ func (s *Service) Pick(request SchedulerPickRequest) SchedulerPickResponse {
 	// Empty policy: nothing to enforce. Pass codex through to the global
 	// selector so the service stays usable before any pool is configured.
 	if !ready {
-		return s.pickGlobally(request)
+		return globalPick()
 	}
 
 	callerHash := callerHashOf(request)
 	if callerHash == "" {
-		return reject("identity_missing", http.StatusBadRequest, false, "caller hash is required for Codex pool routing")
+		resp := reject("identity_missing", http.StatusBadRequest, false, "caller hash is required for Codex pool routing")
+		return &resp
 	}
 	poolID, bound := BindingPool(p, callerHash)
 	if !bound {
-		// Unbound caller: select globally from all candidates.
-		return s.pickGlobally(request)
+		return globalPick()
 	}
 	pool, ok := PoolByID(p, poolID)
 	if !ok || !pool.Enabled {
-		return reject("account_pool_disabled", http.StatusServiceUnavailable, true, "assigned account pool is disabled or missing")
+		resp := reject("account_pool_disabled", http.StatusServiceUnavailable, true, "assigned pool is disabled or missing")
+		return &resp
 	}
 	members := EnabledMembers(p, poolID)
 	if len(members) == 0 {
-		return reject("account_pool_unavailable", http.StatusServiceUnavailable, true, "assigned account pool has no enabled members")
+		resp := reject("account_pool_unavailable", http.StatusServiceUnavailable, true, "assigned account pool has no enabled members")
+		return &resp
 	}
 	allowed := make(map[string]struct{}, len(members))
 	for _, member := range members {
 		allowed[member.AuthID] = struct{}{}
 	}
-	filtered := make([]schedulerAuthCandidate, 0, len(request.Candidates))
-	for _, candidate := range request.Candidates {
+	filtered := make([]schedulerAuthCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
 		if _, ok := allowed[candidate.ID]; ok {
 			filtered = append(filtered, candidate)
 		}
 	}
 	if len(filtered) == 0 {
-		return reject("account_pool_unavailable", http.StatusServiceUnavailable, true, "assigned account pool has no eligible candidates")
+		resp := reject("account_pool_unavailable", http.StatusServiceUnavailable, true, "assigned account pool has no eligible candidates")
+		return &resp
 	}
-	scoped := request
 	scoped.Candidates = filtered
 	if authID := s.engine.Pick(scoped); authID != "" {
-		return selected(authID)
+		resp := selected(authID)
+		return &resp
 	}
-	return reject("account_pool_unavailable", http.StatusServiceUnavailable, true, "assigned account pool could not admit a candidate")
+	resp := reject("account_pool_unavailable", http.StatusServiceUnavailable, true, "assigned account pool could not admit a candidate")
+	return &resp
 }
 
-// pickGlobally selects a candidate from the full request candidate set using
-// the same load-aware engine as the pool path. It mirrors the host builtin's
-// fill-first behavior so codex stays usable before or without pool binding.
-func (s *Service) pickGlobally(request SchedulerPickRequest) SchedulerPickResponse {
-	if authID := s.engine.Pick(request); authID != "" {
-		return selected(authID)
+// splitSchedulerCandidates separates provider-configured api-key credentials
+// from OAuth authentication-file credentials using source/auth-kind markers
+// that survive the host's sensitive-attribute redaction.
+func splitSchedulerCandidates(candidates []schedulerAuthCandidate) (apiKey []schedulerAuthCandidate, oauth []schedulerAuthCandidate) {
+	for _, candidate := range candidates {
+		if candidateIsProviderAPIKey(candidate) {
+			apiKey = append(apiKey, candidate)
+		} else {
+			oauth = append(oauth, candidate)
+		}
 	}
-	return reject("account_pool_unavailable", http.StatusServiceUnavailable, true, "no candidates available for Codex scheduling")
+	return apiKey, oauth
+}
+
+func candidateIsProviderAPIKey(candidate schedulerAuthCandidate) bool {
+	attrs := candidate.Attributes
+	if attrs == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(attrs["auth_kind"]), "apikey") {
+		return true
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(attrs["source"])), "config:") {
+		return true
+	}
+	return strings.TrimSpace(attrs["config_index"]) != ""
+}
+
+// decideLayeredPick merges both layers by provider priority: the higher
+// priority layer wins, an empty layer fails over to the other, and pool
+// rejections surface only when the api-key layer cannot serve the request.
+func decideLayeredPick(request SchedulerPickRequest, oauthResp, apiKeyResp *SchedulerPickResponse) SchedulerPickResponse {
+	switch {
+	case oauthResp != nil && oauthResp.Decision == "selected" && apiKeyResp != nil && apiKeyResp.Decision == "selected":
+		oauthPriority := priorityOfCandidate(request, oauthResp.AuthID)
+		apiKeyPriority := priorityOfCandidate(request, apiKeyResp.AuthID)
+		if apiKeyPriority > oauthPriority {
+			return *apiKeyResp
+		}
+		return *oauthResp
+	case apiKeyResp != nil:
+		// OAuth layer produced nothing or rejected: pool-bound failures fail
+		// over to the provider-configured api-key layer.
+		return *apiKeyResp
+	case oauthResp != nil:
+		return *oauthResp
+	default:
+		return reject("account_pool_unavailable", http.StatusServiceUnavailable, true, "no candidates available for Codex scheduling")
+	}
+}
+
+func priorityOfCandidate(request SchedulerPickRequest, authID string) int {
+	for _, candidate := range request.Candidates {
+		if candidate.ID == authID {
+			return candidate.Priority
+		}
+	}
+	return 0
 }
 
 // AdmitIntercept gates an already-selected request at the after-auth stage.
