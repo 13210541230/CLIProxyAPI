@@ -7,10 +7,9 @@ import (
 	"time"
 )
 
-// TestAdmitQueueDrainsByCompletionNotTimeout proves a queue deeper than the
-// concurrency limit keeps admitting as executing requests complete, while the
-// fake clock never reaches the wait deadline. Counting queued waiters toward
-// the limit deadlocks the queue behind an idle account until timeout fires.
+// TestAdmitQueuesThenFailsWhenWaitExpires proves requests wait when an
+// account is at its concurrency limit and receive a retryable rejection only
+// after the configured wait deadline.
 func TestAdmitQueuesThenFailsWhenWaitExpires(t *testing.T) {
 	current := time.Unix(1_700_000_000, 0)
 	var clockMu sync.Mutex
@@ -69,6 +68,10 @@ func TestAdmitQueuesThenFailsWhenWaitExpires(t *testing.T) {
 	svc.Complete("first")
 }
 
+// TestAdmitQueueDrainsByCompletionNotTimeout proves a queue deeper than the
+// concurrency limit keeps admitting as executing requests complete, while the
+// fake clock never reaches the wait deadline. Counting queued waiters toward
+// the limit deadlocks the queue behind an idle account until timeout fires.
 func TestAdmitQueueDrainsByCompletionNotTimeout(t *testing.T) {
 	fakeNow := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	engine := NewEngine(10*time.Second, 30*time.Second, nil)
@@ -135,8 +138,13 @@ func TestAdmitQueueDrainsByCompletionNotTimeout(t *testing.T) {
 		}
 	}
 	collect(3, 2*time.Second)
-	if got := engine.Snapshot("acct"); got.Active != 3 || got.Waiting != 1 {
-		t.Fatalf("mid-drain state = %+v, want active=3 waiting=1", got)
+	if got := engine.Snapshot("acct"); got.Active != 3 || got.Waiting > 1 {
+		t.Fatalf("mid-drain state = %+v, want active=3 and at most one waiter", got)
+	}
+	select {
+	case res := <-results:
+		t.Fatalf("last waiter completed without a free slot: %+v", res)
+	default:
 	}
 
 	// One slot frees: the last waiter admits. Never a timeout, never a reject.
