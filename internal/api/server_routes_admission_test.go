@@ -156,6 +156,29 @@ func TestCodexAlphaSearchRunsAfterAuthAdmission(t *testing.T) {
 	}
 }
 
+func TestCodexAlphaSearchReportsUpstreamFailureCompletion(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusBadGateway} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			probe := &admissionProbeInterceptor{completeCh: make(chan pluginapi.RequestCompletion, 4)}
+			server, executor := newAdmissionProbeServer(t, probe)
+			executor.statuses = []int{status}
+
+			rr := httptest.NewRecorder()
+			server.engine.ServeHTTP(rr, newAlphaSearchRequest(t))
+			if rr.Code != status {
+				t.Fatalf("status = %d, want %d", rr.Code, status)
+			}
+			completion := probe.awaitCompletion(t)
+			if completion.Outcome != pluginapi.RequestCompletionFailed {
+				t.Fatalf("completion outcome = %q, want failed", completion.Outcome)
+			}
+			if completion.StatusCode != status {
+				t.Fatalf("completion status = %d, want %d", completion.StatusCode, status)
+			}
+		})
+	}
+}
+
 // TestCodexAlphaSearchAdmissionTerminateBlocksUpstream proves a terminated
 // admission (full account) stops the request before the upstream and still
 // releases the admission slot with a rejected outcome.

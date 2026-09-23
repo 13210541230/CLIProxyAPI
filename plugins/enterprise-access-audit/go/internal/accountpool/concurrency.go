@@ -1,6 +1,7 @@
 package accountpool
 
 import (
+	"container/heap"
 	"strings"
 	"sync"
 	"time"
@@ -11,7 +12,50 @@ const (
 	sessionKeyBound = 128
 	// tokenBudgetPerAuth bounds tracked window bookkeeping per account.
 	tokenBudgetPerAuth = 1 << 20
+	// defaultSessionIdleTTL is how long a session may stay silent before its
+	// binding expires and re-selection becomes allowed. Mirrors the product
+	// rule: a bound session never changes OAuth accounts while it keeps
+	// talking; only an idle gap longer than this releases the binding.
+	defaultSessionIdleTTL = 2 * time.Hour
 )
+
+// sessionBinding tracks which account a session is pinned to plus the last
+// time the session carried a request (the idle-expiry clock).
+type sessionBinding struct {
+	AuthID   string
+	LastSeen time.Time
+}
+
+type sessionExpiryEntry struct {
+	key      string
+	lastSeen time.Time
+	index    int
+}
+
+type sessionExpiryQueue []*sessionExpiryEntry
+
+func (q sessionExpiryQueue) Len() int { return len(q) }
+func (q sessionExpiryQueue) Less(i, j int) bool {
+	return q[i].lastSeen.Before(q[j].lastSeen)
+}
+func (q sessionExpiryQueue) Swap(i, j int) {
+	q[i], q[j] = q[j], q[i]
+	q[i].index, q[j].index = i, j
+}
+func (q *sessionExpiryQueue) Push(value any) {
+	entry := value.(*sessionExpiryEntry)
+	entry.index = len(*q)
+	*q = append(*q, entry)
+}
+func (q *sessionExpiryQueue) Pop() any {
+	old := *q
+	last := len(old) - 1
+	entry := old[last]
+	old[last] = nil
+	entry.index = -1
+	*q = old[:last]
+	return entry
+}
 
 // Limit configures per-account concurrency admission. Zero Max and Max15s mean
 // the account is not concurrency-managed: it is picked and reserved but never gated.
@@ -33,17 +77,20 @@ type candidateLoad struct {
 type Engine struct {
 	mu sync.Mutex
 
-	limits         map[string]Limit
-	active         map[string]int
-	waiting        map[string]int
-	requests       map[string]admissionRecord
-	reserved       map[string][]time.Time
-	sessions       map[string]string // sessionKey -> account auth id
-	busyRejections map[string]int    // sessionKey -> consecutive queue timeouts
-	window         map[string][]time.Time
-	epoch          uint64
-	cursor         uint64
-	maxBusy        int
+	limits             map[string]Limit
+	active             map[string]int
+	waiting            map[string]int
+	requests           map[string]admissionRecord
+	reserved           map[string][]time.Time
+	sessions           map[string]sessionBinding // sessionKey -> binding + last request time
+	sessionExpiry      sessionExpiryQueue        // ordered by last request time for bounded idle cleanup
+	sessionExpiryByKey map[string]*sessionExpiryEntry
+	busyRejections     map[string]int // sessionKey -> consecutive queue timeouts
+	window             map[string][]time.Time
+	epoch              uint64
+	cursor             uint64
+	maxBusy            int
+	sessionIdleTTL     time.Duration
 
 	now   func() time.Time
 	sleep func(time.Duration)
@@ -70,23 +117,25 @@ func NewEngine(reserve, maxWait time.Duration, sessionFn func(schedulerPickReque
 		maxWait = 30 * time.Second
 	}
 	return &Engine{
-		limits:         map[string]Limit{},
-		active:         map[string]int{},
-		waiting:        map[string]int{},
-		requests:       map[string]admissionRecord{},
-		reserved:       map[string][]time.Time{},
-		sessions:       map[string]string{},
-		busyRejections: map[string]int{},
-		window:         map[string][]time.Time{},
-		now:            time.Now,
-		sleep:          time.Sleep,
-		maxBusy:        3,
-		cfg:            engineOptions{Reserve: reserve, MaxWait: maxWait, Session: sessionFn},
+		limits:             map[string]Limit{},
+		active:             map[string]int{},
+		waiting:            map[string]int{},
+		requests:           map[string]admissionRecord{},
+		reserved:           map[string][]time.Time{},
+		sessions:           map[string]sessionBinding{},
+		sessionExpiryByKey: map[string]*sessionExpiryEntry{},
+		busyRejections:     map[string]int{},
+		window:             map[string][]time.Time{},
+		now:                time.Now,
+		sleep:              time.Sleep,
+		maxBusy:            3,
+		sessionIdleTTL:     defaultSessionIdleTTL,
+		cfg:                engineOptions{Reserve: reserve, MaxWait: maxWait, Session: sessionFn},
 	}
 }
 
-// SetMaxBusy overrides the consecutive queue-timeout budget before a session
-// fails over to another in-pool account. Values below 1 are ignored.
+// SetMaxBusy overrides the consecutive queue-timeout budget before PickPool
+// defers a pool session to the api-key provider layer. Values below 1 ignored.
 func (e *Engine) SetMaxBusy(n int) {
 	if e == nil || n < 1 {
 		return
@@ -96,32 +145,15 @@ func (e *Engine) SetMaxBusy(n int) {
 	e.mu.Unlock()
 }
 
-// ResetPoolSessions clears OAuth/pool-routed session bindings and busy streaks
-// while leaving api-key layer sessions untouched. It is called when a new
-// policy version activates: namespaced pool keys embed the policy version, so
-// every pre-activation pool binding is dead by construction — dropping them
-// eagerly keeps the maps from accumulating orphaned entries, and scoping the
-// reset to pool namespaces means a pool publication never disturbs
-// provider-configured api-key stickiness.
-func (e *Engine) ResetPoolSessions() {
-	if e == nil {
+// SetSessionIdleTTL overrides the idle gap that expires a session binding.
+// Values below one second are ignored.
+func (e *Engine) SetSessionIdleTTL(d time.Duration) {
+	if e == nil || d < time.Second {
 		return
 	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	for key := range e.sessions {
-		if strings.HasPrefix(key, "apikey:") {
-			continue
-		}
-		delete(e.sessions, key)
-		delete(e.busyRejections, key)
-	}
-	for key := range e.busyRejections {
-		if strings.HasPrefix(key, "apikey:") {
-			continue
-		}
-		delete(e.busyRejections, key)
-	}
+	e.sessionIdleTTL = d
+	e.mu.Unlock()
 }
 
 // SetTimings updates reservation and admission-wait windows in place.
@@ -178,9 +210,27 @@ func (e *Engine) SetClock(now func() time.Time, sleep func(time.Duration)) {
 
 // Pick selects the least-pressure candidate with reservation and session
 // stickiness. It returns "" when no candidate is eligible.
+// Pick selects an account for lenient layers (global/unbound OAuth routing and
+// the provider api-key layer): a session sticks while its account stays
+// eligible, and silently rebinds when the account leaves the candidate set.
+// Idle sessions expire after sessionIdleTTL.
 func (e *Engine) Pick(request schedulerPickRequest) string {
+	authID, _ := e.pick(request, false)
+	return authID
+}
+
+// PickPool is the strict selector for pool-bound sessions. A binding survives
+// every failure: the bound account leaving the candidates (cooled, removed,
+// disabled) or a persistent busy streak yields a coded decline so the caller
+// can defer to the api-key provider layer — never a sibling OAuth account.
+// Only an idle gap longer than sessionIdleTTL releases the binding.
+func (e *Engine) PickPool(request schedulerPickRequest) (string, string) {
+	return e.pick(request, true)
+}
+
+func (e *Engine) pick(request schedulerPickRequest, strict bool) (string, string) {
 	if e == nil || len(request.Candidates) == 0 {
-		return ""
+		return "", ""
 	}
 	now := e.now().UTC()
 	e.mu.Lock()
@@ -215,7 +265,7 @@ func (e *Engine) Pick(request schedulerPickRequest) string {
 	}
 	if len(loads) == 0 {
 		e.mu.Unlock()
-		return ""
+		return "", ""
 	}
 
 	sessionKey := ""
@@ -223,17 +273,45 @@ func (e *Engine) Pick(request schedulerPickRequest) string {
 		sessionKey = e.cfg.Session(request)
 	}
 	if sessionKey != "" {
-		// Strict stickiness: a session stays on its account through transient
-		// overload and queues there. Only an account that left the candidate
-		// set (cooled, removed, or disabled) is abandoned immediately; local
-		// queue timeouts are tolerated up to the persistent-unavailability
-		// budget tracked in Admit.
-		if sticky := e.sessions[sessionKey]; sticky != "" {
-			if _, eligible := seen[sticky]; eligible {
-				e.reserved[sticky] = append(e.reserved[sticky], now)
+		if binding, ok := e.sessions[sessionKey]; ok && binding.AuthID != "" {
+			// The request just proved the session is alive: refresh the idle
+			// clock before any decline so an active session never expires.
+			binding.LastSeen = now
+			e.rememberSessionLocked(sessionKey, binding)
+			if _, eligible := seen[binding.AuthID]; eligible {
+				streak := e.busyRejections[sessionKey]
+				saturated := streak >= e.maxBusy && e.saturatedLocked(binding.AuthID, now)
+				if strict {
+					// Persistent saturation under strict pool routing defers to
+					// the api-key provider; the binding itself is kept. Once the
+					// account drains, the session probes it again and a successful
+					// admission clears the streak.
+					if saturated {
+						e.mu.Unlock()
+						return "", "account_busy"
+					}
+					e.reserved[binding.AuthID] = append(e.reserved[binding.AuthID], now)
+					e.mu.Unlock()
+					return binding.AuthID, ""
+				}
+				if saturated {
+					// Lenient layers (api-key entries, unbound global OAuth) keep
+					// the original hysteresis: a persistent saturated streak
+					// releases the binding so the session reaches a free account.
+					e.deleteSessionLocked(sessionKey)
+					// Fall through to load-balanced rebind below.
+				} else {
+					e.reserved[binding.AuthID] = append(e.reserved[binding.AuthID], now)
+					e.mu.Unlock()
+					return binding.AuthID, ""
+				}
+			} else if strict {
+				// Bound account left the candidates: decline instead of hopping
+				// to a sibling account (single-account realism).
 				e.mu.Unlock()
-				return sticky
+				return "", "account_pool_unavailable"
 			}
+			// Lenient layers rebind silently when their account disappears.
 		}
 	}
 
@@ -259,10 +337,53 @@ func (e *Engine) Pick(request schedulerPickRequest) string {
 	}
 	e.reserved[selected] = append(e.reserved[selected], now)
 	if sessionKey != "" {
-		e.sessions[sessionKey] = selected
+		e.rememberSessionLocked(sessionKey, sessionBinding{AuthID: selected, LastSeen: now})
 	}
 	e.mu.Unlock()
-	return selected
+	return selected, ""
+}
+
+// saturatedLocked reports whether the account currently has no admission
+// budget left, using the same conditions Admit queues on.
+func (e *Engine) saturatedLocked(authID string, now time.Time) bool {
+	limit := e.limitOf(authID)
+	if limit.Max > 0 && e.active[authID] >= limit.Max {
+		return true
+	}
+	if limit.Max15s > 0 && e.windowCountLocked(authID, now) >= limit.Max15s {
+		return true
+	}
+	return false
+}
+
+// Touch refreshes the idle clock of an existing session binding without
+// selecting anything, so a session whose requests are currently being served
+// by the deferred api-key layer still counts as active. An already-expired
+// binding is dropped so the next selection treats the session as fresh.
+func (e *Engine) Touch(request schedulerPickRequest) {
+	if e == nil {
+		return
+	}
+	sessionKey := ""
+	if e.cfg.Session != nil {
+		sessionKey = e.cfg.Session(request)
+	}
+	if sessionKey == "" {
+		return
+	}
+	now := e.now().UTC()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	binding, ok := e.sessions[sessionKey]
+	if !ok || binding.AuthID == "" {
+		return
+	}
+	if binding.LastSeen.Before(now.Add(-e.sessionIdleTTL)) {
+		e.deleteSessionLocked(sessionKey)
+		return
+	}
+	binding.LastSeen = now
+	e.rememberSessionLocked(sessionKey, binding)
 }
 
 // Admit enters bounded admission for an already-selected auth. It blocks up to
@@ -313,7 +434,7 @@ func (e *Engine) Admit(requestID, authID, sessionKey string) (code string, statu
 			// The caller's own namespaced session key is provided by the service;
 			// never scan the shared sessions map (it can hold other callers'
 			// sessions bound to this account and misattribute streaks).
-			if sessionKey != "" {
+			if _, tracked := e.sessions[sessionKey]; sessionKey != "" && tracked {
 				e.busyRejections[sessionKey] = 0 // a success clears the failure streak
 			}
 			e.requests[requestID] = admissionRecord{AuthID: authID, SessionKey: sessionKey}
@@ -322,16 +443,13 @@ func (e *Engine) Admit(requestID, authID, sessionKey string) (code string, statu
 		}
 
 		if !now.Before(deadline) {
-			// Count one full queue timeout for the caller's own session. Only a
-			// persistent streak (maxBusy consecutive rejections with no success
-			// between) releases the binding, so transient overload never hops
-			// accounts while a dead account can never strand its sessions forever.
-			if sessionKey != "" {
+			// Count one full queue timeout for the caller's session. The
+			// binding is never released here anymore: a session stays pinned
+			// to its account through any number of failures (single-account
+			// realism). The streak only tells PickPool to defer the OAuth
+			// layer to the api-key provider while the account stays saturated.
+			if _, tracked := e.sessions[sessionKey]; sessionKey != "" && tracked {
 				e.busyRejections[sessionKey]++
-				if e.busyRejections[sessionKey] >= e.maxBusy {
-					delete(e.sessions, sessionKey)
-					delete(e.busyRejections, sessionKey)
-				}
 			}
 			e.mu.Unlock()
 			return "account_busy", 503, true, false
@@ -443,8 +561,35 @@ func (e *Engine) lowerWaitingLocked(authID string) {
 	}
 }
 
+func (e *Engine) rememberSessionLocked(key string, binding sessionBinding) {
+	e.sessions[key] = binding
+	if entry := e.sessionExpiryByKey[key]; entry != nil {
+		entry.lastSeen = binding.LastSeen
+		heap.Fix(&e.sessionExpiry, entry.index)
+		return
+	}
+	entry := &sessionExpiryEntry{key: key, lastSeen: binding.LastSeen}
+	e.sessionExpiryByKey[key] = entry
+	heap.Push(&e.sessionExpiry, entry)
+}
+
+func (e *Engine) deleteSessionLocked(key string) {
+	if entry := e.sessionExpiryByKey[key]; entry != nil {
+		heap.Remove(&e.sessionExpiry, entry.index)
+		delete(e.sessionExpiryByKey, key)
+	}
+	delete(e.sessions, key)
+	delete(e.busyRejections, key)
+}
+
 func (e *Engine) pruneLocked(now time.Time) {
 	cutoff := now.Add(-e.cfg.Reserve)
+	// The heap keeps idle cleanup proportional to expired sessions instead
+	// of scanning every binding while the engine lock is held.
+	sessionCutoff := now.Add(-e.sessionIdleTTL)
+	for len(e.sessionExpiry) > 0 && e.sessionExpiry[0].lastSeen.Before(sessionCutoff) {
+		e.deleteSessionLocked(e.sessionExpiry[0].key)
+	}
 	for authID, queue := range e.reserved {
 		if len(queue) == 0 {
 			continue

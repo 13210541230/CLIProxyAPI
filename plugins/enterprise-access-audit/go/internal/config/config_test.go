@@ -77,6 +77,17 @@ func TestParseYAMLNestedAccountPoolWinsOverFlatKeys(t *testing.T) {
 	}
 }
 
+func TestParseYAMLNestedFalseDisablesFlatTrue(t *testing.T) {
+	raw := "account_pool.enabled: true\naccount_pool:\n  enabled: false\n"
+	cfg, err := ParseYAML([]byte(raw), t.TempDir())
+	if err != nil {
+		t.Fatalf("ParseYAML() error = %v", err)
+	}
+	if cfg.AccountPool.Enabled {
+		t.Fatal("explicit nested false must override flat true")
+	}
+}
+
 func TestNormalizeRejectsUnsafeBounds(t *testing.T) {
 	base := Default()
 	for _, test := range []struct {
@@ -96,5 +107,37 @@ func TestNormalizeRejectsUnsafeBounds(t *testing.T) {
 				t.Fatal("Normalize() accepted unsafe setting")
 			}
 		})
+	}
+}
+
+// TestParseYAMLSessionIdleTTL locks the idle-binding config: default 2h,
+// nested and flat forms both honored, bounds enforced.
+func TestParseYAMLSessionIdleTTL(t *testing.T) {
+	cfg, err := ParseYAML(nil, t.TempDir())
+	if err != nil {
+		t.Fatalf("ParseYAML() error = %v", err)
+	}
+	if cfg.AccountPool.SessionIdleTTLSeconds != DefaultAccountPoolSessionIdleTTLSeconds {
+		t.Fatalf("default session idle ttl = %d, want %d", cfg.AccountPool.SessionIdleTTLSeconds, DefaultAccountPoolSessionIdleTTLSeconds)
+	}
+
+	cfg, err = ParseYAML([]byte("account_pool:\n  session_idle_ttl_seconds: 3600\n"), t.TempDir())
+	if err != nil {
+		t.Fatalf("ParseYAML(nested) error = %v", err)
+	}
+	if cfg.AccountPool.SessionIdleTTLSeconds != 3600 {
+		t.Fatalf("nested session idle ttl = %d, want 3600", cfg.AccountPool.SessionIdleTTLSeconds)
+	}
+
+	cfg, err = ParseYAML([]byte("account_pool.session_idle_ttl_seconds: 1800\n"), t.TempDir())
+	if err != nil {
+		t.Fatalf("ParseYAML(flat) error = %v", err)
+	}
+	if cfg.AccountPool.SessionIdleTTLSeconds != 1800 {
+		t.Fatalf("flat session idle ttl = %d, want 1800", cfg.AccountPool.SessionIdleTTLSeconds)
+	}
+
+	if _, err = ParseYAML([]byte("account_pool:\n  session_idle_ttl_seconds: 999999\n"), t.TempDir()); err == nil {
+		t.Fatal("ParseYAML accepted session_idle_ttl_seconds above 86400")
 	}
 }

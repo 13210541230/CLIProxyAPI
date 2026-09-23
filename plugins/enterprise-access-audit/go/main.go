@@ -271,7 +271,7 @@ func pluginRegistration() registration {
 				{Name: "default_audit_enabled", Type: "boolean", Description: "Default audit state for an absent policy."},
 				{Name: "max_text_bytes", Type: "integer", Description: "Maximum persisted user-text bytes (1-1048576)."},
 				{Name: "cleanup_interval_seconds", Type: "integer", Description: "Automatic cleanup interval in seconds."},
-				{Name: "account_pool.enabled", Type: "boolean", Description: "Enable account-pool Codex scheduling (registers the scheduler capability). Per-account concurrency limits and live stats apply regardless of this switch."},
+				{Name: "account_pool.enabled", Type: "boolean", Description: "Enable account-pool Codex scheduling and per-account concurrency limits; when disabled, a retained exclusive claim delegates to CPA's builtin scheduler."},
 				{Name: "account_pool.data_dir", Type: "string", Description: "Account-pool state directory; defaults to <data_dir>/account-pool."},
 				{Name: "account_pool.reserve_seconds", Type: "integer", Description: "Scheduler reservation seconds guarding against pick bursts (default 10)."},
 				{Name: "account_pool.window_seconds", Type: "integer", Description: "Default rolling admission window seconds (default 15)."},
@@ -283,11 +283,8 @@ func pluginRegistration() registration {
 }
 
 // schedulerCapabilityFor decides scheduler registration from plugin config.
-// Keep the capability registered while either the pool is on or a host-side
-// exclusive claim exists: a disabled pool with a live claim answers picks with
-// transparent global selection instead of going silent (silence under a live
-// claim reads as an accidental failure and the host fail-closes, which would
-// break deliberate pool shutdowns).
+// Keep an explicit host-side claim advertised while the pool is disabled so
+// the plugin can delegate picks back to CPA's builtin scheduler safely.
 func schedulerCapabilityFor(cfg config.Config) (providers []string, acrossPriorities bool) {
 	providers = normalizeRegistrationProviders(cfg.ExclusiveSchedulerProviders)
 	if len(providers) == 0 && cfg.AccountPool.Enabled {

@@ -173,6 +173,49 @@ func TestServiceApplyPersistsAndRejectsStale(t *testing.T) {
 	}
 }
 
+func TestServicePickImmediatelyAfterMemberRemovalDoesNotHop(t *testing.T) {
+	initial := mustPolicy(t,
+		[]Pool{{ID: "eng", Name: "Engineering", Enabled: true}},
+		[]Member{{PoolID: "eng", AuthID: "auth-a", Enabled: true}, {PoolID: "eng", AuthID: "auth-b", Enabled: true}},
+		[]Binding{{APIKeyHash: "abcd1234", PoolID: "eng"}},
+	)
+	svc := newLayeredService(t, true, &initial)
+	request := schedulerPickRequest{
+		Provider: "codex",
+		Options: schedulerOptions{
+			Headers:  map[string][]string{"x-session-id": {"removed-account-session"}},
+			Metadata: map[string]any{metadataKeyHash: "abcd1234"},
+		},
+		Candidates: []schedulerAuthCandidate{oauthCandidate("auth-a", 0), oauthCandidate("auth-b", 0)},
+	}
+	first := svc.Pick(request)
+	if first.Decision != "selected" || first.AuthID != "auth-a" {
+		t.Fatalf("initial pick = %+v, want auth-a", first)
+	}
+
+	updated := mustPolicy(t,
+		[]Pool{{ID: "eng", Name: "Engineering", Enabled: true}},
+		[]Member{{PoolID: "eng", AuthID: "auth-b", Enabled: true}},
+		[]Binding{{APIKeyHash: "abcd1234", PoolID: "eng"}},
+	)
+	updated.Version = 2
+	updated.Hash = Hash(updated)
+	updatedRaw, errMarshal := json.Marshal(Envelope{Policy: updated})
+	if errMarshal != nil {
+		t.Fatalf("marshal updated policy: %v", errMarshal)
+	}
+	if _, errApply := svc.Apply(updatedRaw); errApply != nil {
+		t.Fatalf("Apply(member removal) error = %v", errApply)
+	}
+
+	// The very next request must preserve the session's binding and fail
+	// closed for its removed account instead of selecting the remaining peer.
+	afterRemoval := svc.Pick(request)
+	if afterRemoval.Decision != "reject" || afterRemoval.ErrorCode != "account_pool_unavailable" {
+		t.Fatalf("pick immediately after member removal = %+v, want account_pool_unavailable", afterRemoval)
+	}
+}
+
 func TestServicePickRouting(t *testing.T) {
 	svc := New(Options{DataDir: t.TempDir(), Reserve: time.Second, MaxWait: time.Second, Enabled: true})
 	if err := svc.Reload(); err != nil {
@@ -303,8 +346,9 @@ func TestServiceAdmitScope(t *testing.T) {
 	}
 }
 
-// Admission and live stats stay active while pool scheduling itself is disabled.
-func TestAdmitInterceptWorksWhenPoolDisabled(t *testing.T) {
+// Disabling the pool must stop account concurrency limits as well as pool
+// routing, even when limits remain persisted from the previous configuration.
+func TestAdmitInterceptBypassesLimitsWhenPoolDisabled(t *testing.T) {
 	svc := New(Options{DataDir: t.TempDir(), Reserve: time.Second, MaxWait: 20 * time.Millisecond, Enabled: false})
 	if err := svc.Reload(); err != nil {
 		t.Fatalf("Reload() error = %v", err)
@@ -313,23 +357,13 @@ func TestAdmitInterceptWorksWhenPoolDisabled(t *testing.T) {
 		t.Fatal("service unexpectedly enabled")
 	}
 	svc.engine.Configure(map[string]Limit{"auth-x": {Max: 1, Window: time.Second}})
-	if result := svc.AdmitIntercept("r1", nil, map[string]any{"selected_auth_id": "auth-x"}); result != nil {
-		t.Fatalf("first admit = %+v", result)
+	for _, requestID := range []string{"r1", "r2"} {
+		if result := svc.AdmitIntercept(requestID, nil, map[string]any{"selected_auth_id": "auth-x"}); result != nil {
+			t.Fatalf("admit %s = %+v, want pass-through while disabled", requestID, result)
+		}
 	}
-	if active := svc.StateSnapshot("auth-x").Active; active != 1 {
-		t.Fatalf("Active = %d, want 1 with pool disabled", active)
-	}
-	rejected := svc.AdmitIntercept("r2", nil, map[string]any{"selected_auth_id": "auth-x"})
-	if rejected == nil || rejected.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("second admit = %+v, want 503 with pool disabled", rejected)
-	}
-	// Accounts without configured limits are never gated.
-	if result := svc.AdmitIntercept("r3", nil, map[string]any{"selected_auth_id": "auth-other"}); result != nil {
-		t.Fatalf("unlimited admit = %+v", result)
-	}
-	svc.Complete("r1")
-	if result := svc.AdmitIntercept("r4", nil, map[string]any{"selected_auth_id": "auth-x"}); result != nil {
-		t.Fatalf("admit after complete = %+v", result)
+	if active := svc.StateSnapshot("auth-x").Active; active != 0 {
+		t.Fatalf("Active = %d, want 0 while pool is disabled", active)
 	}
 }
 

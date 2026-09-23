@@ -61,11 +61,12 @@ func (m *Manager) Configure(ctx context.Context, cfg config.Config) error {
 	}
 	newState := &activeState{store: newStore, stop: make(chan struct{}), cleanupDone: make(chan struct{}), interval: cfg.CleanupInterval}
 	accountPoolOpts := accountpool.Options{
-		DataDir: cfg.AccountPool.DataDir,
-		Reserve: time.Duration(cfg.AccountPool.ReserveSeconds) * time.Second,
-		MaxWait: time.Duration(cfg.AccountPool.MaxWaitSeconds) * time.Second,
-		MaxBusy: cfg.AccountPool.MaxBusyRejections,
-		Enabled: cfg.AccountPool.Enabled,
+		DataDir:        cfg.AccountPool.DataDir,
+		Reserve:        time.Duration(cfg.AccountPool.ReserveSeconds) * time.Second,
+		MaxWait:        time.Duration(cfg.AccountPool.MaxWaitSeconds) * time.Second,
+		MaxBusy:        cfg.AccountPool.MaxBusyRejections,
+		SessionIdleTTL: time.Duration(cfg.AccountPool.SessionIdleTTLSeconds) * time.Second,
+		Enabled:        cfg.AccountPool.Enabled,
 	}
 	// Reuse the live account-pool service across reconfigures so in-flight
 	// counters, reservations, and session bindings survive a hot reload.

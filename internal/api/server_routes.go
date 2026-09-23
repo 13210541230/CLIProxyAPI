@@ -485,7 +485,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 			return
 		}
 		defer func() {
-			s.completeAlphaSearchAdmission(ctx, admitRequestID, admitStartedAt, admitOutcome, 0, admissionMeta, selectionModel, routing.Model)
+			s.completeAlphaSearchAdmission(ctx, admitRequestID, admitStartedAt, admitOutcome, c.Writer.Status(), admissionMeta, selectionModel, routing.Model)
 		}()
 	}
 
@@ -600,7 +600,9 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		return
 	}
 	helps.AppendAPIResponseChunk(ctx, s.cfg, upstreamBody)
-	admitOutcome = pluginapi.RequestCompletionSucceeded
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		admitOutcome = pluginapi.RequestCompletionSucceeded
+	}
 	if selection != nil && resp.StatusCode == http.StatusUnauthorized {
 		s.handlers.AuthManager.ReportHomeUnauthorized(ctx, selected, "codex", selectionModel, upstreamBody)
 		log.WithField("status", resp.StatusCode).Warnf("codex alpha search upstream request failed: %s", logging.SafeDiagnosticForLog(string(upstreamBody)))

@@ -14,14 +14,16 @@ const schedulerReasonLimit = 256
 func (h *Host) PickAuth(ctx context.Context, req pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, bool, error) {
 	provider := schedulerRequestProvider(req)
 	exclusive, ownerID, ownerConflict := h.exclusiveScheduler(provider)
+	var identityErr error
 	if exclusive {
-		if errIdentity := validateSchedulerCallerHash(req.Options.Metadata); errIdentity != nil {
-			return pluginapi.SchedulerPickResponse{}, true, errIdentity
-		}
+		identityErr = validateSchedulerCallerHash(req.Options.Metadata)
 	}
 	record := h.schedulerRecordForRequest(provider, exclusive, ownerID, ownerConflict)
 	if record == nil {
 		if exclusive {
+			if identityErr != nil {
+				return pluginapi.SchedulerPickResponse{}, true, identityErr
+			}
 			// Deliberate releases never reach this branch: disabling the plugin
 			// instance or removing the provider declaration removes the
 			// exclusive claim in config (see runtimeConfigFromConfig). A live
@@ -36,12 +38,18 @@ func (h *Host) PickAuth(ctx context.Context, req pluginapi.SchedulerPickRequest)
 	resp, handled, errPick := h.callScheduler(ctx, *record, req)
 	if errPick != nil {
 		if exclusive {
+			if identityErr != nil {
+				return pluginapi.SchedulerPickResponse{}, true, identityErr
+			}
 			return pluginapi.SchedulerPickResponse{}, true, schedulerUnavailableError()
 		}
 		return resp, handled, errPick
 	}
 	if !handled {
 		if exclusive {
+			if identityErr != nil {
+				return pluginapi.SchedulerPickResponse{}, true, identityErr
+			}
 			return pluginapi.SchedulerPickResponse{}, true, schedulerUnavailableError()
 		}
 		return resp, false, nil
@@ -51,9 +59,18 @@ func (h *Host) PickAuth(ctx context.Context, req pluginapi.SchedulerPickRequest)
 	if !valid {
 		log.WithField("plugin_id", record.id).Warnf("pluginhost: scheduler returned invalid response: %s", reason)
 		if exclusive {
+			if identityErr != nil {
+				return pluginapi.SchedulerPickResponse{}, true, identityErr
+			}
 			return pluginapi.SchedulerPickResponse{}, true, schedulerUnavailableError()
 		}
 		return pluginapi.SchedulerPickResponse{}, false, nil
+	}
+	// An explicit builtin delegation is the plugin's deliberate release path
+	// (for example, account-pool disabled). All plugin-owned scheduling
+	// decisions still require a canonical caller identity.
+	if exclusive && resp.Decision != pluginapi.SchedulerDecisionDelegateBuiltin && identityErr != nil {
+		return pluginapi.SchedulerPickResponse{}, true, identityErr
 	}
 	if resp.Decision == pluginapi.SchedulerDecisionReject {
 		return resp, true, schedulerDecisionError(resp)

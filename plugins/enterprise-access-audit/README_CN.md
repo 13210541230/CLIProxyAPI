@@ -155,12 +155,13 @@ plugins:
 | `default_audit_enabled` | `false` | — | 没有单独策略记录的 Enterprise Key 使用的默认审计状态；全局开关开启后才生效，已有 Key 的单独开关优先。 |
 | `max_text_bytes` | `32768` | `1–1048576` | 单条用户文本最大保存字节数，超出时保留截断标记。 |
 | `cleanup_interval_seconds` | `3600` | `1–86400` | 过期记录清理间隔。 |
-| `account_pool.enabled` | `false` | — | 账号池总开关。开启后插件注册 `scheduler` 能力并作为 Codex 的唯一调度 owner，接管部门池路由、每账号并发与准入；关闭时行为与纯审计插件完全一致。 |
+| `account_pool.enabled` | `false` | — | 账号池调度与每账号并发准入总开关。开启后执行池策略和显式并发限制；关闭后这些限制均停止。若同级 `exclusive-scheduler-providers: [codex]` 仍保留，插件会委托 CPA 内置 round-robin 选号，避免继续由插件自行全局选号。 |
 | `account_pool.data_dir` | `<data_dir>/account-pool` | — | 账号池策略与并发限制落盘目录（`account-pool-policy.json` / `account-pool-limits.json`）。 |
 | `account_pool.reserve_seconds` | `10` | `1–300` | 调度预留秒数，防选号洪峰打爆单账号。 |
 | `account_pool.window_seconds` | `15` | `1–3600` | 滚动准入窗口默认宽度。 |
 | `account_pool.max_wait_seconds` | `30` | `1–300` | 并发准入最大等待，超时返回可重试的 `account_busy`（HTTP 503）。 |
-| `account_pool.max_busy_rejections` | `3` | `1–100` | 连续 `account_busy` 拒绝达到该次数后，会话才故障转移到池内其他账号；任意一次成功准入会清零计数。瞬时过载不会换号，持续不可用的账号也不会永久卡住用户。 |
+| `account_pool.max_busy_rejections` | `3` | `1–100` | 连续 `account_busy` 拒绝达到该次数后，池层才把绑定会话交给已配置的 api-key provider（单账号真实感：池会话**绝不**换绑到池内其他 OAuth 账号）；任意一次成功准入会清零计数。未配置 api-key provider 时，会话在原账号上继续收到可重试的 `account_busy`，直到账号排空。 |
+| `account_pool.session_idle_ttl_seconds` | `7200` | 秒 | 会话空闲超过该时长后绑定才过期、允许重新选号。会话的每个请求（包括由 api-key 层承接的请求）都会刷新该时钟，因此进行中的对话永不换号——只有静默超过此时长才可能重绑。这也是池策略发布后、绑定账号冷却或被移除后唯一的重绑途径。 |
 | `exclusive-scheduler-providers` | `—` | — | 插件条目同级配置 `exclusive-scheduler-providers: [codex]`，将 Codex 调度锁定到本插件，避免与其他调度插件竞争。 |
 
 路径规则：

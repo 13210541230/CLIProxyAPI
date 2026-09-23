@@ -2,7 +2,6 @@ package accountpool
 
 import (
 	"encoding/json"
-	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -14,8 +13,8 @@ import (
 func TestSessionKeyIsolatesCallersAndLayers(t *testing.T) {
 	headers := map[string][]string{"x-session-id": {"shared-conv"}}
 
-	nsA := nsJoin("pool", "eng", "v3", "aaaaaaaa")
-	nsB := nsJoin("pool", "ops", "v3", "bbbbbbbb")
+	nsA := nsJoin("pool", "eng", "aaaaaaaa")
+	nsB := nsJoin("pool", "ops", "bbbbbbbb")
 	reqA := withSessionNamespace(schedulerPickRequest{Options: schedulerOptions{Headers: headers, Metadata: map[string]any{metadataKeyHash: "aaaaaaaa"}}}, nsA)
 	reqB := withSessionNamespace(schedulerPickRequest{Options: schedulerOptions{Headers: headers, Metadata: map[string]any{metadataKeyHash: "bbbbbbbb"}}}, nsB)
 
@@ -54,11 +53,11 @@ func TestAdmissionNamespaceMirrorsPick(t *testing.T) {
 
 	// Bound OAuth: namespace must embed pool id and policy version.
 	ns := svc.admissionNamespace("auth-a", meta)
-	if want := nsJoin("pool", "eng", fmt.Sprintf("v%d", p.Version), "abcd1234"); ns != want {
+	if want := nsJoin("pool", "eng", "abcd1234"); ns != want {
 		t.Fatalf("bound admission ns = %q, want %q", ns, want)
 	}
 	// Pick side computes the same value when building the scoped request.
-	if pickNS := oauthNamespace(true, true, p, "eng", "abcd1234"); pickNS != ns {
+	if pickNS := oauthNamespace(true, true, "eng", "abcd1234"); pickNS != ns {
 		t.Fatalf("pick ns %q != admit ns %q", pickNS, ns)
 	}
 

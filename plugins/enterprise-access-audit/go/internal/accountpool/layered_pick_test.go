@@ -107,20 +107,19 @@ func TestServicePick_PriorityDecidesLayer(t *testing.T) {
 	}
 }
 
-// Turning the pool off must keep Codex usable: a stale exclusive registration
-// still dispatches into the plugin, which now serves layered global selection
-// instead of answering notHandled (policy_unavailable).
-func TestServicePick_DisabledPoolKeepsServing(t *testing.T) {
+// Turning the pool off while an exclusive claim remains must delegate
+// selection to CPA's built-in scheduler rather than selecting in the plugin.
+func TestServicePick_DisabledPoolDelegatesToBuiltin(t *testing.T) {
 	svc := newLayeredService(t, false, nil)
 
 	resp := svc.Pick(layeredRequest("abcd1234", apiKeyCandidate("key-1", 25)))
-	if resp.Decision != "selected" || resp.AuthID != "key-1" {
-		t.Fatalf("disabled pool must keep serving api-key layer: %+v", resp)
+	if resp.Decision != "delegate_builtin" || resp.DelegateBuiltin != "round-robin" || !resp.Handled {
+		t.Fatalf("disabled pool should delegate api-key selection to builtin: %+v", resp)
 	}
 
 	resp = svc.Pick(layeredRequest("", oauthCandidate("oauth-1", 0)))
-	if resp.Decision != "selected" || resp.AuthID != "oauth-1" {
-		t.Fatalf("disabled pool must keep serving OAuth layer globally: %+v", resp)
+	if resp.Decision != "delegate_builtin" || resp.DelegateBuiltin != "round-robin" || !resp.Handled {
+		t.Fatalf("disabled pool should delegate OAuth selection to builtin: %+v", resp)
 	}
 }
 
@@ -190,9 +189,10 @@ func TestSplitSchedulerCandidates(t *testing.T) {
 	}
 }
 
-// Admission stays independent of pool scheduling and of the layered pick path.
+// Admission still works after a layered selection while an empty pool policy
+// keeps both provider layers available.
 func TestServicePick_LayeredSelectionStillAdmits(t *testing.T) {
-	svc := newLayeredService(t, false, nil)
+	svc := newLayeredService(t, true, nil)
 	resp := svc.Pick(layeredRequest("", apiKeyCandidate("key-1", 25)))
 	if resp.Decision != "selected" || resp.AuthID != "key-1" {
 		t.Fatalf("pick = %+v", resp)

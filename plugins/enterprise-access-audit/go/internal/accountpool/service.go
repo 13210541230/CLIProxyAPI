@@ -36,10 +36,14 @@ type Options struct {
 	DataDir string
 	Reserve time.Duration
 	MaxWait time.Duration
-	// MaxBusy is the number of consecutive queue timeouts before a session
-	// fails over to another in-pool account. Zero uses the engine default.
+	// MaxBusy is the number of consecutive queue timeouts before the pool
+	// layer defers a bound session to the api-key provider. Zero uses the
+	// engine default.
 	MaxBusy int
-	Enabled bool
+	// SessionIdleTTL is the idle gap that releases a session binding and
+	// allows re-selection. Zero uses the engine default (2 hours).
+	SessionIdleTTL time.Duration
+	Enabled        bool
 }
 
 // Service routes codex scheduler picks by caller pool binding and enforces
@@ -55,9 +59,8 @@ type Service struct {
 	enabled bool
 }
 
-// New creates a Service with the given options. Options.Enabled gates
-// scheduler participation only; admission and per-account live stats are
-// always active so concurrency limits work with or without pools.
+// New creates a Service with the given options. Options.Enabled gates both
+// pool scheduling and per-account concurrency admission.
 func New(opts Options) *Service {
 	service := &Service{
 		persist: newPersistence(opts.DataDir),
@@ -66,6 +69,9 @@ func New(opts Options) *Service {
 	}
 	if opts.MaxBusy > 0 {
 		service.engine.SetMaxBusy(opts.MaxBusy)
+	}
+	if opts.SessionIdleTTL > 0 {
+		service.engine.SetSessionIdleTTL(opts.SessionIdleTTL)
 	}
 	return service
 }
@@ -125,6 +131,9 @@ func (s *Service) Reconfigure(opts Options) error {
 	s.engine.SetTimings(opts.Reserve, opts.MaxWait)
 	if opts.MaxBusy > 0 {
 		s.engine.SetMaxBusy(opts.MaxBusy)
+	}
+	if opts.SessionIdleTTL > 0 {
+		s.engine.SetSessionIdleTTL(opts.SessionIdleTTL)
 	}
 	return s.Reload()
 }
@@ -201,9 +210,9 @@ func (s *Service) Apply(raw []byte) (Status, error) {
 	s.lastErr = ""
 	status := policyStatus(s.policy, s.ready, s.lastErr)
 	s.mu.Unlock()
-	// A new version invalidates every namespaced pool session key; rebind
-	// fresh. Api-key layer sessions are policy-independent and survive.
-	s.engine.ResetPoolSessions()
+	// Live session bindings deliberately survive publication: the pool
+	// namespace excludes the policy version, and only the idle TTL (or an
+	// explicit pool reassignment changing the namespace) rebinds sessions.
 	return status, nil
 }
 
@@ -252,12 +261,10 @@ func (s *Service) LimitsView() map[string]AccountLimit {
 
 // Pick implements the codex scheduler pick.
 //
-// The host routes every codex scheduler request to this plugin when account-pool
-// scheduling is enabled (exclusive-scheduler-providers). The plugin therefore
-// must always answer for codex: with no policy configured it acts as a
-// pass-through global selector (mirroring the pre-pool behavior), bound callers
-// are restricted to their pool members, and unbound callers are also handled
-// globally in-process (the host builtin is not reachable under exclusivity).
+// The host routes every codex scheduler request to this plugin when an
+// exclusive claim is active. With the pool disabled, the plugin delegates
+// selection back to CPA's builtin round-robin scheduler; otherwise it routes
+// candidates according to policy.
 func (s *Service) Pick(request SchedulerPickRequest) SchedulerPickResponse {
 	if s == nil {
 		return notHandled()
@@ -265,12 +272,20 @@ func (s *Service) Pick(request SchedulerPickRequest) SchedulerPickResponse {
 	if !requestIsCodex(request) {
 		return notHandled()
 	}
+	if !s.Enabled() {
+		return SchedulerPickResponse{Decision: "delegate_builtin", DelegateBuiltin: "round-robin", Handled: true}
+	}
 
 	// Candidate layers (binding decision): provider-configured api-key
 	// credentials are never constrained by pool membership; pool semantics
 	// apply only to OAuth authentication-file credentials.
 	apiKeyCands, oauthCands := splitSchedulerCandidates(request.Candidates)
 	caller := callerNamespace(request.Options.Metadata)
+
+	// Keep the bound session's idle clock ticking on every request, even
+	// when the api-key layer ends up serving it: the idle window measures
+	// time since the session's last request, not its last OAuth success.
+	s.touchBoundSession(request, caller)
 
 	var apiKeyResp *SchedulerPickResponse
 	if len(apiKeyCands) > 0 {
@@ -305,21 +320,20 @@ func (s *Service) pickOAuthLayer(request SchedulerPickRequest, candidates []sche
 		return nil
 	}
 
-	// Pool disabled: transparent global selection (mirrors the empty-policy
-	// passthrough so turning the pool off restores unrestricted scheduling).
-	if !s.enabled {
-		return globalPick(oauthNamespace(false, false, Policy{}, "", caller))
-	}
-
 	s.mu.RLock()
-	p := s.policy
-	ready := s.ready
+	enabled, p, ready := s.enabled, s.policy, s.ready
 	s.mu.RUnlock()
+	// A concurrent disable after Pick's initial check is treated as a
+	// pass-through for this in-flight selection; subsequent picks delegate
+	// directly to the host builtin.
+	if !enabled {
+		return globalPick(oauthNamespace(false, false, "", caller))
+	}
 
 	// Empty policy: nothing to enforce. Pass codex through to the global
 	// selector so the service stays usable before any pool is configured.
 	if !ready {
-		return globalPick(oauthNamespace(true, false, Policy{}, "", caller))
+		return globalPick(oauthNamespace(true, false, "", caller))
 	}
 
 	callerHash := callerHashOf(request)
@@ -329,7 +343,7 @@ func (s *Service) pickOAuthLayer(request SchedulerPickRequest, candidates []sche
 	}
 	poolID, bound := BindingPool(p, callerHash)
 	if !bound {
-		return globalPick(oauthNamespace(true, true, p, "", caller))
+		return globalPick(oauthNamespace(true, true, "", caller))
 	}
 	pool, ok := PoolByID(p, poolID)
 	if !ok || !pool.Enabled {
@@ -356,13 +370,42 @@ func (s *Service) pickOAuthLayer(request SchedulerPickRequest, candidates []sche
 		return &resp
 	}
 	scoped.Candidates = filtered
-	scoped = withSessionNamespace(scoped, oauthNamespace(true, true, p, poolID, caller))
-	if authID := s.engine.Pick(scoped); authID != "" {
+	scoped = withSessionNamespace(scoped, oauthNamespace(true, true, poolID, caller))
+	// Strict single-account routing: the bound session never hops to a
+	// sibling account. A decline (bound account cooled/removed, or a
+	// persistent busy streak) surfaces here and decideLayeredPick hands the
+	// request to the api-key provider when one exists.
+	authID, decline := s.engine.PickPool(scoped)
+	if authID != "" {
 		resp := selected(authID)
 		return &resp
 	}
-	resp := reject("account_pool_unavailable", http.StatusServiceUnavailable, true, "assigned account pool could not admit a candidate")
+	if decline == "account_busy" {
+		resp := reject("account_busy", http.StatusServiceUnavailable, true, "bound account is saturated; deferring to the api-key provider if configured")
+		return &resp
+	}
+	resp := reject("account_pool_unavailable", http.StatusServiceUnavailable, true, "bound account is unavailable; deferring to the api-key provider if configured")
 	return &resp
+}
+
+// touchBoundSession refreshes the idle clock of the caller's pool binding
+// without selecting anything, so sessions served by the deferred api-key
+// layer still count as active.
+func (s *Service) touchBoundSession(request SchedulerPickRequest, caller string) {
+	if s == nil || caller == "" {
+		return
+	}
+	s.mu.RLock()
+	enabled, ready, p := s.enabled, s.ready, s.policy
+	s.mu.RUnlock()
+	if !enabled || !ready {
+		return
+	}
+	poolID, bound := BindingPool(p, caller)
+	if !bound || poolID == "" {
+		return
+	}
+	s.engine.Touch(withSessionNamespace(request, oauthNamespace(true, true, poolID, caller)))
 }
 
 // splitSchedulerCandidates separates provider-configured api-key credentials
@@ -432,7 +475,11 @@ func withSessionNamespace(request schedulerPickRequest, namespace string) schedu
 // mirrored byte-for-byte by admissionNamespace so Pick and Admit always agree
 // on the caller's session key (pool + policy version + caller hash per the
 // affinity decision).
-func oauthNamespace(enabled, ready bool, p Policy, poolID, boundCaller string) string {
+// oauthNamespace derives the session namespace for OAuth-layer routing. The
+// pool namespace intentionally excludes the policy version: a publication
+// must never rebind live sessions — bindings live until the session goes
+// idle past the idle TTL or the caller is reassigned to another pool.
+func oauthNamespace(enabled, ready bool, poolID, boundCaller string) string {
 	caller := normalizeNamespace(boundCaller)
 	switch {
 	case !enabled:
@@ -440,7 +487,7 @@ func oauthNamespace(enabled, ready bool, p Policy, poolID, boundCaller string) s
 	case !ready:
 		return nsJoin("oauth-empty", caller)
 	case poolID != "":
-		return nsJoin("pool", poolID, fmt.Sprintf("v%d", p.Version), caller)
+		return nsJoin("pool", poolID, caller)
 	default:
 		return nsJoin("oauth-glob", caller)
 	}
@@ -463,7 +510,7 @@ func (s *Service) admissionNamespace(authID string, metadata map[string]any) str
 	if !bound {
 		poolID = ""
 	}
-	return oauthNamespace(enabled, ready, p, poolID, caller)
+	return oauthNamespace(enabled, ready, poolID, caller)
 }
 
 // decideLayeredPick merges both layers by provider priority: the higher
@@ -500,13 +547,11 @@ func priorityOfCandidate(request SchedulerPickRequest, authID string) int {
 
 // AdmitIntercept gates an already-selected request at the after-auth stage.
 //
-// Concurrency accounting is deliberately independent of account-pool
-// scheduling: per-account limits and live counters apply to every request
-// whose executor published a selected auth id, whether or not pool
-// scheduling is enabled and whether or not the caller is pool-bound.
-// It returns nil when the request may proceed; otherwise a termination result.
+// Pool disablement bypasses both per-account limits and admission accounting;
+// limits remain persisted and apply again if the pool is re-enabled. It returns
+// nil when the request may proceed; otherwise a termination result.
 func (s *Service) AdmitIntercept(requestID string, headers map[string][]string, metadata map[string]any) *AdmitResult {
-	if s == nil || requestID == "" {
+	if s == nil || requestID == "" || !s.Enabled() {
 		return nil
 	}
 	authID := strings.TrimSpace(metadataString(metadata, metadataSelectedAuthID))

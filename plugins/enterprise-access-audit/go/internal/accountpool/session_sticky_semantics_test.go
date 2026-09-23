@@ -65,9 +65,11 @@ func TestStickySessionKeepsAccountForTransientBusy(t *testing.T) {
 	}
 }
 
-// TestStickySessionFailsOverAfterPersistentBusy proves the liveness escape:
-// a full budget of consecutive queue timeouts with no success in between
-// releases the binding so the stranded user reaches another in-pool account.
+// TestStickySessionFailsOverAfterPersistentBusy proves the lenient-layer
+// liveness escape (api-key entries, unbound global OAuth): a full budget of
+// consecutive queue timeouts with no success in between releases the binding
+// so the session reaches a free account. Pool-bound sessions never take this
+// path — they defer to the api-key provider instead (see PickPool tests).
 func TestStickySessionFailsOverAfterPersistentBusy(t *testing.T) {
 	sessionFn := func(req schedulerPickRequest) string {
 		return normalizeSessionKey(metadataString(req.Options.Metadata, "session_id"))
@@ -135,9 +137,10 @@ func TestBusyCounterResetsOnSuccessfulAdmission(t *testing.T) {
 	engine.Complete("success")
 }
 
-// TestStickySessionRebindsWhenAccountLeavesCandidates covers the immediate
+// TestStickySessionRebindsWhenAccountLeavesCandidates covers the lenient
 // transfer: the sticky account is no longer eligible (cooled, removed, or
-// disabled), so the session rebinds instead of selecting a dead account.
+// disabled), so an unbound session rebinds instead of selecting a dead
+// account. Pool-bound sessions decline instead (see strict_binding_test.go).
 func TestStickySessionRebindsWhenAccountLeavesCandidates(t *testing.T) {
 	sessionFn := func(req schedulerPickRequest) string {
 		return normalizeSessionKey(metadataString(req.Options.Metadata, "session_id"))

@@ -317,15 +317,50 @@ func TestHostExclusiveSchedulerRejectsWithoutBuiltinFallback(t *testing.T) {
 	}
 }
 
-func TestHostExclusiveSchedulerRequiresCanonicalCallerHash(t *testing.T) {
+func TestHostExclusiveSchedulerAllowsBuiltinDelegationWithoutCallerHash(t *testing.T) {
+	var calls int
 	host := newHostWithRecords(capabilityRecord{
 		id:       "pool-scheduler",
 		priority: 1,
 		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
 			SchedulerExclusiveProviders: []string{"codex"},
 			Scheduler: schedulerFunc(func(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, error) {
-				t.Fatal("scheduler was called without caller hash")
-				return pluginapi.SchedulerPickResponse{}, nil
+				calls++
+				return pluginapi.SchedulerPickResponse{
+					Decision:        pluginapi.SchedulerDecisionDelegateBuiltin,
+					DelegateBuiltin: pluginapi.SchedulerBuiltinRoundRobin,
+					Handled:         true,
+				}, nil
+			}),
+		}},
+	})
+	host.exclusiveOwners = map[string][]string{"codex": {"pool-scheduler"}}
+
+	req := schedulerRequest("auth-1")
+	req.Provider = "codex"
+	resp, handled, errPick := host.PickAuth(context.Background(), req)
+	if errPick != nil || !handled || resp.Decision != pluginapi.SchedulerDecisionDelegateBuiltin {
+		t.Fatalf("PickAuth() = response %+v, handled %v, err %v; want builtin delegation", resp, handled, errPick)
+	}
+	if calls != 1 {
+		t.Fatalf("scheduler calls = %d, want 1", calls)
+	}
+}
+
+func TestHostExclusiveSchedulerRequiresCanonicalCallerHashForPluginDecision(t *testing.T) {
+	var calls int
+	host := newHostWithRecords(capabilityRecord{
+		id:       "pool-scheduler",
+		priority: 1,
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			SchedulerExclusiveProviders: []string{"codex"},
+			Scheduler: schedulerFunc(func(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, error) {
+				calls++
+				return pluginapi.SchedulerPickResponse{
+					Decision: pluginapi.SchedulerDecisionSelected,
+					AuthID:   "auth-1",
+					Handled:  true,
+				}, nil
 			}),
 		}},
 	})
@@ -336,6 +371,9 @@ func TestHostExclusiveSchedulerRequiresCanonicalCallerHash(t *testing.T) {
 	_, handled, errPick := host.PickAuth(context.Background(), req)
 	if !handled || errPick == nil || !strings.Contains(errPick.Error(), "identity_missing") {
 		t.Fatalf("PickAuth() = handled %v, err %v, want identity_missing", handled, errPick)
+	}
+	if calls != 1 {
+		t.Fatalf("scheduler calls = %d, want 1 so host can distinguish a deliberate delegation", calls)
 	}
 }
 

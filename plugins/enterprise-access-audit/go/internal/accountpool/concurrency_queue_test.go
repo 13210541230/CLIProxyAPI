@@ -1,6 +1,8 @@
 package accountpool
 
 import (
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -9,6 +11,64 @@ import (
 // concurrency limit keeps admitting as executing requests complete, while the
 // fake clock never reaches the wait deadline. Counting queued waiters toward
 // the limit deadlocks the queue behind an idle account until timeout fires.
+func TestAdmitQueuesThenFailsWhenWaitExpires(t *testing.T) {
+	current := time.Unix(1_700_000_000, 0)
+	var clockMu sync.Mutex
+	now := func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		return current
+	}
+	sleepStarted := make(chan struct{}, 1)
+	releaseSleep := make(chan struct{})
+	sleep := func(d time.Duration) {
+		select {
+		case sleepStarted <- struct{}{}:
+		default:
+		}
+		<-releaseSleep
+		clockMu.Lock()
+		current = current.Add(d)
+		clockMu.Unlock()
+	}
+
+	svc := New(Options{DataDir: t.TempDir(), MaxWait: 40 * time.Millisecond, Enabled: true})
+	svc.engine.SetClock(now, sleep)
+	svc.engine.Configure(map[string]Limit{"acct": {Max: 1}})
+	metadata := map[string]any{metadataSelectedAuthID: "acct"}
+	if result := svc.AdmitIntercept("first", nil, metadata); result != nil {
+		t.Fatalf("first admission = %+v, want admitted", result)
+	}
+
+	resultCh := make(chan *AdmitResult, 1)
+	go func() {
+		resultCh <- svc.AdmitIntercept("queued", nil, metadata)
+	}()
+	select {
+	case <-sleepStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("second request never entered the queue")
+	}
+	if got := svc.StateSnapshot("acct"); got.Active != 1 || got.Waiting != 1 {
+		t.Fatalf("state while second request waits = %+v, want active=1 waiting=1", got)
+	}
+
+	close(releaseSleep)
+	var result *AdmitResult
+	select {
+	case result = <-resultCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("queued request did not finish after its wait deadline")
+	}
+	if result == nil || !result.Terminate || result.StatusCode != 503 || !strings.Contains(string(result.Body), "account_busy") {
+		t.Fatalf("queued request result = %+v, want account_busy/503 rejection", result)
+	}
+	if got := svc.StateSnapshot("acct"); got.Active != 1 || got.Waiting != 0 {
+		t.Fatalf("state after timeout = %+v, want active=1 waiting=0", got)
+	}
+	svc.Complete("first")
+}
+
 func TestAdmitQueueDrainsByCompletionNotTimeout(t *testing.T) {
 	fakeNow := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	engine := NewEngine(10*time.Second, 30*time.Second, nil)
