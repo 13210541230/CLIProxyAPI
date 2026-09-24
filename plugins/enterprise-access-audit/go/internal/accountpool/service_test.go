@@ -173,6 +173,19 @@ func TestServiceApplyPersistsAndRejectsStale(t *testing.T) {
 	}
 }
 
+func TestStatusReportsRuntimeSchedulerState(t *testing.T) {
+	svc := New(Options{DataDir: t.TempDir(), Enabled: true})
+	if got := svc.Status().Enabled; !got {
+		t.Fatalf("initial status enabled = %v, want true", got)
+	}
+	if err := svc.Reconfigure(Options{DataDir: t.TempDir(), Enabled: false}); err != nil {
+		t.Fatalf("Reconfigure() error = %v", err)
+	}
+	if got := svc.Status().Enabled; got {
+		t.Fatalf("disabled status enabled = %v, want false", got)
+	}
+}
+
 func TestServicePickImmediatelyAfterMemberRemovalDoesNotHop(t *testing.T) {
 	initial := mustPolicy(t,
 		[]Pool{{ID: "eng", Name: "Engineering", Enabled: true}},

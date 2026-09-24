@@ -162,7 +162,7 @@ plugins:
 | `account_pool.max_wait_seconds` | `30` | `1–300` | 并发准入最大等待，超时返回可重试的 `account_busy`（HTTP 503）。 |
 | `account_pool.max_busy_rejections` | `3` | `1–100` | 连续 `account_busy` 拒绝达到该次数后，池层才把绑定会话交给已配置的 api-key provider（单账号真实感：池会话**绝不**换绑到池内其他 OAuth 账号）；任意一次成功准入会清零计数。未配置 api-key provider 时，会话在原账号上继续收到可重试的 `account_busy`，直到账号排空。 |
 | `account_pool.session_idle_ttl_seconds` | `7200` | 秒 | 会话空闲超过该时长后绑定才过期、允许重新选号。会话的每个请求（包括由 api-key 层承接的请求）都会刷新该时钟，因此进行中的对话永不换号——只有静默超过此时长才可能重绑。这也是池策略发布后、绑定账号冷却或被移除后唯一的重绑途径。 |
-| `exclusive-scheduler-providers` | `—` | — | 插件条目同级配置 `exclusive-scheduler-providers: [codex]`，将 Codex 调度锁定到本插件，避免与其他调度插件竞争。 |
+| `exclusive-scheduler-providers` | `—` | — | 插件条目同级配置 `exclusive-scheduler-providers: [codex]`，将 Codex 调度锁定到本插件，避免与其他调度插件竞争。账号池页面的“启用账号池调度”开关会同时维护 `account_pool.enabled` 与该声明，无需手工编辑 YAML。 |
 
 路径规则：
 
@@ -290,7 +290,7 @@ Management Center 不会把审计页面放入核心请求监控或 Enterprise Ke
 
 - 审计记录查询、筛选、分页和详情；
 - 按 Key Hash 查看和编辑禁止模型；
-- 审计默认开关、保留天数和最大文本长度设置。
+- 审计默认开关、保留天数和最大文本长度设置；账号池页面直接控制账号池调度启用状态，并显示策略是否已由 CPA 实际接管。
 
 Enterprise Key 页面中的模型访问策略控件也只在本插件 `effective_enabled=true` 时显示。插件未安装、被禁用或加载失败时，核心页面保持官方默认形式。
 

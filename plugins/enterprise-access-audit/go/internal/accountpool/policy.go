@@ -53,6 +53,7 @@ type Status struct {
 	Version         int64  `json:"version"`
 	Hash            string `json:"hash"`
 	Ready           bool   `json:"ready"`
+	Enabled         bool   `json:"enabled"`
 	LastError       string `json:"lastError,omitempty"`
 	ConfiguredPools int    `json:"configuredPools"`
 	BoundCallers    int    `json:"boundCallers"`

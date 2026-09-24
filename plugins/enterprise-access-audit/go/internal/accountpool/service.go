@@ -198,6 +198,7 @@ func (s *Service) Apply(raw []byte) (Status, error) {
 			return Status{}, errConflict
 		}
 		status := policyStatus(s.policy, s.ready, s.lastErr)
+		status.Enabled = s.enabled
 		s.mu.Unlock()
 		return status, nil
 	}
@@ -209,6 +210,7 @@ func (s *Service) Apply(raw []byte) (Status, error) {
 	s.ready = true
 	s.lastErr = ""
 	status := policyStatus(s.policy, s.ready, s.lastErr)
+	status.Enabled = s.enabled
 	s.mu.Unlock()
 	// Live session bindings deliberately survive publication: the pool
 	// namespace excludes the policy version, and only the idle TTL (or an
@@ -586,7 +588,9 @@ func (s *Service) StateSnapshot(authID string) StateSnapshot {
 func (s *Service) Status() Status {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return policyStatus(s.policy, s.ready, s.lastErr)
+	status := policyStatus(s.policy, s.ready, s.lastErr)
+	status.Enabled = s.enabled
+	return status
 }
 
 // Policy returns the active policy snapshot.
@@ -662,7 +666,9 @@ func (s *Service) setError(err error) {
 func (s *Service) status() Status {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return policyStatus(s.policy, s.ready, s.lastErr)
+	status := policyStatus(s.policy, s.ready, s.lastErr)
+	status.Enabled = s.enabled
+	return status
 }
 
 func policyStatus(p Policy, ready bool, lastErr string) Status {

@@ -544,6 +544,7 @@
         document.querySelectorAll('[data-ap-limit15s]').forEach((node) => node.addEventListener('change', () => setApLimit(node.dataset.auth, 'limit15s', node.value)));
         document.querySelectorAll('[data-ap-window]').forEach((node) => node.addEventListener('change', () => setApLimit(node.dataset.auth, 'windowSeconds', node.value)));
         document.querySelectorAll('[data-action="ap-reload"]').forEach((node) => node.addEventListener('click', () => apLoad()));
+        document.querySelectorAll('[data-action="ap-toggle-scheduler"]').forEach((node) => node.addEventListener('change', () => apSetActivation(node.checked)));
         document.querySelectorAll('[data-action="ap-create"]').forEach((node) => node.addEventListener('click', () => apCreatePool()));
         document.querySelectorAll('[data-action="ap-rename"]').forEach((node) => node.addEventListener('click', () => apRenamePool()));
         document.querySelectorAll('[data-action="ap-toggle"]').forEach((node) => node.addEventListener('click', () => apTogglePool(!(apSelectedPool() && apSelectedPool().enabled))));
@@ -574,7 +575,8 @@
       });
 // ============ 账号池管理 ============
       const AP = '/v0/management/enterprise-access-audit/account-pool';
-      Object.assign(state, { ap: { policy: null, status: null, authFiles: [], selectedPoolId: '', memberDraftPoolId: '', newPoolId: '', newPoolName: '', memberIds: [], selectedDeptId: '', selectedDeptHashes: [], renameText: '', limits: [], states: {}, busy: false, apError: '' } });
+      const AP_CONFIG = '/v0/management/plugins/enterprise-access-audit/config';
+      Object.assign(state, { ap: { policy: null, status: null, hostConfig: null, configLoaded: false, authFiles: [], selectedPoolId: '', memberDraftPoolId: '', newPoolId: '', newPoolName: '', memberIds: [], selectedDeptId: '', selectedDeptHashes: [], renameText: '', limits: [], states: {}, busy: false, apError: '' } });
       // Account-pool binding identity: canonical first-8 form so bindings stored
       // as either the full 64-char digest or the runtime short hash resolve the
       // same enterprise-key metadata (mirrors BindingPool on the Go side).
@@ -589,6 +591,9 @@
       const apPools = () => (state.ap.policy && state.ap.policy.pools) || [];
       const apMembers = (poolId) => ((state.ap.policy && state.ap.policy.members) || []).filter((m) => m.poolId === poolId && m.enabled).map((m) => m.authId);
       const apSelectedPool = () => apPools().find((pool) => pool.id === state.ap.selectedPoolId) || null;
+      const apConfigPool = (config) => { const nested = config && config.account_pool && typeof config.account_pool === 'object' && !Array.isArray(config.account_pool) ? Object.assign({}, config.account_pool) : {}; if (nested.enabled === undefined && config && Object.prototype.hasOwnProperty.call(config, 'account_pool.enabled')) nested.enabled = config['account_pool.enabled']; return nested; };
+      const apConfigProviders = (config) => { const value = config && config['exclusive-scheduler-providers']; if (Array.isArray(value)) return value.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean); if (typeof value === 'string') return value.split(',').map((item) => item.trim().toLowerCase()).filter(Boolean); return []; };
+      const apSchedulerState = () => { const config = state.ap.hostConfig || {}; const configured = apConfigPool(config).enabled === true; const claimed = apConfigProviders(config).includes('codex'); const runtime = state.ap.status && state.ap.status.enabled === true; return { configured, claimed, runtime, effective: configured && claimed && runtime }; };
       const apBuild = (mutate) => { const policy = state.ap.policy || {}; const next = { version: (policy.version || 0) + 1, provider: 'codex', pools: JSON.parse(JSON.stringify(policy.pools || [])), members: JSON.parse(JSON.stringify(policy.members || [])), bindings: JSON.parse(JSON.stringify(policy.bindings || [])) }; if (mutate) mutate(next); return next; };
       const apPublish = async (value, message) => {
         state.ap.busy = true; state.ap.apError = ''; render();
@@ -596,12 +601,36 @@
         catch (error) { state.ap.apError = error.message || '账号池更新失败'; showToast(state.ap.apError); }
         state.ap.busy = false; render();
       };
+      const apSetActivation = async (enabled) => {
+        if (state.ap.busy || !state.ap.configLoaded) { showToast('宿主配置接口不可用，请先更新管理中心'); return; }
+        state.ap.busy = true; state.ap.apError = ''; render();
+        try {
+          const current = await callHost('GET', AP_CONFIG);
+          const next = JSON.parse(JSON.stringify(current || {}));
+          const poolConfig = apConfigPool(next);
+          poolConfig.enabled = enabled;
+          next.account_pool = poolConfig;
+          delete next['account_pool.enabled'];
+          const providers = apConfigProviders(next).filter((provider) => provider !== 'codex');
+          if (enabled) providers.push('codex');
+          if (providers.length) next['exclusive-scheduler-providers'] = Array.from(new Set(providers));
+          else delete next['exclusive-scheduler-providers'];
+          await callHost('PUT', AP_CONFIG, next);
+          state.ap.hostConfig = next;
+          showToast(enabled ? '账号池调度已保存，正在等待 CPA 重载' : '账号池调度已关闭');
+          await apLoad();
+        } catch (error) { state.ap.apError = error.message || '账号池调度开关保存失败'; showToast(state.ap.apError); }
+        state.ap.busy = false; render();
+      };
       const apLoad = async () => {
         state.ap.busy = true; state.ap.apError = ''; render();
         try {
           const snapshot = await callHost('GET', AP);
+          const hostConfig = await callHost('GET', AP_CONFIG).catch(() => null);
           const filesPayload = await callHost('GET', '/v0/management/auth-files');
           const credsPayload = await callHost('GET', '/v0/management/auth-credentials');
+          state.ap.configLoaded = hostConfig !== null;
+          state.ap.hostConfig = hostConfig || state.ap.hostConfig || {};
           state.ap.credentials = Array.isArray(credsPayload && credsPayload.credentials) ? credsPayload.credentials : [];
           state.ap.policy = (snapshot && snapshot.policy) || null;
           state.ap.status = (snapshot && snapshot.status) || null;
@@ -725,7 +754,7 @@
             '</tr>';
         }).join('');
       };
-      const renderPoolCards = () => { const stats = apOverviewStats(); const status = state.ap.status || {}; const syncBadge = status.ready ? '策略已生效 · v' + escapeHTML(status.version || '-') : '等待策略'; return '<div class="card"><div class="label">账号池</div><div class="value">' + escapeHTML(stats.pools) + '</div></div><div class="card"><div class="label">认证账号</div><div class="value">' + escapeHTML(stats.members) + '</div></div><div class="card"><div class="label">已绑定用户</div><div class="value">' + escapeHTML(stats.bindings) + '</div></div><div class="card"><div class="label">运行中 / 排队中</div><div class="value"><b data-ap-total-live="active">' + escapeHTML(stats.active) + '</b> / <b data-ap-total-live="waiting">' + escapeHTML(stats.waiting) + '</b></div><span class="muted ap-card-note">' + syncBadge + '</span></div>'; };
+      const renderPoolCards = () => { const stats = apOverviewStats(); const status = state.ap.status || {}; const activation = apSchedulerState(); const syncBadge = activation.effective ? '调度已接管 · 策略 v' + escapeHTML(status.version || '-') : status.ready ? '策略已保存，但调度未接管' : '等待策略'; return '<div class="card"><div class="label">账号池</div><div class="value">' + escapeHTML(stats.pools) + '</div></div><div class="card"><div class="label">认证账号</div><div class="value">' + escapeHTML(stats.members) + '</div></div><div class="card"><div class="label">已绑定用户</div><div class="value">' + escapeHTML(stats.bindings) + '</div></div><div class="card"><div class="label">运行中 / 排队中</div><div class="value"><b data-ap-total-live="active">' + escapeHTML(stats.active) + '</b> / <b data-ap-total-live="waiting">' + escapeHTML(stats.waiting) + '</b></div><span class="muted ap-card-note">' + syncBadge + '</span></div>'; };
       const renderAccountPools = () => {
         const pools = apPools();
         const selectedPool = apSelectedPool();
@@ -734,7 +763,9 @@
         state.ap.memberIds = memberIds.slice();
         state.ap.memberDraftPoolId = selectedPool ? selectedPool.id : '';
         const draftMemberIds = state.ap.memberIds;
-        const readyBadge = state.ap.busy ? '<span class="badge warn"><span class="spinner"></span>正在保存</span>' : status.ready ? '<span class="badge success">策略已生效</span>' : '<span class="badge warn">尚未配置策略</span>';
+        const activation = apSchedulerState();
+        const readyBadge = state.ap.busy ? '<span class="badge warn"><span class="spinner"></span>正在保存</span>' : activation.effective ? '<span class="badge success">调度已接管</span>' : activation.configured || activation.claimed ? '<span class="badge warn">正在同步调度</span>' : '<span class="badge warn">调度未启用</span>';
+        const activationBlock = '<section class="ap-step ap-activation"><div class="ap-step-head"><span class="ap-step-number">0</span><div><h3>账号池调度</h3><p>' + (activation.effective ? '已由账号池独占接管 Codex 调度；同一 session_id 在 2 小时空闲 TTL 内不会切换认证文件。' : '当前账号池策略不会自动接管 Codex 调度；启用后将同步打开账号池和 Codex 独占调度。') + '</p></div></div><label class="check"><input type="checkbox" data-action="ap-toggle-scheduler" ' + (activation.configured ? 'checked' : '') + ' ' + ((!state.ap.configLoaded || state.ap.busy) ? 'disabled' : '') + '>启用账号池调度</label>' + (activation.configured && !activation.claimed ? '<p class="error-text">配置缺少 Codex 独占声明，当前仍可能走全局调度。</p>' : '') + (activation.claimed && !activation.configured ? '<p class="footer-note">已声明 Codex 独占，但账号池开关未打开；请启用账号池调度。</p>' : '') + '</section>';
         const poolCards = pools.length ? pools.map((pool) => {
           const stats = apPoolStats(pool.id);
           const isActive = pool.id === state.ap.selectedPoolId;
@@ -778,6 +809,7 @@
         return '<section class="panel account-pool-panel">' +
           '<div class="panel-head"><div><h2>账号池配置</h2><p class="ap-subtitle">按部门隔离 Codex 账号：上方总览看全局，选中池后管理池成员与绑定用户；账号并发与在线状态见「账号状态」页签。</p></div><div class="actions">' + readyBadge + '<button class="small" data-action="ap-reload">刷新</button><button class="small" data-action="ap-refresh-states">刷新状态</button></div></div>' +
           (state.ap.apError ? '<p class="error-text">' + escapeHTML(state.ap.apError) + '</p>' : '') +
+          activationBlock +
           '<section class="ap-step"><div class="ap-step-head"><span class="ap-step-number">1</span><div><h3>账号池总览</h3><p>卡片显示各池的账号数、绑定用户数、活动与排队请求；点击卡片选择账号池。</p></div></div>' +
           '<div class="ap-pool-cards">' + poolCards + '</div>' +
           '<div class="ap-section"><div class="ap-field-caption">创建新账号池</div>' + createBlock + manageBlock + '</div>' +
