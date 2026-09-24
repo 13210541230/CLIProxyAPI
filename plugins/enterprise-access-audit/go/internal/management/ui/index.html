@@ -538,7 +538,7 @@
         document.querySelectorAll('[data-ap-rename]').forEach((node) => node.addEventListener('input', () => { state.ap.renameText = node.value; }));
         document.querySelectorAll('[data-ap-select]').forEach((node) => node.addEventListener('click', () => { state.ap.selectedPoolId = node.dataset.apSelect; state.ap.selectedDeptHashes = []; state.ap.userQuery = ''; render(); }));
         document.querySelectorAll('[data-ap-member]').forEach((node) => node.addEventListener('change', () => { const id = node.value; const idx = state.ap.memberIds.indexOf(id); if (node.checked && idx < 0) state.ap.memberIds.push(id); else if (!node.checked && idx >= 0) state.ap.memberIds.splice(idx, 1); }));
-        document.querySelectorAll('[data-ap-user]').forEach((node) => node.addEventListener('change', () => { const value = node.value; const idx = state.ap.selectedDeptHashes.indexOf(value); if (node.checked && idx < 0) state.ap.selectedDeptHashes.push(value); else if (!node.checked && idx >= 0) state.ap.selectedDeptHashes.splice(idx, 1); }));
+        document.querySelectorAll('[data-ap-user]').forEach((node) => node.addEventListener('change', () => { const value = node.value; const idx = state.ap.selectedDeptHashes.indexOf(value); if (node.checked && idx < 0) state.ap.selectedDeptHashes.push(value); else if (!node.checked && idx >= 0) state.ap.selectedDeptHashes.splice(idx, 1); apSyncUserSelectionUI(); }));
         document.querySelectorAll('[data-ap-dept]').forEach((node) => node.addEventListener('change', () => { state.ap.selectedDeptId = node.value; state.ap.selectedDeptHashes = []; state.ap.userQuery = ''; render(); }));
         document.querySelectorAll('[data-ap-user-query]').forEach((node) => node.addEventListener('input', () => { state.ap.userQuery = node.value; apApplyUserQuery(); }));
         document.querySelectorAll('[data-ap-limit]').forEach((node) => node.addEventListener('change', () => setApLimit(node.dataset.auth, 'limit', node.value)));
@@ -666,6 +666,13 @@
         if (empty) { empty.hidden = visible > 0; empty.textContent = query ? '没有匹配的用户' : '该部门暂无可分配用户'; }
         const count = document.querySelector('[data-ap-user-result-count]');
         if (count) count.textContent = query ? '匹配 ' + visible + ' 人' : '共 ' + visible + ' 人';
+      };
+      const apSyncUserSelectionUI = () => {
+        const count = state.ap.selectedDeptHashes.length;
+        const countNode = document.querySelector('.ap-binding-toolbar .selection-count');
+        if (countNode) countNode.textContent = '已选择 ' + count + ' 个用户';
+        document.querySelectorAll('[data-action="ap-bind"]').forEach((node) => { node.disabled = !count || state.ap.busy; });
+        document.querySelectorAll('[data-action="ap-clear-users"]').forEach((node) => { node.disabled = !count; });
       };
       const apBindSelected = async () => { const pool = apSelectedPool(); if (!pool) return; const selected = state.ap.selectedDeptHashes; if (!selected.length) { showToast('请先选择用户'); return; } const next = apBuild((p) => { selected.forEach((hash) => { const existing = p.bindings.find((b) => apHash(b.apiKeyHash) === apHash(hash)); if (existing) existing.poolId = pool.id; else p.bindings.push({ apiKeyHash: apHash(hash), poolId: pool.id }); }); }); await apPublish(next, '已为 ' + selected.length + ' 个用户分配 ' + pool.name); };
       const apClearDeptBindings = async () => { const keys = apDeptKeys(); if (!keys.length) return; const hashes = keys.map((item) => apHash(item.apiKeyHash)); const next = apBuild((p) => { p.bindings = p.bindings.filter((b) => !hashes.includes(apHash(b.apiKeyHash))); }); await apPublish(next, '已清除 ' + keys.length + ' 个用户的账号池绑定'); };
