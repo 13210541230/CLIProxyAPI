@@ -338,3 +338,25 @@ func TestMergeWebsocketQuotaHeaders(t *testing.T) {
 		t.Fatalf("merged response headers = %#v", headers)
 	}
 }
+
+func TestAppendCodexAPIWebsocketResponseCapturesTurnState(t *testing.T) {
+	ctx := internallogging.WithResponseHeadersHolder(context.Background())
+	internallogging.SetResponseHeaders(ctx, http.Header{"X-Request-Id": []string{"req-1"}})
+	frame := []byte(`{"type":"codex.response.metadata","headers":{"x-codex-turn-state":"turn-ticket-1","x-models-etag":"models-v1","authorization":"must-not-be-captured"}}`)
+
+	AppendCodexAPIWebsocketResponse(ctx, nil, frame)
+
+	headers := internallogging.GetResponseHeaders(ctx)
+	if got := headers.Get("X-Codex-Turn-State"); got != "turn-ticket-1" {
+		t.Fatalf("X-Codex-Turn-State = %q, want turn-ticket-1; all headers: %#v", got, headers)
+	}
+	if got := headers.Get("X-Request-Id"); got != "req-1" {
+		t.Fatalf("X-Request-Id = %q, want req-1", got)
+	}
+	if got := headers.Get("Authorization"); got != "" {
+		t.Fatalf("unexpected Authorization response header: %q", got)
+	}
+	if got := headers.Get("X-Models-Etag"); got != "" {
+		t.Fatalf("unexpected unapproved metadata header: %q", got)
+	}
+}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
@@ -79,7 +80,8 @@ func testCodexNativeStreamFidelity(t *testing.T, source sdktranslator.Format) {
 					if transport == "websocket" {
 						executeStream = NewCodexWebsocketsExecutor(cfg).ExecuteStream
 					}
-					result, err := executeStream(context.Background(), codexTestAuth(server.URL), cliproxyexecutor.Request{Model: "gpt-5.6-sol", Payload: payload}, cliproxyexecutor.Options{SourceFormat: source, ResponseFormat: sdktranslator.FormatCodex, Headers: headers, Stream: true})
+					ctx := internallogging.WithResponseHeadersHolder(context.Background())
+					result, err := executeStream(ctx, codexTestAuth(server.URL), cliproxyexecutor.Request{Model: "gpt-5.6-sol", Payload: payload}, cliproxyexecutor.Options{SourceFormat: source, ResponseFormat: sdktranslator.FormatCodex, Headers: headers, Stream: true})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -102,6 +104,11 @@ func testCodexNativeStreamFidelity(t *testing.T, source sdktranslator.Format) {
 					body := <-captured
 					upstreamHeaders := <-capturedHeaders
 					native := lite != "" && (source == sdktranslator.FormatCodex || source == sdktranslator.FormatOpenAIResponse)
+					if transport == "websocket" {
+						if got := internallogging.GetResponseHeaders(ctx).Get("X-Codex-Turn-State"); got != "turn-1" {
+							t.Errorf("captured websocket X-Codex-Turn-State = %q, want turn-1", got)
+						}
+					}
 					if transport == "websocket" {
 						wantLiteHeader := ""
 						if native && lite == "header" {

@@ -400,11 +400,38 @@ func AppendAPIWebsocketResponse(ctx context.Context, cfg *config.Config, payload
 	appendAPIWebsocketTimeline(ginCtx, []byte(builder.String()))
 }
 
-// AppendCodexAPIWebsocketResponse stores a codex upstream websocket response frame and merges any
-// quota event headers carried by the frame into the request log.
+// AppendCodexAPIWebsocketResponse stores a codex upstream websocket response frame and merges
+// quota and response metadata headers carried by the frame into the usage snapshot.
 func AppendCodexAPIWebsocketResponse(ctx context.Context, cfg *config.Config, payload []byte) {
 	logging.MergeResponseHeaders(ctx, ParseCodexQuotaEventHeaders(payload))
+	logging.MergeResponseHeaders(ctx, parseCodexTurnStateMetadataHeaders(payload))
 	AppendAPIWebsocketResponse(ctx, cfg, payload)
+}
+
+func parseCodexTurnStateMetadataHeaders(payload []byte) http.Header {
+	if gjson.GetBytes(payload, "type").String() != "codex.response.metadata" {
+		return nil
+	}
+
+	metadataHeaders := gjson.GetBytes(payload, "headers")
+	if !metadataHeaders.IsObject() {
+		return nil
+	}
+
+	var turnState string
+	metadataHeaders.ForEach(func(key, value gjson.Result) bool {
+		if !strings.EqualFold(key.String(), "x-codex-turn-state") {
+			return true
+		}
+		if value.Type == gjson.String {
+			turnState = strings.TrimSpace(value.String())
+		}
+		return false
+	})
+	if turnState == "" || strings.ContainsAny(turnState, "\r\n") {
+		return nil
+	}
+	return http.Header{"X-Codex-Turn-State": []string{turnState}}
 }
 
 // RecordAPIWebsocketError stores an upstream websocket error event in Gin context.
