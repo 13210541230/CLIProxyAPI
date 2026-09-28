@@ -161,7 +161,7 @@ func TestJSONDispatchWiresInterceptAndCompletion(t *testing.T) {
 		t.Fatalf("registration envelope = %s, error=%v", registrationRaw, err)
 	}
 	managementRaw, err := handleMethod("management.register", []byte(`{"BasePath":"/v0/management","ResourceBasePath":"/v0/resource/plugins/enterprise-access-audit"}`))
-	if err != nil || !strings.Contains(string(managementRaw), `enterprise-access-audit/policies`) || !strings.Contains(string(managementRaw), `enterprise-access-audit/ui`) || !strings.Contains(string(managementRaw), `enterprise-access-audit/basispoints/source-auths`) || strings.Contains(string(managementRaw), `:id`) {
+	if err != nil || !strings.Contains(string(managementRaw), `enterprise-access-audit/policies`) || !strings.Contains(string(managementRaw), `enterprise-access-audit/ui`) || !strings.Contains(string(managementRaw), `enterprise-access-audit/basispoints/source-auths`) || strings.Contains(string(managementRaw), `Basis Points 源认证`) || strings.Contains(string(managementRaw), `:id`) {
 		t.Fatalf("management registration = %s, error=%v", managementRaw, err)
 	}
 	managementRequest := `{"Method":"GET","Path":"/v0/management/enterprise-access-audit/settings","Query":{},"Body":null}`

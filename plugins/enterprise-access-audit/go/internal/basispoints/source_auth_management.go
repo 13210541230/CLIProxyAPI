@@ -2,9 +2,6 @@ package basispoints
 
 import (
 	"bytes"
-	"crypto/sha256"
-	_ "embed"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -16,9 +13,6 @@ import (
 )
 
 const sourceAuthAPI = "/v0/management/enterprise-access-audit/basispoints/source-auths"
-
-//go:embed source_auth_page.html
-var sourceAuthPage string
 
 type sourceAuthEntry struct {
 	Index      string `json:"auth_index"`
@@ -43,23 +37,14 @@ type sourceAuthManagementRequest struct {
 	CallbackID string `json:"host_callback_id"`
 }
 
-func (s *Service) registerSourceAuthManagement(raw []byte) (any, error) {
-	var request struct{ ResourceBasePath string }
-	if err := json.Unmarshal(raw, &request); err != nil {
-		return nil, err
-	}
-	if !strings.HasPrefix(request.ResourceBasePath, "/v0/resource/plugins/") {
-		return nil, fail(400, "invalid_resource_path", "host resource path is required")
-	}
-	s.mu.Lock()
-	s.authPage = strings.TrimRight(request.ResourceBasePath, "/") + "/source-auths"
-	s.mu.Unlock()
+func (s *Service) registerSourceAuthManagement(_ []byte) (any, error) {
+	// The endpoint controls are rendered inside the Enterprise Access Audit
+	// resource. Do not register a second resource or require a second login.
 	return map[string]any{
 		"routes": []map[string]string{
 			{"Method": "GET", "Path": sourceAuthAPI},
 			{"Method": "PATCH", "Path": sourceAuthAPI},
 		},
-		"resources": []map[string]string{{"Path": "source-auths", "Menu": "Basis Points 源认证", "Description": "编辑原凭证的 WebSockets 字段；不改变 auto 规则。"}},
 	}, nil
 }
 
@@ -74,20 +59,6 @@ func (s *Service) handleSourceAuthManagement(raw []byte) (any, error) {
 	var request sourceAuthManagementRequest
 	if err := json.Unmarshal(raw, &request); err != nil {
 		return nil, fail(400, "invalid_request", "invalid management request")
-	}
-	s.mu.RLock()
-	page := s.authPage
-	s.mu.RUnlock()
-	// 公开资源只提供静态界面；账号读取和写入始终经过 CPA 的管理鉴权。
-	if request.Method == http.MethodGet && page != "" && request.Path == page {
-		_, script, _ := strings.Cut(sourceAuthPage, "<script>")
-		script, _, _ = strings.Cut(script, "</script>")
-		digest := sha256.Sum256([]byte(script))
-		return map[string]any{"StatusCode": 200, "Body": []byte(sourceAuthPage), "Headers": http.Header{
-			"Content-Type": {"text/html; charset=utf-8"}, "Cache-Control": {"no-store"},
-			"X-Content-Type-Options": {"nosniff"}, "Referrer-Policy": {"no-referrer"},
-			"Content-Security-Policy": {"default-src 'none'; script-src 'sha256-" + base64.StdEncoding.EncodeToString(digest[:]) + "'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'self'"},
-		}}, nil
 	}
 	if request.Path != sourceAuthAPI || (request.Method != http.MethodGet && request.Method != http.MethodPatch) {
 		return sourceAuthResponse(404, map[string]string{"error": "not found"}), nil
@@ -120,8 +91,10 @@ func (s *Service) sourceAuthEntries(callbackID string) ([]sourceAuthEntry, error
 	s.mu.RLock()
 	dir := s.authDir
 	s.mu.RUnlock()
-	if dir == "" {
-		return nil, fail(503, "auth_dir_unavailable", "尚未获得源认证目录，请在 CPA 加载 Codex 凭证后刷新。")
+	if dir != "" {
+		if absolute, err := filepath.Abs(dir); err == nil {
+			dir = absolute
+		}
 	}
 	entries := make([]sourceAuthEntry, 0)
 	seen := make(map[string]bool)
@@ -130,10 +103,35 @@ func (s *Service) sourceAuthEntries(callbackID string) ([]sourceAuthEntry, error
 		provider := strings.ToLower(strings.TrimSpace(entry.Provider))
 		if provider != AuthProviderID && provider != Provider || entry.Runtime || entry.Index == "" ||
 			entry.Name == "" || strings.ContainsAny(entry.Name, "/\\") ||
-			!strings.HasSuffix(strings.ToLower(entry.Name), ".json") ||
-			filepath.Clean(entry.Path) != filepath.Join(dir, entry.Name) || seen[entry.Name] {
+			!strings.HasSuffix(strings.ToLower(entry.Name), ".json") || seen[entry.Name] {
 			continue
 		}
+		// Synthetic auth records (for example codex-api-key entries) can be
+		// reported as provider=codex without a source file. They must not be
+		// exposed as editable OAuth credentials or be mapped to a guessed path.
+		path := strings.TrimSpace(entry.Path)
+		if path == "" {
+			continue
+		}
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			continue
+		}
+		path = filepath.Clean(absolute)
+		if dir != "" {
+			relative, err := filepath.Rel(dir, path)
+			if err != nil || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || relative == ".." {
+				continue
+			}
+		}
+		if filepath.Base(path) != entry.Name {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		entry.Path = path
 		seen[entry.Name] = true
 		entries = append(entries, entry)
 	}
@@ -146,7 +144,8 @@ func (s *Service) readSourceAuth(entry sourceAuthEntry, callbackID string) (map[
 	if err := s.call("host.auth.get", map[string]any{"auth_index": entry.Index, "host_callback_id": callbackID}, &source); err != nil {
 		return nil, err
 	}
-	if source.Name != entry.Name || filepath.Clean(source.Path) != filepath.Clean(entry.Path) {
+	sourcePath, err := filepath.Abs(strings.TrimSpace(source.Path))
+	if err != nil || source.Name != entry.Name || filepath.Clean(sourcePath) != filepath.Clean(entry.Path) {
 		return nil, fail(409, "auth_changed", "源认证位置已变化，请刷新列表后重试。")
 	}
 	return parseSourceAuthFields(source.JSON)

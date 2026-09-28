@@ -22,7 +22,6 @@ type Service struct {
 	requests    map[string]*requestScope
 	authEditMu  sync.Mutex
 	authDir     string
-	authPage    string
 }
 
 func NewService() *Service {
