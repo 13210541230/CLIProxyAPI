@@ -33,8 +33,8 @@ func TestFlatAccountPoolKeysEnableSchedulerRegistration(t *testing.T) {
 	if !result.Capabilities.Scheduler {
 		t.Fatal("flat account_pool.enabled did not enable the scheduler capability")
 	}
-	if len(result.Capabilities.SchedulerExclusiveProviders) != 1 || result.Capabilities.SchedulerExclusiveProviders[0] != "codex" {
-		t.Fatalf("exclusive providers = %v, want [codex]", result.Capabilities.SchedulerExclusiveProviders)
+	if len(result.Capabilities.SchedulerExclusiveProviders) != 2 || result.Capabilities.SchedulerExclusiveProviders[0] != "codex" || result.Capabilities.SchedulerExclusiveProviders[1] != "oai-basispoints" {
+		t.Fatalf("exclusive providers = %v, want [codex oai-basispoints]", result.Capabilities.SchedulerExclusiveProviders)
 	}
 	// Close the store so Windows can remove the TempDir, then reset the
 	// package-level manager: Shutdown permanently closes it, and the following
@@ -124,7 +124,7 @@ func TestDisablingPoolImmediatelyRestoresBuiltinAndStopsLimits(t *testing.T) {
 	if err := json.Unmarshal(registerResult.Result, &registrationResult); err != nil {
 		t.Fatalf("decode reconfigure registration: %v", err)
 	}
-	if !registrationResult.Capabilities.Scheduler || len(registrationResult.Capabilities.SchedulerExclusiveProviders) != 1 || registrationResult.Capabilities.SchedulerExclusiveProviders[0] != "codex" {
+	if !registrationResult.Capabilities.Scheduler || len(registrationResult.Capabilities.SchedulerExclusiveProviders) != 2 || registrationResult.Capabilities.SchedulerExclusiveProviders[0] != "codex" || registrationResult.Capabilities.SchedulerExclusiveProviders[1] != "oai-basispoints" {
 		t.Fatalf("exclusive claim should remain active for safe builtin delegation: %+v", registrationResult.Capabilities)
 	}
 
@@ -161,7 +161,7 @@ func TestJSONDispatchWiresInterceptAndCompletion(t *testing.T) {
 		t.Fatalf("registration envelope = %s, error=%v", registrationRaw, err)
 	}
 	managementRaw, err := handleMethod("management.register", []byte(`{"BasePath":"/v0/management","ResourceBasePath":"/v0/resource/plugins/enterprise-access-audit"}`))
-	if err != nil || !strings.Contains(string(managementRaw), `enterprise-access-audit/policies`) || !strings.Contains(string(managementRaw), `enterprise-access-audit/ui`) || strings.Contains(string(managementRaw), `:id`) {
+	if err != nil || !strings.Contains(string(managementRaw), `enterprise-access-audit/policies`) || !strings.Contains(string(managementRaw), `enterprise-access-audit/ui`) || !strings.Contains(string(managementRaw), `enterprise-access-audit/basispoints/source-auths`) || strings.Contains(string(managementRaw), `:id`) {
 		t.Fatalf("management registration = %s, error=%v", managementRaw, err)
 	}
 	managementRequest := `{"Method":"GET","Path":"/v0/management/enterprise-access-audit/settings","Query":{},"Body":null}`

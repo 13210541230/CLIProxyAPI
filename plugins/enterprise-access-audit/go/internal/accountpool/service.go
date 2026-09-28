@@ -707,10 +707,11 @@ func callerHashOf(request schedulerPickRequest) string {
 func requestIsCodex(request schedulerPickRequest) bool {
 	provider := strings.ToLower(strings.TrimSpace(request.Provider))
 	if provider != "" && provider != "mixed" {
-		return provider == ExclusiveProvider
+		return provider == ProviderCodex || provider == ProviderBasisPoints
 	}
 	for _, candidate := range request.Providers {
-		if strings.ToLower(strings.TrimSpace(candidate)) == ExclusiveProvider {
+		candidate = strings.ToLower(strings.TrimSpace(candidate))
+		if candidate == ProviderCodex || candidate == ProviderBasisPoints {
 			return true
 		}
 	}

@@ -111,6 +111,7 @@ var reviewedInPlaceByteWrites = map[string]reviewedInPlaceByteWrite{
 	"internal/client/codex/live/tcp_proxy.go":               {1, "copies header and payload into a freshly allocated frame"},
 	"internal/home/client.go":                               {1, "zeroes the private Redis response buffer after json.Unmarshal has copied its fields"},
 	"internal/pluginstore/auth.go":                          {1, "zeroes the private Basic-auth credential buffer after base64 encoding"},
+	"plugins/enterprise-access-audit/go/internal/basispoints/attachments.go": {1, "copies a SHA-256 digest into a private fixed-size cache key array"},
 }
 
 // TestInPlaceByteWritesAreReviewed keeps the set of in-place byte writes small

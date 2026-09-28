@@ -10,8 +10,11 @@ import (
 	"strings"
 )
 
-// ProviderCodex is the only supported account pool provider scope for phase 1.
+// ProviderCodex is the canonical account pool scope for Codex-compatible OAuth.
 const ProviderCodex = "codex"
+
+// ProviderBasisPoints is the BPS executor provider backed by the same Codex account pool.
+const ProviderBasisPoints = "oai-basispoints"
 
 // Pool is one department account pool.
 type Pool struct {

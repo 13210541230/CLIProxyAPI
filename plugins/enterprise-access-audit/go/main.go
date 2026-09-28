@@ -9,12 +9,40 @@ typedef struct {
 	size_t len;
 } cliproxy_buffer;
 
+typedef int (*cliproxy_host_call_fn)(void*, const char*, const uint8_t*, size_t, cliproxy_buffer*);
+typedef void (*cliproxy_host_free_fn)(void*, size_t);
+
 typedef struct {
 	uint32_t abi_version;
 	void* host_ctx;
-	void* call;
-	void* free_buffer;
+	cliproxy_host_call_fn call;
+	cliproxy_host_free_fn free_buffer;
 } cliproxy_host_api;
+
+static cliproxy_host_api stored_host;
+static int host_ready;
+
+static void store_host_api(const cliproxy_host_api* host) {
+	if (host == NULL) {
+		host_ready = 0;
+		return;
+	}
+	stored_host = *host;
+	host_ready = 1;
+}
+
+static int call_host_api(const char* method, const uint8_t* request, size_t request_len, cliproxy_buffer* response) {
+	if (!host_ready || stored_host.call == NULL) {
+		return 1;
+	}
+	return stored_host.call(stored_host.host_ctx, method, request, request_len, response);
+}
+
+static void free_host_buffer(void* ptr, size_t len) {
+	if (host_ready && stored_host.free_buffer != NULL && ptr != NULL) {
+		stored_host.free_buffer(ptr, len);
+	}
+}
 
 typedef int (*cliproxy_plugin_call_fn)(char*, uint8_t*, size_t, cliproxy_buffer*);
 typedef void (*cliproxy_plugin_free_fn)(void*, size_t);
@@ -37,6 +65,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -46,6 +75,7 @@ import (
 	"unsafe"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/accountpool"
+	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/basispoints"
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/intercept"
 	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/management"
@@ -62,6 +92,8 @@ var (
 	handlerMu         sync.RWMutex
 	handler           *intercept.Handler
 	managementHandler *management.Handler
+	basispointsSvc    *basispoints.Service
+	callbackMu        sync.RWMutex
 )
 
 type envelope struct {
@@ -102,8 +134,15 @@ type configField struct {
 }
 
 type registrationCapability struct {
+	AuthProvider                bool     `json:"auth_provider,omitempty"`
+	ModelProvider               bool     `json:"model_provider,omitempty"`
+	Executor                    bool     `json:"executor,omitempty"`
+	ExecutorModelScope          string   `json:"executor_model_scope,omitempty"`
+	ExecutorInputFormats        []string `json:"executor_input_formats,omitempty"`
+	ExecutorOutputFormats       []string `json:"executor_output_formats,omitempty"`
 	RequestInterceptor          bool     `json:"request_interceptor"`
 	RequestLifecyclePlugin      bool     `json:"request_lifecycle_plugin"`
+	ResponseInterceptor         bool     `json:"response_interceptor,omitempty"`
 	ManagementAPI               bool     `json:"management_api"`
 	Scheduler                   bool     `json:"scheduler,omitempty"`
 	SchedulerExclusiveProviders []string `json:"scheduler_exclusive_providers,omitempty"`
@@ -129,13 +168,23 @@ type managementResponse struct {
 	Body       []byte      `json:"Body"`
 }
 
+type mergedManagementRegistration struct {
+	Routes    []map[string]string `json:"routes,omitempty"`
+	Resources []map[string]string `json:"resources,omitempty"`
+}
+
 func main() {}
 
 //export cliproxy_plugin_init
-func cliproxy_plugin_init(_ *C.cliproxy_host_api, plugin *C.cliproxy_plugin_api) C.int {
-	if plugin == nil {
+func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_api) C.int {
+	if host == nil || host.abi_version != C.uint32_t(abiVersion) || host.call == nil || host.free_buffer == nil || plugin == nil {
 		return 1
 	}
+	callbackMu.Lock()
+	C.store_host_api(host)
+	callbackMu.Unlock()
+	basispointsSvc = basispoints.NewService()
+	basispointsSvc.SetHost(callHost)
 	plugin.abi_version = C.uint32_t(abiVersion)
 	plugin.call = C.cliproxy_plugin_call_fn(C.cliproxyPluginCall)
 	plugin.free_buffer = C.cliproxy_plugin_free_fn(C.cliproxyPluginFree)
@@ -176,11 +225,18 @@ func cliproxyPluginFree(ptr unsafe.Pointer, length C.size_t) {
 
 //export cliproxyPluginShutdown
 func cliproxyPluginShutdown() {
+	if basispointsSvc != nil {
+		_, _ = basispointsSvc.Handle("plugin.shutdown", nil)
+	}
+	basispointsSvc = nil
 	handlerMu.Lock()
 	handler = nil
 	managementHandler = nil
 	handlerMu.Unlock()
 	_ = pluginState.Shutdown()
+	callbackMu.Lock()
+	C.store_host_api(nil)
+	callbackMu.Unlock()
 }
 
 func handleMethod(method string, raw []byte) ([]byte, error) {
@@ -190,19 +246,29 @@ func handleMethod(method string, raw []byte) ([]byte, error) {
 			return nil, errConfigure
 		}
 		return okEnvelope(pluginRegistration())
+	case "plugin.quiesce":
+		if basispointsSvc != nil {
+			if _, errQuiesce := basispointsSvc.Handle(method, raw); errQuiesce != nil {
+				return nil, errQuiesce
+			}
+		}
+		return okEnvelope(struct{}{})
 	case "plugin.shutdown":
+		if basispointsSvc != nil {
+			if _, errShutdown := basispointsSvc.Handle(method, raw); errShutdown != nil {
+				return nil, errShutdown
+			}
+		}
 		if errShutdown := pluginState.Shutdown(); errShutdown != nil {
 			return nil, errShutdown
 		}
 		return okEnvelope(struct{}{})
+	case "auth.identifier", "auth.parse", "auth.login.start", "auth.login.poll", "auth.refresh",
+		"executor.identifier", "executor.execute", "executor.execute_stream", "executor.count_tokens", "executor.http_request",
+		"model.register", "model.static", "model.for_auth", "response.intercept_after":
+		return handleBasispointsMethod(method, raw)
 	case "management.register":
-		var request managementRegistrationRequest
-		if len(raw) > 0 {
-			if errUnmarshal := json.Unmarshal(raw, &request); errUnmarshal != nil {
-				return nil, fmt.Errorf("decode management registration request: %w", errUnmarshal)
-			}
-		}
-		return okEnvelope(management.Routes(request.BasePath, request.ResourceBasePath))
+		return managementRegistration(raw)
 	case "management.handle":
 		return handleManagement(raw)
 	case "scheduler.pick":
@@ -218,7 +284,55 @@ func handleMethod(method string, raw []byte) ([]byte, error) {
 	}
 }
 
+func managementRegistration(raw []byte) ([]byte, error) {
+	var request managementRegistrationRequest
+	if len(raw) > 0 {
+		if errUnmarshal := json.Unmarshal(raw, &request); errUnmarshal != nil {
+			return nil, fmt.Errorf("decode management registration request: %w", errUnmarshal)
+		}
+	}
+	baseRaw, errMarshal := json.Marshal(management.Routes(request.BasePath, request.ResourceBasePath))
+	if errMarshal != nil {
+		return nil, errMarshal
+	}
+	var merged mergedManagementRegistration
+	if errUnmarshal := json.Unmarshal(baseRaw, &merged); errUnmarshal != nil {
+		return nil, errUnmarshal
+	}
+	ensureBasispointsService()
+	bpsRaw, errBasispoints := basispointsSvc.Handle("management.register", raw)
+	if errBasispoints != nil {
+		return nil, errBasispoints
+	}
+	bpsJSON, errMarshal := json.Marshal(bpsRaw)
+	if errMarshal != nil {
+		return nil, errMarshal
+	}
+	var bpsRegistration mergedManagementRegistration
+	if errUnmarshal := json.Unmarshal(bpsJSON, &bpsRegistration); errUnmarshal != nil {
+		return nil, errUnmarshal
+	}
+	merged.Routes = append(merged.Routes, bpsRegistration.Routes...)
+	merged.Resources = append(merged.Resources, bpsRegistration.Resources...)
+	return okEnvelope(merged)
+}
+
+func handleBasispointsMethod(method string, raw []byte) ([]byte, error) {
+	ensureBasispointsService()
+	result, errHandle := basispointsSvc.Handle(method, raw)
+	if errHandle != nil {
+		return nil, errHandle
+	}
+	return okEnvelope(result)
+}
+
 func configure(raw []byte) error {
+	ensureBasispointsService()
+	if basispointsSvc != nil {
+		if _, errConfigure := basispointsSvc.Handle("plugin.register", raw); errConfigure != nil {
+			return fmt.Errorf("configure basispoints module: %w", errConfigure)
+		}
+	}
 	var request lifecycleRequest
 	if len(raw) > 0 {
 		if errUnmarshal := json.Unmarshal(raw, &request); errUnmarshal != nil {
@@ -246,9 +360,28 @@ func configure(raw []byte) error {
 	return nil
 }
 
+func ensureBasispointsService() {
+	if basispointsSvc != nil {
+		return
+	}
+	basispointsSvc = basispoints.NewService()
+	basispointsSvc.SetHost(callHost)
+}
+
 func pluginRegistration() registration {
-	version := "0.2.0"
-	capabilities := registrationCapability{RequestInterceptor: true, RequestLifecyclePlugin: true, ManagementAPI: true}
+	version := "0.3.0"
+	capabilities := registrationCapability{
+		AuthProvider:           true,
+		ModelProvider:          true,
+		Executor:               true,
+		ExecutorModelScope:     "both",
+		ExecutorInputFormats:   []string{"openai-response", "codex"},
+		ExecutorOutputFormats:  []string{"openai-response", "codex"},
+		RequestInterceptor:     true,
+		RequestLifecyclePlugin: true,
+		ResponseInterceptor:    true,
+		ManagementAPI:          true,
+	}
 	providers, across := schedulerCapabilityFor(pluginState.Config())
 	if len(providers) > 0 {
 		capabilities.Scheduler = true
@@ -276,6 +409,16 @@ func pluginRegistration() registration {
 				{Name: "account_pool.reserve_seconds", Type: "integer", Description: "Scheduler reservation seconds guarding against pick bursts (default 10)."},
 				{Name: "account_pool.window_seconds", Type: "integer", Description: "Default rolling admission window seconds (default 15)."},
 				{Name: "account_pool.max_wait_seconds", Type: "integer", Description: "Maximum admission wait before a retryable busy rejection (default 30)."},
+				{Name: "upstream_transport", Type: "string", Description: "Basis Points transport: auto or http."},
+				{Name: "ws_handshake_timeout_seconds", Type: "integer", Description: "Basis Points WebSocket handshake timeout."},
+				{Name: "responses_url", Type: "string", Description: "Basis Points Responses endpoint."},
+				{Name: "upstream_model", Type: "string", Description: "Default upstream model for Basis Points."},
+				{Name: "models", Type: "array", Description: "Logical model names also served by the Basis Points provider."},
+				{Name: "model_mappings", Type: "object", Description: "Logical model to Basis Points upstream model mappings."},
+				{Name: "timeout_seconds", Type: "integer", Description: "Basis Points upstream timeout."},
+				{Name: "max_response_bytes", Type: "integer", Description: "Maximum Basis Points response size."},
+				{Name: "auth_mode", Type: "string", Description: "Basis Points authentication mode."},
+				{Name: "tools_version_id", Type: "string", Description: "Optional Basis Points tools catalog version."},
 			},
 		},
 		Capabilities: capabilities,
@@ -290,6 +433,9 @@ func schedulerCapabilityFor(cfg config.Config) (providers []string, acrossPriori
 	if len(providers) == 0 && cfg.AccountPool.Enabled {
 		providers = []string{accountpool.ExclusiveProvider}
 	}
+	if containsProvider(providers, accountpool.ExclusiveProvider) {
+		providers = appendUniqueProvider(providers, basispoints.Provider)
+	}
 	if len(providers) == 0 {
 		return nil, false
 	}
@@ -300,6 +446,23 @@ func schedulerCapabilityFor(cfg config.Config) (providers []string, acrossPriori
 
 // normalizeRegistrationProviders lowercases, trims, and dedupes the exclusive
 // provider claim list reported by the host config.
+func containsProvider(values []string, want string) bool {
+	want = strings.ToLower(strings.TrimSpace(want))
+	for _, value := range values {
+		if strings.ToLower(strings.TrimSpace(value)) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func appendUniqueProvider(values []string, provider string) []string {
+	if !containsProvider(values, provider) {
+		return append(values, provider)
+	}
+	return values
+}
+
 func normalizeRegistrationProviders(values []string) []string {
 	if len(values) == 0 {
 		return nil
@@ -357,7 +520,46 @@ func interceptRequest(raw []byte, afterAuth bool) ([]byte, error) {
 	if errIntercept != nil {
 		return nil, errIntercept
 	}
+	if !result.Terminate && basispointsSvc != nil {
+		method := "request.intercept_after"
+		if !afterAuth {
+			method = "request.intercept_before"
+		}
+		bpsRaw, errBasispoints := basispointsSvc.Handle(method, raw)
+		if errBasispoints != nil {
+			return nil, errBasispoints
+		}
+		var bpsResult intercept.Response
+		encoded, errMarshal := json.Marshal(bpsRaw)
+		if errMarshal != nil {
+			return nil, errMarshal
+		}
+		if errUnmarshal := json.Unmarshal(encoded, &bpsResult); errUnmarshal != nil {
+			return nil, fmt.Errorf("decode basispoints interceptor response: %w", errUnmarshal)
+		}
+		result = mergeInterceptResponses(result, bpsResult)
+	}
 	return okEnvelope(result)
+}
+
+func mergeInterceptResponses(base, extra intercept.Response) intercept.Response {
+	if base.Headers == nil {
+		base.Headers = make(http.Header)
+	}
+	for key, values := range extra.Headers {
+		base.Headers[key] = append([]string(nil), values...)
+	}
+	base.ClearHeaders = append(base.ClearHeaders, extra.ClearHeaders...)
+	if extra.Terminate {
+		base.Terminate = true
+		base.StatusCode = extra.StatusCode
+		base.ResponseHeaders = extra.ResponseHeaders
+		base.ResponseBody = extra.ResponseBody
+	}
+	if len(extra.Body) > 0 {
+		base.Body = extra.Body
+	}
+	return base
 }
 
 // admitDebug appends one admission diagnostic line when ACCOUNTPOOL_DEBUG_FILE
@@ -409,6 +611,13 @@ func handleManagement(raw []byte) ([]byte, error) {
 			return nil, fmt.Errorf("decode management request: %w", errUnmarshal)
 		}
 	}
+	if basispointsManagementPath(request.Path) && basispointsSvc != nil {
+		result, errBasispoints := basispointsSvc.Handle("management.handle", raw)
+		if errBasispoints != nil {
+			return nil, errBasispoints
+		}
+		return okEnvelope(result)
+	}
 	handlerMu.RLock()
 	active := managementHandler
 	handlerMu.RUnlock()
@@ -433,6 +642,15 @@ func accountPoolManagementPath(path string) bool {
 	return strings.HasSuffix(normalized, accountpool.Prefix) || strings.Contains(normalized, accountpool.Prefix+"/")
 }
 
+func basispointsManagementPath(path string) bool {
+	normalized := strings.TrimRight(strings.TrimSpace(path), "/")
+	return strings.Contains(normalized, "/enterprise-access-audit/basispoints/") ||
+		strings.HasSuffix(normalized, "/enterprise-access-audit/basispoints") ||
+		strings.HasSuffix(normalized, "/basispoints/source-auths") ||
+		normalized == "/v0/management/enterprise-access-audit/basispoints/source-auths" ||
+		normalized == "/v0/resource/plugins/enterprise-access-audit/source-auths"
+}
+
 func complete(raw []byte) ([]byte, error) {
 	var request intercept.Completion
 	if len(raw) > 0 {
@@ -445,6 +663,11 @@ func complete(raw []byte) ([]byte, error) {
 	handlerMu.RUnlock()
 	if active == nil {
 		return nil, state.ErrUnavailable
+	}
+	if basispointsSvc != nil {
+		if _, errComplete := basispointsSvc.Handle("request.complete", raw); errComplete != nil {
+			return nil, errComplete
+		}
 	}
 	if svc := pluginState.AccountPool(); svc != nil {
 		svc.Complete(request.RequestID)
@@ -469,6 +692,55 @@ func errorEnvelope(code, message string) []byte {
 		return []byte(`{"ok":false,"error":{"code":"plugin_error","message":"encode error"}}`)
 	}
 	return raw
+}
+
+func callHost(method string, payload any, out any) error {
+	if strings.TrimSpace(method) == "" {
+		return fmt.Errorf("host callback method is required")
+	}
+	rawPayload, errMarshal := json.Marshal(payload)
+	if errMarshal != nil {
+		return fmt.Errorf("encode host callback %s: %w", method, errMarshal)
+	}
+	if len(rawPayload) > math.MaxInt32 {
+		return fmt.Errorf("host callback %s request is too large", method)
+	}
+	cMethod := C.CString(method)
+	defer C.free(unsafe.Pointer(cMethod))
+	cPayload := C.CBytes(rawPayload)
+	defer C.free(cPayload)
+	callbackMu.RLock()
+	var response C.cliproxy_buffer
+	callCode := C.call_host_api(cMethod, (*C.uint8_t)(cPayload), C.size_t(len(rawPayload)), &response)
+	if response.ptr == nil || response.len > C.size_t(math.MaxInt32) {
+		if response.ptr != nil {
+			C.free_host_buffer(response.ptr, response.len)
+		}
+		callbackMu.RUnlock()
+		return fmt.Errorf("host callback %s returned invalid buffer, code=%d", method, int(callCode))
+	}
+	rawResponse := C.GoBytes(response.ptr, C.int(response.len))
+	C.free_host_buffer(response.ptr, response.len)
+	callbackMu.RUnlock()
+	if callCode != 0 {
+		return fmt.Errorf("host callback %s returned code=%d", method, int(callCode))
+	}
+	var responseEnvelope envelope
+	if errUnmarshal := json.Unmarshal(rawResponse, &responseEnvelope); errUnmarshal != nil {
+		return fmt.Errorf("decode host callback %s: %w", method, errUnmarshal)
+	}
+	if !responseEnvelope.OK {
+		if responseEnvelope.Error != nil {
+			return fmt.Errorf("host callback %s failed: %s", method, responseEnvelope.Error.Message)
+		}
+		return fmt.Errorf("host callback %s failed", method)
+	}
+	if out != nil && len(responseEnvelope.Result) > 0 {
+		if errUnmarshal := json.Unmarshal(responseEnvelope.Result, out); errUnmarshal != nil {
+			return fmt.Errorf("decode host callback %s result: %w", method, errUnmarshal)
+		}
+	}
+	return nil
 }
 
 func writeResponse(response *C.cliproxy_buffer, raw []byte) {

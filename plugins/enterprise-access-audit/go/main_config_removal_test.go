@@ -121,8 +121,8 @@ func TestRemovingConfigThenImmediateRequest(t *testing.T) {
 			t.Fatalf("%s: scheduler capability = %v, want %v (%+v)", context, reg.Capabilities.Scheduler, want, reg.Capabilities)
 		}
 		if want {
-			if len(reg.Capabilities.SchedulerExclusiveProviders) != 1 || reg.Capabilities.SchedulerExclusiveProviders[0] != "codex" {
-				t.Fatalf("%s: exclusive providers = %v, want [codex]", context, reg.Capabilities.SchedulerExclusiveProviders)
+			if len(reg.Capabilities.SchedulerExclusiveProviders) != 2 || reg.Capabilities.SchedulerExclusiveProviders[0] != "codex" || reg.Capabilities.SchedulerExclusiveProviders[1] != "oai-basispoints" {
+				t.Fatalf("%s: exclusive providers = %v, want [codex oai-basispoints]", context, reg.Capabilities.SchedulerExclusiveProviders)
 			}
 		} else if len(reg.Capabilities.SchedulerExclusiveProviders) != 0 {
 			t.Fatalf("%s: claim is still advertised: %v", context, reg.Capabilities.SchedulerExclusiveProviders)

@@ -155,14 +155,35 @@ plugins:
 | `default_audit_enabled` | `false` | — | 没有单独策略记录的 Enterprise Key 使用的默认审计状态；全局开关开启后才生效，已有 Key 的单独开关优先。 |
 | `max_text_bytes` | `32768` | `1–1048576` | 单条用户文本最大保存字节数，超出时保留截断标记。 |
 | `cleanup_interval_seconds` | `3600` | `1–86400` | 过期记录清理间隔。 |
-| `account_pool.enabled` | `false` | — | 账号池调度与每账号并发准入总开关。开启后执行池策略和显式并发限制；关闭后这些限制均停止。若同级 `exclusive-scheduler-providers: [codex]` 仍保留，插件会委托 CPA 内置 round-robin 选号，避免继续由插件自行全局选号。 |
+| `account_pool.enabled` | `false` | — | 账号池调度与每账号并发准入总开关。开启后执行池策略和显式并发限制；Codex 与 Basis Points 账号共用同一套账号池和并发状态；关闭后这些限制均停止。若同级 `exclusive-scheduler-providers: [codex]` 仍保留，插件会委托 CPA 内置 round-robin 选号，避免继续由插件自行全局选号。 |
 | `account_pool.data_dir` | `<data_dir>/account-pool` | — | 账号池策略与并发限制落盘目录（`account-pool-policy.json` / `account-pool-limits.json`）。 |
 | `account_pool.reserve_seconds` | `10` | `1–300` | 调度预留秒数，防选号洪峰打爆单账号。 |
 | `account_pool.window_seconds` | `15` | `1–3600` | 滚动准入窗口默认宽度。 |
 | `account_pool.max_wait_seconds` | `30` | `1–300` | 并发准入最大等待，超时返回可重试的 `account_busy`（HTTP 503）。 |
 | `account_pool.max_busy_rejections` | `3` | `1–100` | 连续 `account_busy` 拒绝达到该次数后，池层才把绑定会话交给已配置的 api-key provider（单账号真实感：池会话**绝不**换绑到池内其他 OAuth 账号）；任意一次成功准入会清零计数。未配置 api-key provider 时，会话在原账号上继续收到可重试的 `account_busy`，直到账号排空。 |
 | `account_pool.session_idle_ttl_seconds` | `7200` | 秒 | 会话空闲超过该时长后绑定才过期、允许重新选号。会话的每个请求（包括由 api-key 层承接的请求）都会刷新该时钟，因此进行中的对话永不换号——只有静默超过此时长才可能重绑。这也是池策略发布后、绑定账号冷却或被移除后唯一的重绑途径。 |
-| `exclusive-scheduler-providers` | `—` | — | 插件条目同级配置 `exclusive-scheduler-providers: [codex]`，将 Codex 调度锁定到本插件，避免与其他调度插件竞争。账号池页面的“启用账号池调度”开关会同时维护 `account_pool.enabled` 与该声明，无需手工编辑 YAML。 |
+| `exclusive-scheduler-providers` | `—` | — | 插件条目同级配置 `exclusive-scheduler-providers: [codex]`，将 Codex 和同名模型的 Basis Points 调度锁定到本插件，避免与其他调度插件竞争。账号池页面的“启用账号池调度”开关会同时维护 `account_pool.enabled` 与该声明，无需手工编辑 YAML。 |
+
+### 账号端点选择
+
+用户请求模型名保持不变，例如始终使用 `gpt-6-astra`。在 CPA 的 Codex OAuth 源认证 JSON 中，为试用账号增加：
+
+```json
+{
+  "type": "codex",
+  "endpoint": "basispoints"
+}
+```
+
+未设置 `endpoint` 或设置为 `openai` 的账号继续使用官方 OpenAI/Codex 端点；设置为 `basispoints` 的账号由同一个 `AuthID` 走 BPS 端点。账号池成员、session 粘滞、账号并发限制和审计仍按原始认证文件名统一生效，不会生成 `bp-*` 虚拟账号。
+
+管理页面入口：
+
+```text
+/v0/resource/plugins/enterprise-access-audit/source-auths
+```
+
+页面可按账号切换“正常 OpenAI / BPS”，保存后由 CPA 文件监控重新加载认证。BPS 与普通端点均注册同一个逻辑模型名，最终端点由账号池选中的账号决定。
 
 路径规则：
 

@@ -65,7 +65,7 @@ func runtimeConfigFromConfig(cfg *config.Config) (runtimeConfig, error) {
 		// only: disabling the instance (or the whole plugin system) is an
 		// explicit operator action that releases the provider back to default.
 		if enabled {
-			for _, provider := range exclusiveSchedulerProviders(item) {
+			for _, provider := range exclusiveSchedulerProvidersForPlugin(id, item) {
 				out.ExclusiveSchedulers[provider] = append(out.ExclusiveSchedulers[provider], id)
 			}
 		}
@@ -94,6 +94,34 @@ func cloneExclusiveSchedulerOwners(src map[string][]string) map[string][]string 
 		out[provider] = append([]string(nil), owners...)
 	}
 	return out
+}
+
+func exclusiveSchedulerProvidersForPlugin(id string, item config.PluginInstanceConfig) []string {
+	providers := exclusiveSchedulerProviders(item)
+	if id != "enterprise-access-audit" || !containsNormalizedProvider(providers, "codex") {
+		return providers
+	}
+	// enterprise-access-audit owns the shared Codex account pool. Its BPS
+	// executor uses the same AuthID and must not bypass the plugin's exclusive
+	// scheduler merely because it has a distinct provider identifier.
+	return appendNormalizedProvider(providers, "oai-basispoints")
+}
+
+func containsNormalizedProvider(values []string, want string) bool {
+	want = strings.ToLower(strings.TrimSpace(want))
+	for _, value := range values {
+		if strings.ToLower(strings.TrimSpace(value)) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func appendNormalizedProvider(values []string, provider string) []string {
+	if containsNormalizedProvider(values, provider) {
+		return values
+	}
+	return append(values, provider)
 }
 
 func exclusiveSchedulerProviders(item config.PluginInstanceConfig) []string {
