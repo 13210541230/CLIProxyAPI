@@ -24,6 +24,9 @@ func TestParseAuthRequestUsesConfiguredBasisPointsEndpointWithoutVirtualAuth(t *
 	if got := auth["Provider"]; got != Provider {
 		t.Fatalf("auth provider = %v, want %q", got, Provider)
 	}
+	if got := auth["StorageType"]; got != AuthProviderID {
+		t.Fatalf("auth storage type = %v, want %q", got, AuthProviderID)
+	}
 	if got := auth["ID"]; got != "pilot.json" {
 		t.Fatalf("auth ID = %v, want source auth ID", got)
 	}

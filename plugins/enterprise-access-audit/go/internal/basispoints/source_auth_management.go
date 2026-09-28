@@ -157,7 +157,11 @@ func parseSourceAuthFields(raw []byte) (map[string]json.RawMessage, error) {
 		return nil, fail(422, "invalid_source_auth", "源认证不是有效的 JSON 对象。")
 	}
 	var provider string
-	if json.Unmarshal(fields["type"], &provider) != nil || provider != AuthProviderID {
+	if json.Unmarshal(fields["type"], &provider) != nil {
+		return nil, fail(409, "auth_changed", "源认证类型已变化，请刷新列表后重试。")
+	}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider != AuthProviderID && provider != Provider {
 		return nil, fail(409, "auth_changed", "源认证类型已变化，请刷新列表后重试。")
 	}
 	return fields, nil
@@ -239,6 +243,14 @@ func (s *Service) saveSourceAuthSettings(request sourceAuthManagementRequest) (a
 			return nil, err
 		}
 		changed := false
+		// Older BPS builds persisted the runtime provider into the source file.
+		// Restore the canonical Codex source type whenever this UI writes it.
+		var sourceType string
+		_ = json.Unmarshal(fields["type"], &sourceType)
+		if strings.ToLower(strings.TrimSpace(sourceType)) != AuthProviderID {
+			fields["type"] = jsonBytes(AuthProviderID)
+			changed = true
+		}
 		if patch.Websockets != nil && !bytes.Equal(bytes.TrimSpace(fields["websockets"]), jsonBytes(*patch.Websockets)) {
 			fields["websockets"] = jsonBytes(*patch.Websockets)
 			changed = true

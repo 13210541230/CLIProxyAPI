@@ -222,6 +222,7 @@ func authData(raw []byte, fileName string, c credential) map[string]any {
 	}
 	return map[string]any{
 		"Provider":    Provider,
+		"StorageType": AuthProviderID,
 		"ID":          fileName,
 		"FileName":    fileName,
 		"Label":       label,

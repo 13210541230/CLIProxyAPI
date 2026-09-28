@@ -242,6 +242,9 @@ type AuthData struct {
 	Disabled bool
 	// StorageJSON contains provider-owned persisted auth data.
 	StorageJSON []byte
+	// StorageType optionally preserves the source file's credential type when
+	// the runtime provider differs from the persisted source provider.
+	StorageType string
 	// Metadata contains mutable host-managed auth metadata.
 	Metadata map[string]any
 	// Attributes contains immutable routing and provider attributes.

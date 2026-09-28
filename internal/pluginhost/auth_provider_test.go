@@ -430,6 +430,42 @@ func TestPluginTokenStorageMergesRawMetadataAndProviderType(t *testing.T) {
 	}
 }
 
+func TestPluginTokenStoragePreservesExplicitSourceType(t *testing.T) {
+	host := New()
+	auth := host.AuthDataToCoreAuth(pluginapi.AuthData{
+		Provider:    "oai-basispoints",
+		StorageType: "codex",
+		FileName:    "pilot.json",
+		StorageJSON: []byte(`{"type":"codex","access_token":"token"}`),
+	}, "", "pilot.json")
+	if auth == nil || auth.Storage == nil {
+		t.Fatalf("AuthDataToCoreAuth() = %#v, want storage", auth)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(auth.Storage.(interface{ RawJSON() []byte }).RawJSON(), &raw); err != nil {
+		t.Fatalf("RawJSON() error = %v", err)
+	}
+	if raw["type"] != "codex" {
+		t.Fatalf("RawJSON type = %v, want codex", raw["type"])
+	}
+
+	path := filepath.Join(t.TempDir(), "pilot.json")
+	if err := auth.Storage.SaveTokenToFile(path); err != nil {
+		t.Fatalf("SaveTokenToFile() error = %v", err)
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	raw = nil
+	if err := json.Unmarshal(saved, &raw); err != nil {
+		t.Fatalf("saved JSON error = %v", err)
+	}
+	if raw["type"] != "codex" {
+		t.Fatalf("saved type = %v, want codex", raw["type"])
+	}
+}
+
 func TestPluginTokenStorageNormalizesCredentialMetadataKeys(t *testing.T) {
 	tests := []struct {
 		name     string

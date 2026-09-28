@@ -417,9 +417,10 @@ func (h *Host) AuthDataToCoreAuth(data pluginapi.AuthData, path, fileName string
 }
 
 type pluginTokenStorage struct {
-	provider string
-	rawJSON  []byte
-	meta     map[string]any
+	provider    string
+	storageType string
+	rawJSON     []byte
+	meta        map[string]any
 }
 
 func (s *pluginTokenStorage) SetMetadata(meta map[string]any) {
@@ -433,7 +434,7 @@ func (s *pluginTokenStorage) RawJSON() []byte {
 	if s == nil {
 		return nil
 	}
-	payload, errPayload := mergedStorageJSON(s.rawJSON, s.meta, s.provider)
+	payload, errPayload := mergedStorageJSON(s.rawJSON, s.meta, s.provider, s.storageType)
 	if errPayload != nil {
 		return nil
 	}
@@ -444,7 +445,7 @@ func (s *pluginTokenStorage) SaveTokenToFile(path string) error {
 	if s == nil {
 		return fmt.Errorf("plugin token storage is nil")
 	}
-	payload, errPayload := mergedStorageJSON(s.rawJSON, s.meta, s.provider)
+	payload, errPayload := mergedStorageJSON(s.rawJSON, s.meta, s.provider, s.storageType)
 	if errPayload != nil {
 		return errPayload
 	}
@@ -480,7 +481,7 @@ func jsonPayloadEqual(left, right []byte) bool {
 	return reflect.DeepEqual(leftValue, rightValue)
 }
 
-func mergedStorageJSON(raw []byte, metadata map[string]any, provider string) ([]byte, error) {
+func mergedStorageJSON(raw []byte, metadata map[string]any, provider, storageType string) ([]byte, error) {
 	out := make(map[string]any)
 	if len(bytes.TrimSpace(raw)) > 0 {
 		if errUnmarshal := json.Unmarshal(raw, &out); errUnmarshal != nil {
@@ -493,9 +494,12 @@ func mergedStorageJSON(raw []byte, metadata map[string]any, provider string) ([]
 	for key, value := range metadata {
 		out[key] = value
 	}
-	provider = normalizeProviderID(provider)
-	if provider != "" {
-		out["type"] = provider
+	storageType = normalizeProviderID(storageType)
+	if storageType == "" {
+		storageType = normalizeProviderID(provider)
+	}
+	if storageType != "" {
+		out["type"] = storageType
 	}
 	coreauth.NormalizeCredentialMetadata(out)
 	if len(out) == 0 {
@@ -575,6 +579,16 @@ func pluginAuthDataToCoreAuth(data pluginapi.AuthData, path, fileName string, au
 		status = coreauth.StatusDisabled
 	}
 	now := time.Now().UTC()
+	storageType := normalizeProviderID(data.StorageType)
+	if storageType == "" {
+		storageType = provider
+	}
+	authStorage := &pluginTokenStorage{
+		provider:    provider,
+		storageType: storageType,
+		rawJSON:     bytes.Clone(data.StorageJSON),
+		meta:        metadata,
+	}
 	auth := &coreauth.Auth{
 		Provider:         provider,
 		ID:               id,
@@ -584,7 +598,7 @@ func pluginAuthDataToCoreAuth(data pluginapi.AuthData, path, fileName string, au
 		ProxyURL:         strings.TrimSpace(data.ProxyURL),
 		Disabled:         data.Disabled,
 		Status:           status,
-		Storage:          &pluginTokenStorage{provider: provider, rawJSON: bytes.Clone(data.StorageJSON), meta: metadata},
+		Storage:          authStorage,
 		Metadata:         metadata,
 		Attributes:       attributes,
 		CreatedAt:        now,
