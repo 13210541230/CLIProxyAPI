@@ -43,6 +43,23 @@ func TestRPCCapabilitiesIncludeFrontendAuthProviderExclusive(t *testing.T) {
 	}
 }
 
+func TestRPCRequestInterceptPreservesAuthIndex(t *testing.T) {
+	request := rpcRequestInterceptRequest{RequestInterceptRequest: pluginapi.RequestInterceptRequest{
+		AuthID: "source-auth", AuthIndex: "stable-index", AuthProvider: "codex",
+	}}
+	raw, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	var decoded rpcRequestInterceptRequest
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if decoded.AuthIndex != "stable-index" {
+		t.Fatalf("AuthIndex = %q, want stable-index", decoded.AuthIndex)
+	}
+}
+
 func TestRPCCapabilitiesIncludeScheduler(t *testing.T) {
 	plugin := pluginapi.Plugin{
 		Capabilities: pluginapi.Capabilities{

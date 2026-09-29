@@ -699,6 +699,40 @@ func TestModelsForAuthOAuthScopeFallsBackToExecutorIdentifier(t *testing.T) {
 	}
 }
 
+func TestModelsForAuthPropagatesModelAugmentation(t *testing.T) {
+	host := newHostWithRecords(capabilityRecord{
+		id: "enterprise-access-audit",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			AuthProvider: fakeAuthProvider{identifier: "codex"},
+			ModelProvider: modelProviderFunc{
+				modelsForAuth: func(ctx context.Context, req pluginapi.AuthModelRequest) (pluginapi.ModelResponse, error) {
+					if req.AuthKind != coreauth.AuthKindOAuth {
+						t.Errorf("AuthKind = %q, want %q", req.AuthKind, coreauth.AuthKindOAuth)
+					}
+					return pluginapi.ModelResponse{
+						Provider: "codex",
+						Models:   []pluginapi.ModelInfo{{ID: "gpt-5.6-sol"}},
+						Augment:  true,
+					}, nil
+				},
+			},
+			Executor:           &fakeExecutor{identifier: "oai-basispoints"},
+			ExecutorModelScope: pluginapi.ExecutorModelScopeOAuth,
+		}},
+	})
+
+	result := host.ModelsForAuth(context.Background(), &coreauth.Auth{
+		ID:       "codex-auth",
+		Provider: "codex",
+		Attributes: map[string]string{
+			coreauth.AttributeAuthKind: coreauth.AuthKindOAuth,
+		},
+	})
+	if !result.Handled || !result.Augment || result.Provider != "codex" || len(result.Models) != 1 || result.Models[0].ID != "gpt-5.6-sol" {
+		t.Fatalf("auth model result = %#v, want additive Codex model", result)
+	}
+}
+
 func TestRegisterExecutorsStaticScopeSkipsModelsForAuth(t *testing.T) {
 	modelRegistry := newFakeModelRegistry()
 	manager := newFakeExecutorManager()
@@ -1343,20 +1377,35 @@ func TestInterceptRequestAfterAuthPassesTargetFormat(t *testing.T) {
 				if req.SourceFormat != "openai" || req.ToFormat != "codex" {
 					t.Fatalf("request formats = %q -> %q, want openai -> codex", req.SourceFormat, req.ToFormat)
 				}
-				return pluginapi.RequestInterceptResponse{Body: append(req.Body, []byte("|after")...)}, nil
+				if req.AuthID != "auth-1" || req.AuthIndex != "auth-index-1" || req.AuthProvider != "codex" || !req.AllowExecutorOverride {
+					t.Fatalf("selected auth context = (%q, %q, %q, %v)", req.AuthID, req.AuthIndex, req.AuthProvider, req.AllowExecutorOverride)
+				}
+				return pluginapi.RequestInterceptResponse{Body: append(req.Body, []byte("|after")...), ExecutorProvider: "oai-basispoints"}, nil
 			}),
 		}},
 	})
 
-	got := host.InterceptRequestAfterAuth(context.Background(), pluginapi.RequestInterceptRequest{
-		SourceFormat: "openai",
-		ToFormat:     "codex",
-		Model:        "gpt-5.4",
-		Body:         []byte("body"),
-	})
+	request := pluginapi.RequestInterceptRequest{
+		SourceFormat:          "openai",
+		ToFormat:              "codex",
+		Model:                 "gpt-5.4",
+		AuthID:                "auth-1",
+		AuthIndex:             "auth-index-1",
+		AuthProvider:          "codex",
+		AllowExecutorOverride: true,
+		Body:                  []byte("body"),
+	}
+	got := host.InterceptRequestAfterAuth(context.Background(), request)
 
 	if string(got.Body) != "body|after" {
 		t.Fatalf("body = %q, want body|after", got.Body)
+	}
+	if got.ExecutorProvider != "oai-basispoints" {
+		t.Fatalf("ExecutorProvider = %q, want oai-basispoints", got.ExecutorProvider)
+	}
+	before := host.InterceptRequestBeforeAuth(context.Background(), request)
+	if before.ExecutorProvider != "" {
+		t.Fatalf("before-auth executor override = %q, want empty", before.ExecutorProvider)
 	}
 }
 

@@ -40,7 +40,7 @@ func TestBasispointsDispatchUsesSourceAuthIDAndLogicalModel(t *testing.T) {
 	if err := json.Unmarshal(registrationEnvelope.Result, &modelResult); err != nil {
 		t.Fatalf("decode model registration: %v", err)
 	}
-	if modelResult.Provider != "oai-basispoints" || len(modelResult.Models) != 1 || modelResult.Models[0].ID != "gpt-6-astra" {
+	if modelResult.Provider != "oai-basispoints" || len(modelResult.Models) != 2 || modelResult.Models[0].ID != "gpt-6-astra" || modelResult.Models[1].ID != "gpt-5.6-sol" {
 		t.Fatalf("model registration = %+v", modelResult)
 	}
 
@@ -56,7 +56,7 @@ func TestBasispointsDispatchUsesSourceAuthIDAndLogicalModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("auth.parse: %v", err)
 	}
-	if !json.Valid(authRaw) || !containsJSON(authRaw, `"ID":"pilot.json"`) || !containsJSON(authRaw, `"Provider":"oai-basispoints"`) {
+	if !json.Valid(authRaw) || !containsJSON(authRaw, `"ID":"pilot.json"`) || !containsJSON(authRaw, `"Provider":"codex"`) || containsJSON(authRaw, `"Provider":"oai-basispoints"`) {
 		t.Fatalf("auth.parse response = %s", authRaw)
 	}
 }

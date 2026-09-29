@@ -27,16 +27,20 @@ var geminiPath = regexp.MustCompile(`^/v1beta/models/[^/:]+:(generateContent|str
 
 // Request mirrors the public interceptor envelope without importing CPA's root module.
 type Request struct {
-	RequestID      string         `json:"RequestID"`
-	TraceID        string         `json:"TraceID"`
-	SourceFormat   string         `json:"SourceFormat"`
-	ToFormat       string         `json:"ToFormat"`
-	Model          string         `json:"Model"`
-	RequestedModel string         `json:"RequestedModel"`
-	Stream         bool           `json:"Stream"`
-	Headers        http.Header    `json:"Headers"`
-	Body           []byte         `json:"Body"`
-	Metadata       map[string]any `json:"Metadata"`
+	RequestID             string         `json:"RequestID"`
+	TraceID               string         `json:"TraceID"`
+	SourceFormat          string         `json:"SourceFormat"`
+	ToFormat              string         `json:"ToFormat"`
+	Model                 string         `json:"Model"`
+	RequestedModel        string         `json:"RequestedModel"`
+	AuthID                string         `json:"AuthID"`
+	AuthIndex             string         `json:"AuthIndex"`
+	AuthProvider          string         `json:"AuthProvider"`
+	AllowExecutorOverride bool           `json:"AllowExecutorOverride"`
+	Stream                bool           `json:"Stream"`
+	Headers               http.Header    `json:"Headers"`
+	Body                  []byte         `json:"Body"`
+	Metadata              map[string]any `json:"Metadata"`
 }
 
 // Completion mirrors the public lifecycle completion envelope.
@@ -55,13 +59,14 @@ type Completion struct {
 
 // Response mirrors the public interceptor response and keeps pass-through bytes unchanged.
 type Response struct {
-	Headers         http.Header `json:"Headers"`
-	Body            []byte      `json:"Body"`
-	ClearHeaders    []string    `json:"ClearHeaders,omitempty"`
-	Terminate       bool        `json:"Terminate,omitempty"`
-	StatusCode      int         `json:"StatusCode,omitempty"`
-	ResponseHeaders http.Header `json:"ResponseHeaders,omitempty"`
-	ResponseBody    []byte      `json:"ResponseBody,omitempty"`
+	Headers          http.Header `json:"Headers"`
+	Body             []byte      `json:"Body"`
+	ExecutorProvider string      `json:"ExecutorProvider,omitempty"`
+	ClearHeaders     []string    `json:"ClearHeaders,omitempty"`
+	Terminate        bool        `json:"Terminate,omitempty"`
+	StatusCode       int         `json:"StatusCode,omitempty"`
+	ResponseHeaders  http.Header `json:"ResponseHeaders,omitempty"`
+	ResponseBody     []byte      `json:"ResponseBody,omitempty"`
 }
 
 // Handler applies phase-1 scope, policy enforcement, extraction, and lifecycle correlation.

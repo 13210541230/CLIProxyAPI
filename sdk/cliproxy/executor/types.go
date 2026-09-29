@@ -111,6 +111,14 @@ type RequestAfterAuthInterceptRequest struct {
 	Model string
 	// RequestedModel is the client-requested model before alias/model-pool rewriting.
 	RequestedModel string
+	// AuthID identifies the selected authentication record.
+	AuthID string
+	// AuthIndex is the stable CPA auth index used to key per-account plugin settings.
+	AuthIndex string
+	// AuthProvider identifies the selected authentication provider.
+	AuthProvider string
+	// AllowExecutorOverride permits an after-auth interceptor to change executor for generation requests.
+	AllowExecutorOverride bool
 	// Stream reports whether the request expects streaming output.
 	Stream bool
 	// Headers contains the current upstream request headers.
@@ -127,6 +135,8 @@ type RequestAfterAuthInterceptResponse struct {
 	Headers http.Header
 	// Body replaces the current request body only when non-empty.
 	Body []byte
+	// ExecutorProvider optionally selects another executor after auth selection.
+	ExecutorProvider string
 	// ClearHeaders explicitly removes current request headers before Headers is applied.
 	ClearHeaders []string
 	// Terminate prevents the selected executor from receiving the request.

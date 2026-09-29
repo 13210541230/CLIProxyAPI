@@ -113,6 +113,7 @@ type AuthModelResult struct {
 	Provider string
 	Models   []*registry.ModelInfo
 	Auth     *coreauth.Auth
+	Augment  bool
 	Handled  bool
 	Err      error
 }
@@ -368,7 +369,7 @@ func (h *Host) ModelsForAuth(ctx context.Context, auth *coreauth.Auth) AuthModel
 		if authDataHasValue(resp.AuthUpdate) {
 			updated = h.AuthDataToCoreAuth(authDataWithDefaults(resp.AuthUpdate, auth), path, auth.FileName)
 		}
-		return AuthModelResult{Provider: respProvider, Models: models, Auth: updated, Handled: true}
+		return AuthModelResult{Provider: respProvider, Models: models, Auth: updated, Augment: resp.Augment, Handled: true}
 	}
 	return AuthModelResult{}
 }
@@ -492,6 +493,7 @@ func (h *Host) callModelsForAuth(ctx context.Context, record capabilityRecord, p
 		Plugin:       record.meta,
 		AuthID:       auth.ID,
 		AuthProvider: auth.Provider,
+		AuthKind:     auth.AuthKind(),
 		StorageJSON:  storageJSONFromAuth(auth),
 		Metadata:     cloneAnyMap(auth.Metadata),
 		Attributes:   cloneStringMap(auth.Attributes),

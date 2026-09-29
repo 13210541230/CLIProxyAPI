@@ -33,8 +33,14 @@ func TestFlatAccountPoolKeysEnableSchedulerRegistration(t *testing.T) {
 	if !result.Capabilities.Scheduler {
 		t.Fatal("flat account_pool.enabled did not enable the scheduler capability")
 	}
-	if len(result.Capabilities.SchedulerExclusiveProviders) != 2 || result.Capabilities.SchedulerExclusiveProviders[0] != "codex" || result.Capabilities.SchedulerExclusiveProviders[1] != "oai-basispoints" {
-		t.Fatalf("exclusive providers = %v, want [codex oai-basispoints]", result.Capabilities.SchedulerExclusiveProviders)
+	if !result.Capabilities.ModelRouter {
+		t.Fatal("Basis Points model router capability is missing")
+	}
+	if result.Capabilities.ExecutorModelScope != "oauth" {
+		t.Fatalf("executor_model_scope = %q, want oauth-only after-auth execution", result.Capabilities.ExecutorModelScope)
+	}
+	if len(result.Capabilities.SchedulerExclusiveProviders) != 1 || result.Capabilities.SchedulerExclusiveProviders[0] != "codex" {
+		t.Fatalf("exclusive providers = %v, want [codex]", result.Capabilities.SchedulerExclusiveProviders)
 	}
 	// Close the store so Windows can remove the TempDir, then reset the
 	// package-level manager: Shutdown permanently closes it, and the following
@@ -124,7 +130,7 @@ func TestDisablingPoolImmediatelyRestoresBuiltinAndStopsLimits(t *testing.T) {
 	if err := json.Unmarshal(registerResult.Result, &registrationResult); err != nil {
 		t.Fatalf("decode reconfigure registration: %v", err)
 	}
-	if !registrationResult.Capabilities.Scheduler || len(registrationResult.Capabilities.SchedulerExclusiveProviders) != 2 || registrationResult.Capabilities.SchedulerExclusiveProviders[0] != "codex" || registrationResult.Capabilities.SchedulerExclusiveProviders[1] != "oai-basispoints" {
+	if !registrationResult.Capabilities.Scheduler || len(registrationResult.Capabilities.SchedulerExclusiveProviders) != 1 || registrationResult.Capabilities.SchedulerExclusiveProviders[0] != "codex" {
 		t.Fatalf("exclusive claim should remain active for safe builtin delegation: %+v", registrationResult.Capabilities)
 	}
 

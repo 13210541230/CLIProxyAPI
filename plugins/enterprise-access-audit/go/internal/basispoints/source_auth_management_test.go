@@ -1,87 +1,114 @@
 package basispoints
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/state"
 )
 
-func TestSourceAuthSettingsRepairsLegacyBasisPointsType(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "pilot.json")
-	if err := os.WriteFile(path, []byte(`{"type":"oai-basispoints","endpoint":"basispoints","access_token":"token"}`), 0600); err != nil {
-		t.Fatalf("write source auth: %v", err)
+func newBasispointsManagementState(t *testing.T) *state.Manager {
+	t.Helper()
+	root := t.TempDir()
+	cfg, err := config.Normalize(config.Default(), root)
+	if err != nil {
+		t.Fatalf("config.Normalize() error = %v", err)
+	}
+	cfg.DatabasePath = filepath.Join(root, "enterprise.sqlite")
+	manager := state.New()
+	if err := manager.Configure(context.Background(), cfg); err != nil {
+		t.Fatalf("Configure() error = %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Shutdown() })
+	return manager
+}
+
+func TestSourceAuthSettingsPersistDatabaseFlagWithoutReadingOrChangingCredential(t *testing.T) {
+	root := t.TempDir()
+	authPath := filepath.Join(root, "pilot.json")
+	authJSON := []byte(`{"type":"codex","access_token":"unchanged"}`)
+	if err := os.WriteFile(authPath, authJSON, 0600); err != nil {
+		t.Fatalf("write auth file: %v", err)
 	}
 
 	service := NewService()
-	service.authDir = dir
+	service.SetState(newBasispointsManagementState(t))
 	service.SetHost(func(method string, _ any, out any) error {
 		if method != "host.auth.list" {
-			t.Fatalf("unexpected host callback: %s", method)
+			t.Fatalf("unexpected host callback %q; management must not fetch credential JSON", method)
 		}
 		return json.Unmarshal(jsonBytes(map[string]any{"files": []sourceAuthEntry{{
-			Index: "pilot", Name: "pilot.json", Provider: Provider, Path: path,
+			Index: "stable-auth-index", Name: "pilot.json", Provider: AuthProviderID, Path: authPath,
 		}}}), out)
 	})
 
-	_, err := service.saveSourceAuthSettings(sourceAuthManagementRequest{
-		Body: jsonBytes(map[string]any{"auth_index": "pilot", "endpoint": EndpointBasisPoint}),
+	listed, err := service.listSourceAuthSettings("")
+	if err != nil {
+		t.Fatalf("listSourceAuthSettings() error = %v", err)
+	}
+	files := listed.(map[string]any)["files"].([]map[string]any)
+	if len(files) != 1 || files[0]["basispoints_enabled"] != false {
+		t.Fatalf("default settings = %#v, want one disabled account", files)
+	}
+
+	_, err = service.saveSourceAuthSettings(sourceAuthManagementRequest{
+		Body: jsonBytes(map[string]any{"auth_index": "stable-auth-index", "basispoints_enabled": true}),
 	})
 	if err != nil {
-		t.Fatalf("saveSourceAuthSettings() error = %v", err)
+		t.Fatalf("enable Basis Points: %v", err)
 	}
-	saved, err := os.ReadFile(path)
+	listed, err = service.listSourceAuthSettings("")
 	if err != nil {
-		t.Fatalf("read source auth: %v", err)
+		t.Fatalf("list enabled settings: %v", err)
 	}
-	var fields map[string]any
-	if err := json.Unmarshal(saved, &fields); err != nil {
-		t.Fatalf("decode source auth: %v", err)
+	files = listed.(map[string]any)["files"].([]map[string]any)
+	if files[0]["basispoints_enabled"] != true {
+		t.Fatalf("enabled settings = %#v", files[0])
 	}
-	if fields["type"] != AuthProviderID {
-		t.Fatalf("source type = %v, want %q", fields["type"], AuthProviderID)
+
+	if _, err := service.saveSourceAuthSettings(sourceAuthManagementRequest{
+		Body: jsonBytes(map[string]any{"auth_index": "stable-auth-index", "basispoints_enabled": false}),
+	}); err != nil {
+		t.Fatalf("disable Basis Points: %v", err)
+	}
+	actual, err := os.ReadFile(authPath)
+	if err != nil {
+		t.Fatalf("read auth file: %v", err)
+	}
+	if string(actual) != string(authJSON) {
+		t.Fatalf("auth file changed during endpoint configuration: %s", actual)
 	}
 }
 
 func TestListSourceAuthSettingsExcludesSyntheticCodexRecords(t *testing.T) {
 	dir := t.TempDir()
 	realPath := filepath.Join(dir, "real.json")
-	raw := []byte(`{"type":"codex","access_token":"token","account_id":"account"}`)
-	if err := os.WriteFile(realPath, raw, 0600); err != nil {
-		t.Fatalf("write source auth: %v", err)
+	if err := os.WriteFile(realPath, []byte(`{"type":"codex"}`), 0600); err != nil {
+		t.Fatalf("write auth file: %v", err)
 	}
 
 	service := NewService()
-	service.authDir = dir
+	service.SetState(newBasispointsManagementState(t))
 	service.SetHost(func(method string, _ any, out any) error {
-		switch method {
-		case "host.auth.list":
-			return json.Unmarshal(jsonBytes(map[string]any{"files": []sourceAuthEntry{
-				{Index: "synthetic", Name: "codex-api.json", Provider: AuthProviderID},
-				{Index: "missing", Name: "missing.json", Provider: AuthProviderID, Path: filepath.Join(dir, "missing.json")},
-				{Index: "real", Name: "real.json", Provider: AuthProviderID, Path: realPath},
-			}}), out)
-		case "host.auth.get":
-			return json.Unmarshal(jsonBytes(sourceAuthJSON{Name: "real.json", Path: realPath, JSON: raw}), out)
-		default:
+		if method != "host.auth.list" {
 			t.Fatalf("unexpected host callback: %s", method)
-			return nil
 		}
+		return json.Unmarshal(jsonBytes(map[string]any{"files": []sourceAuthEntry{
+			{Index: "synthetic", Name: "codex-api.json", Provider: AuthProviderID},
+			{Index: "missing", Name: "missing.json", Provider: AuthProviderID},
+			{Index: "real", Name: "real.json", Provider: AuthProviderID, Path: realPath},
+		}}), out)
 	})
 
 	result, err := service.listSourceAuthSettings("")
 	if err != nil {
 		t.Fatalf("listSourceAuthSettings() error = %v", err)
 	}
-	payload, ok := result.(map[string]any)
-	if !ok {
-		t.Fatalf("result = %#v, want object", result)
-	}
-	files, ok := payload["files"].([]map[string]any)
-	if !ok {
-		t.Fatalf("files = %#v, want file list", payload["files"])
-	}
+	files := result.(map[string]any)["files"].([]map[string]any)
 	if len(files) != 1 || files[0]["name"] != "real.json" {
 		t.Fatalf("files = %#v, want only real source auth", files)
 	}

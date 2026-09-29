@@ -207,6 +207,32 @@ func (m *Manager) WithStore(ctx context.Context, operation func(*store.Store) er
 	return operation(lease.Store())
 }
 
+func (m *Manager) IsBasisPointsEnabled(ctx context.Context, authIndex string) (bool, error) {
+	var enabled bool
+	err := m.WithStore(ctx, func(active *store.Store) error {
+		var err error
+		enabled, err = active.IsBasisPointsEnabled(ctx, authIndex)
+		return err
+	})
+	return enabled, err
+}
+
+func (m *Manager) SetBasisPointsEnabled(ctx context.Context, authIndex string, enabled bool) error {
+	return m.WithStore(ctx, func(active *store.Store) error {
+		return active.SetBasisPointsEnabled(ctx, authIndex, enabled)
+	})
+}
+
+func (m *Manager) ListBasisPointsEnabled(ctx context.Context) (map[string]bool, error) {
+	var enabled map[string]bool
+	err := m.WithStore(ctx, func(active *store.Store) error {
+		var err error
+		enabled, err = active.ListBasisPointsEnabled(ctx)
+		return err
+	})
+	return enabled, err
+}
+
 // CleanupNow performs cleanup under the same read lease as all other store operations.
 func (m *Manager) CleanupNow(ctx context.Context, now time.Time) (int64, error) {
 	var removed int64

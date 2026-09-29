@@ -192,11 +192,18 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 				execOpts.Metadata = meta
 			}
 			var errIntercept error
-			execReq, execOpts, errIntercept = applyRequestAfterAuthInterceptor(execCtx, selection.Executor, selection.Provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
+			var executorProvider string
+			execReq, execOpts, executorProvider, errIntercept = applyRequestAfterAuthInterceptor(execCtx, selection.Executor, selection.Provider, preparedAuth, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel), !countTokens)
 			if errIntercept != nil {
 				releaseAttempt()
 				selection.End("request_intercepted")
 				return cliproxyexecutor.Response{}, errIntercept
+			}
+			executionExecutor, _, errTarget := m.executionExecutorForProvider(selection.Executor, selection.Provider, executorProvider)
+			if errTarget != nil {
+				releaseAttempt()
+				selection.End("executor_not_found")
+				return cliproxyexecutor.Response{}, errTarget
 			}
 			if !restoreExecutionModel {
 				execReq = attachResolvedAPIKeyModelInfo(routing, execReq, preparedAuth, routeModel, upstreamModel)
@@ -234,9 +241,9 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 			}
 			execute := func() (cliproxyexecutor.Response, error) {
 				if countTokens {
-					return selection.Executor.CountTokens(executorCtx, preparedAuth, execReq, execOpts)
+					return executionExecutor.CountTokens(executorCtx, preparedAuth, execReq, execOpts)
 				}
-				return selection.Executor.Execute(execCtx, preparedAuth, execReq, execOpts)
+				return executionExecutor.Execute(execCtx, preparedAuth, execReq, execOpts)
 			}
 			startHomeExec := time.Now()
 			response, errExecute = execute()

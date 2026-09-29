@@ -223,9 +223,14 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		}
 		execOpts := opts
 		var errIntercept error
-		execReq, execOpts, errIntercept = applyRequestAfterAuthInterceptor(ctx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
+		var executorProvider string
+		execReq, execOpts, executorProvider, errIntercept = applyRequestAfterAuthInterceptor(ctx, executor, provider, auth, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel), true)
 		if errIntercept != nil {
 			return nil, errIntercept
+		}
+		executionExecutor, executionProvider, errTarget := m.executionExecutorForProvider(executor, provider, executorProvider)
+		if errTarget != nil {
+			return nil, errTarget
 		}
 		if executionModel == "" {
 			execReq = attachResolvedAPIKeyModelInfo(routing, execReq, auth, routeModel, execModel)
@@ -241,7 +246,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		execOpts.Metadata = ensureCanonicalSessionMetadata(execOpts.Metadata, execOpts.Headers, payload)
 		ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
 		startStream := time.Now()
-		streamResult, errStream := executor.ExecuteStream(ctx, auth, execReq, execOpts)
+		streamResult, errStream := executionExecutor.ExecuteStream(ctx, auth, execReq, execOpts)
 		errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
 		if hasUpstreamExecutionAttempt(errStream) {
 			upstreamErr = errStream
@@ -261,23 +266,23 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					ctx = newUpstreamAttemptContext(ctx)
 					ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
 					startRetry := time.Now()
-					streamResult, errStream = executor.ExecuteStream(ctx, auth, execReq, execOpts)
+					streamResult, errStream = executionExecutor.ExecuteStream(ctx, auth, execReq, execOpts)
 					errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
 					if hasUpstreamExecutionAttempt(errStream) {
 						upstreamErr = errStream
 					}
 					durationRetry := time.Since(startRetry)
 					if errStream != nil {
-						warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, durationRetry, errStream)
+						warnLogUpstreamFailure(ctx, entry, executionProvider, execModel, auth, durationRetry, errStream)
 						if errCtx := ctx.Err(); errCtx != nil {
 							return nil, errCtx
 						}
 					}
 				} else {
-					warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, durationStream, errStream)
+					warnLogUpstreamFailure(ctx, entry, executionProvider, execModel, auth, durationStream, errStream)
 				}
 			} else {
-				warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, durationStream, errStream)
+				warnLogUpstreamFailure(ctx, entry, executionProvider, execModel, auth, durationStream, errStream)
 			}
 		}
 		if !ephemeralResult {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -17,27 +18,48 @@ type requestScope struct {
 // 直接 WS 连接仍跟随 CPA 的原生请求生命周期；不通过轮询或额外网络请求感知取消。
 func (s *Service) interceptUpstreamRequest(raw json.RawMessage) (any, error) {
 	var request struct {
-		RequestID      string
-		Model          string
-		RequestedModel string
+		RequestID             string
+		SourceFormat          string
+		AuthIndex             string
+		AuthProvider          string
+		AllowExecutorOverride bool
+		Model                 string
+		RequestedModel        string
 	}
 	if err := json.Unmarshal(raw, &request); err != nil {
 		return nil, fail(400, "invalid_request", "invalid request lifecycle payload")
 	}
 	cfg := s.config()
-	model := request.RequestedModel
-	if model == "" {
-		model = request.Model
-	}
-	enabled := false
-	for _, alias := range cfg.Models {
-		enabled = enabled || model == alias
-	}
-	if !enabled {
+	if !request.AllowExecutorOverride || request.AuthIndex == "" || !supportsBPSRequestFormat(request.SourceFormat) || !strings.EqualFold(strings.TrimSpace(request.AuthProvider), AuthProviderID) {
 		return map[string]any{}, nil
 	}
+	model := strings.TrimSpace(request.RequestedModel)
+	if model == "" {
+		model = strings.TrimSpace(request.Model)
+	}
+	if !basispointsModelSupported(model, cfg) {
+		model = strings.TrimSpace(request.Model)
+		if !basispointsModelSupported(model, cfg) {
+			return map[string]any{}, nil
+		}
+	}
+	accountEnabled, err := s.basisPointsEnabled(context.Background(), request.AuthIndex)
+	if err != nil {
+		return map[string]any{
+			"Terminate": true, "StatusCode": http.StatusServiceUnavailable,
+			"ResponseHeaders": http.Header{"Content-Type": {"application/json"}},
+			"ResponseBody": jsonBytes(map[string]any{"error": map[string]any{
+				"type": "server_error", "code": "basispoints_routing_unavailable", "message": "Basis Points account routing settings are unavailable",
+			}}),
+		}, nil
+	}
+	if !accountEnabled {
+		return map[string]any{}, nil
+	}
+	response := map[string]any{"ExecutorProvider": Provider}
 	if cfg.UpstreamTransport == "http" {
-		return map[string]any{"ClearHeaders": []string{requestLifecycleHeader}}, nil
+		response["ClearHeaders"] = []string{requestLifecycleHeader}
+		return response, nil
 	}
 	if request.RequestID == "" {
 		return nil, fail(400, "request_id_missing", "host did not provide a request lifecycle ID")
@@ -54,7 +76,17 @@ func (s *Service) interceptUpstreamRequest(raw json.RawMessage) (any, error) {
 		ctx, cancel := context.WithCancel(context.Background())
 		s.requests[request.RequestID] = &requestScope{ctx: ctx, cancel: cancel}
 	}
-	return map[string]any{"Headers": http.Header{requestLifecycleHeader: {request.RequestID}}}, nil
+	response["Headers"] = http.Header{requestLifecycleHeader: {request.RequestID}}
+	return response, nil
+}
+
+func supportsBPSRequestFormat(format string) bool {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "openai-response", "codex":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) completeUpstreamRequest(raw json.RawMessage) (any, error) {

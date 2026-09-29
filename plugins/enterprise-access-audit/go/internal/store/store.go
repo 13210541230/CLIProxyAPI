@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -159,6 +160,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE audit_records ADD COLUMN security_signal TEXT NOT NULL DEFAULT '';
 			 CREATE INDEX IF NOT EXISTS idx_audit_records_security_signal ON audit_records(security_signal);`,
 		`ALTER TABLE audit_records ADD COLUMN security_message TEXT NOT NULL DEFAULT '';`,
+		`CREATE TABLE IF NOT EXISTS basispoints_auth_settings (
+			auth_index TEXT PRIMARY KEY NOT NULL,
+			updated_at INTEGER NOT NULL
+		);`,
 	}
 	for version, migration := range migrations {
 		var applied int
@@ -185,6 +190,70 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *Store) SetBasisPointsEnabled(ctx context.Context, authIndex string, enabled bool) error {
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" {
+		return errors.New("auth index is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return ErrClosed
+	}
+	if !enabled {
+		if _, errExec := s.db.ExecContext(ctx, `DELETE FROM basispoints_auth_settings WHERE auth_index = ?`, authIndex); errExec != nil {
+			return fmt.Errorf("disable Basis Points for auth index %s: %w", authIndex, errExec)
+		}
+		return nil
+	}
+	if _, errExec := s.db.ExecContext(ctx, `INSERT INTO basispoints_auth_settings(auth_index, updated_at) VALUES (?, ?) ON CONFLICT(auth_index) DO UPDATE SET updated_at = excluded.updated_at`, authIndex, time.Now().Unix()); errExec != nil {
+		return fmt.Errorf("enable Basis Points for auth index %s: %w", authIndex, errExec)
+	}
+	return nil
+}
+
+func (s *Store) IsBasisPointsEnabled(ctx context.Context, authIndex string) (bool, error) {
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" {
+		return false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false, ErrClosed
+	}
+	var count int
+	if errQuery := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM basispoints_auth_settings WHERE auth_index = ?`, authIndex).Scan(&count); errQuery != nil {
+		return false, fmt.Errorf("read Basis Points setting for auth index %s: %w", authIndex, errQuery)
+	}
+	return count != 0, nil
+}
+
+func (s *Store) ListBasisPointsEnabled(ctx context.Context) (map[string]bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, ErrClosed
+	}
+	rows, errQuery := s.db.QueryContext(ctx, `SELECT auth_index FROM basispoints_auth_settings ORDER BY auth_index`)
+	if errQuery != nil {
+		return nil, fmt.Errorf("list Basis Points account settings: %w", errQuery)
+	}
+	defer func() { _ = rows.Close() }()
+	result := make(map[string]bool)
+	for rows.Next() {
+		var authIndex string
+		if errScan := rows.Scan(&authIndex); errScan != nil {
+			return nil, fmt.Errorf("scan Basis Points account setting: %w", errScan)
+		}
+		result[authIndex] = true
+	}
+	if errRows := rows.Err(); errRows != nil {
+		return nil, fmt.Errorf("iterate Basis Points account settings: %w", errRows)
+	}
+	return result, nil
 }
 
 func (s *Store) initializeSettings(ctx context.Context, defaults Settings) error {

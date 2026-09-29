@@ -15,10 +15,6 @@ const (
 	AuthProviderID = "codex"
 	PluginID       = Provider
 
-	EndpointField      = "endpoint"
-	EndpointOpenAI     = "openai"
-	EndpointBasisPoint = "basispoints"
-
 	DefaultResponsesURL  = "https://bps.openai.com/basispoints/api/responses"
 	DefaultUpstreamModel = "gpt-6-astra"
 	DefaultModelID       = "gpt-6-astra"
@@ -134,7 +130,8 @@ func defaultConfig() Config {
 		DataDir:                   "plugins/oai-basispoints-data",
 		ResponsesURL:              DefaultResponsesURL,
 		UpstreamModel:             DefaultUpstreamModel,
-		Models:                    []string{DefaultModelID},
+		Models:                    []string{DefaultModelID, "gpt-5.6-sol"},
+		ModelMappings:             map[string]string{"gpt-5.6-sol": "gpt-5.6-sol"},
 		TimeoutSeconds:            300,
 		MaxResponseBytes:          64 << 20,
 		AuthMode:                  "chatgpt",
@@ -311,6 +308,18 @@ func errorMessage(body []byte) string {
 
 func timeoutError(cfg Config) error {
 	return fail(504, "upstream_timeout", fmt.Sprintf("Basis Points request timed out after %d seconds", cfg.TimeoutSeconds))
+}
+
+func basispointsModelSupported(model string, cfg Config) bool {
+	model = strings.TrimSpace(model)
+	if _, ok := cfg.upstreamModelForAlias(model); ok {
+		return true
+	}
+	if _, base, found := strings.Cut(model, "/"); found {
+		_, ok := cfg.upstreamModelForAlias(base)
+		return ok
+	}
+	return false
 }
 
 // upstreamModelForAlias 只解析已启用的别名；未单独映射时沿用原有全局配置。

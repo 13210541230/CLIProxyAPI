@@ -419,6 +419,8 @@ type AuthModelRequest struct {
 	AuthID string
 	// AuthProvider identifies the credential provider.
 	AuthProvider string
+	// AuthKind identifies whether the credential is an OAuth or API-key auth.
+	AuthKind string
 	// StorageJSON contains provider-owned persisted auth data.
 	StorageJSON []byte
 	// Metadata contains mutable host-managed auth metadata.
@@ -435,8 +437,10 @@ type AuthModelRequest struct {
 type ModelResponse struct {
 	// Provider is the provider key associated with the returned models.
 	Provider string
-	// Models is the complete set of discovered provider models.
+	// Models is the discovered provider model set or additive model contribution.
 	Models []ModelInfo
+	// Augment indicates that Models should be merged with the host's native models for the auth.
+	Augment bool
 	// AuthUpdate contains updated auth data from model discovery when needed.
 	AuthUpdate AuthData
 }
@@ -1092,6 +1096,14 @@ type RequestInterceptRequest struct {
 	Model string
 	// RequestedModel is the client-requested model before alias/model-pool rewriting.
 	RequestedModel string
+	// AuthID identifies the selected auth after auth selection.
+	AuthID string
+	// AuthIndex is the stable CPA auth index used to key per-account plugin settings.
+	AuthIndex string
+	// AuthProvider is the selected credential provider after auth selection.
+	AuthProvider string
+	// AllowExecutorOverride permits an after-auth interceptor to select another executor for generation requests.
+	AllowExecutorOverride bool
 	// Stream reports whether the request expects streaming output.
 	Stream bool
 	// Headers contains the current upstream request headers.
@@ -1108,6 +1120,8 @@ type RequestInterceptResponse struct {
 	Headers http.Header
 	// Body replaces the current request body only when non-empty.
 	Body []byte
+	// ExecutorProvider optionally selects another executor after auth selection. It is ignored before auth and for non-generation calls.
+	ExecutorProvider string
 	// ClearHeaders explicitly removes current request headers before Headers is applied.
 	ClearHeaders []string
 	// Terminate stops the interceptor chain and prevents the request from reaching an upstream executor.

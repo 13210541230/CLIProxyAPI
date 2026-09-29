@@ -64,8 +64,16 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			excluded = strings.Split(val, ",")
 		}
 	}
-	if s.tryRegisterPluginModelsForAuth(ctx, a, provider, authKind, excluded) {
+	additionalModels, updatedAuth, handled := s.tryRegisterPluginModelsForAuth(ctx, a, provider, authKind, excluded)
+	if handled {
 		return
+	}
+	if updatedAuth != nil {
+		a = updatedAuth
+		if updatedProvider := strings.ToLower(strings.TrimSpace(a.Provider)); updatedProvider != "" {
+			provider = updatedProvider
+		}
+		authKind = a.AuthKind()
 	}
 	if ctx.Err() != nil {
 		return
@@ -285,6 +293,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	if ctx.Err() != nil {
 		return
 	}
+	models = appendUniqueModelInfos(models, additionalModels)
 	models = applyOAuthModelAliasForAuth(s.cfg, provider, authKind, a.Attributes, models)
 	if ctx.Err() != nil {
 		return

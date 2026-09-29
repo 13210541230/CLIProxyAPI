@@ -185,66 +185,6 @@ func timeFromValue(value any) time.Time {
 	return time.Time{}
 }
 
-func endpointMode(fields map[string]any) string {
-	mode := strings.ToLower(strings.TrimSpace(stringValue(fields[EndpointField])))
-	switch mode {
-	case EndpointBasisPoint, "bps":
-		return EndpointBasisPoint
-	default:
-		return EndpointOpenAI
-	}
-}
-
-func normalizeEndpoint(value string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", EndpointOpenAI, "codex":
-		return EndpointOpenAI, nil
-	case EndpointBasisPoint, "bps":
-		return EndpointBasisPoint, nil
-	default:
-		return "", fail(400, "invalid_endpoint", "endpoint must be openai or basispoints")
-	}
-}
-
-func sourceEndpointMode(raw []byte) string {
-	var fields map[string]any
-	if json.Unmarshal(raw, &fields) != nil || fields == nil {
-		return EndpointOpenAI
-	}
-	return endpointMode(fields)
-}
-
-func authData(raw []byte, fileName string, c credential) map[string]any {
-	websockets := credentialWebsocketsEnabled(ExecutorRequest{StorageJSON: raw})
-	label := c.Email
-	if label == "" {
-		label = fileName
-	}
-	return map[string]any{
-		"Provider":    Provider,
-		"StorageType": AuthProviderID,
-		"ID":          fileName,
-		"FileName":    fileName,
-		"Label":       label,
-		"StorageJSON": raw,
-		"Metadata": map[string]any{
-			"websockets":  websockets,
-			"type":        Provider,
-			"auth_kind":   "oauth",
-			"account_id":  c.AccountID,
-			"auth_mode":   c.AuthMode,
-			EndpointField: EndpointBasisPoint,
-		},
-		"Attributes": map[string]string{
-			"websockets":  strconv.FormatBool(websockets),
-			"auth_kind":   "oauth",
-			"account_id":  c.AccountID,
-			"auth_mode":   c.AuthMode,
-			EndpointField: EndpointBasisPoint,
-		},
-	}
-}
-
 func nativeCodexAuthData(raw []byte, fileName string, c credential) (map[string]any, error) {
 	label := c.Email
 	if label == "" {
@@ -259,15 +199,14 @@ func nativeCodexAuthData(raw []byte, fileName string, c credential) (map[string]
 	metadata["type"] = AuthProviderID
 	metadata["auth_kind"] = "oauth"
 	metadata["access_token"] = c.AccessToken
-	metadata[EndpointField] = EndpointOpenAI
+	delete(metadata, "endpoint")
 	if firstString(metadata, "account_id") == "" {
 		metadata["account_id"] = c.AccountID
 	}
 	attributes := map[string]string{
-		"auth_kind":   "oauth",
-		"account_id":  c.AccountID,
-		"auth_mode":   c.AuthMode,
-		EndpointField: EndpointOpenAI,
+		"auth_kind":  "oauth",
+		"account_id": c.AccountID,
+		"auth_mode":  c.AuthMode,
 	}
 	if planType != "" {
 		metadata["plan_type"] = planType
@@ -339,11 +278,6 @@ func parseAuthRequest(request authParseRequest) (map[string]any, error) {
 		}
 		return map[string]any{"Handled": false}, nil
 	}
-	if sourceEndpointMode(request.RawJSON) == EndpointBasisPoint {
-		bpsAuth := authData(request.RawJSON, fileName, c)
-		setWebSocketProxy(bpsAuth, request.RawJSON, request.Host.ProxyURL)
-		return map[string]any{"Handled": true, "Auth": bpsAuth}, nil
-	}
 	native, err := nativeCodexAuthData(request.RawJSON, fileName, c)
 	if err != nil {
 		return nil, err
@@ -377,26 +311,9 @@ func authRefresh(raw []byte) (map[string]any, error) {
 			next = time.Now().Add(time.Minute)
 		}
 	}
-	mode := sourceEndpointMode(request.StorageJSON)
-	if strings.EqualFold(strings.TrimSpace(request.AuthProvider), Provider) {
-		mode = EndpointBasisPoint
-	}
-	var auth map[string]any
-	if mode == EndpointBasisPoint {
-		auth = authData(request.StorageJSON, fileName, c)
-		websockets := credentialWebsocketsEnabled(ExecutorRequest{StorageJSON: request.StorageJSON, AuthMetadata: request.Metadata, AuthAttributes: request.Attributes})
-		auth["Metadata"].(map[string]any)["websockets"] = websockets
-		auth["Attributes"].(map[string]string)["websockets"] = strconv.FormatBool(websockets)
-		proxyURL := request.Attributes["basispoints_proxy_url"]
-		if request.Host != nil {
-			proxyURL = request.Host.ProxyURL
-		}
-		setWebSocketProxy(auth, request.StorageJSON, proxyURL)
-	} else {
-		auth, err = nativeCodexAuthData(request.StorageJSON, fileName, c)
-		if err != nil {
-			return nil, err
-		}
+	auth, err := nativeCodexAuthData(request.StorageJSON, fileName, c)
+	if err != nil {
+		return nil, err
 	}
 	return map[string]any{"Auth": auth, "NextRefreshAfter": next.UTC()}, nil
 }

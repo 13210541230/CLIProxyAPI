@@ -1,13 +1,16 @@
 package basispoints
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/state"
 	"gopkg.in/yaml.v3"
 )
 
@@ -20,13 +23,18 @@ type Service struct {
 	streams     map[*runningStream]struct{}
 	streamWG    sync.WaitGroup
 	requests    map[string]*requestScope
-	authEditMu  sync.Mutex
-	authDir     string
+	state       *state.Manager
 }
 
 func NewService() *Service {
 	cfg := defaultConfig()
 	return &Service{cfg: cfg}
+}
+
+func (s *Service) SetState(manager *state.Manager) {
+	s.mu.Lock()
+	s.state = manager
+	s.mu.Unlock()
 }
 
 func (s *Service) SetHost(host HostCall) {
@@ -43,6 +51,16 @@ func (s *Service) call(method string, payload any, out any) error {
 		return errors.New("host callback is not initialized")
 	}
 	return host(method, payload, out)
+}
+
+func (s *Service) basisPointsEnabled(ctx context.Context, authIndex string) (bool, error) {
+	s.mu.RLock()
+	manager := s.state
+	s.mu.RUnlock()
+	if manager == nil {
+		return false, state.ErrUnavailable
+	}
+	return manager.IsBasisPointsEnabled(ctx, authIndex)
 }
 
 func (s *Service) configure(raw json.RawMessage) error {
@@ -106,11 +124,6 @@ func (s *Service) Handle(method string, raw json.RawMessage) (any, error) {
 			return nil, err
 		}
 		result, err := parseAuthRequest(request)
-		if err == nil && request.Host.AuthDir != "" {
-			s.mu.Lock()
-			s.authDir = filepath.Clean(request.Host.AuthDir)
-			s.mu.Unlock()
-		}
 		return result, err
 	case "management.register":
 		return s.registerSourceAuthManagement(raw)
@@ -128,8 +141,12 @@ func (s *Service) Handle(method string, raw json.RawMessage) (any, error) {
 		return map[string]any{"Status": "error", "Message": "Import an existing CPA codex OAuth credential"}, nil
 	case "auth.refresh":
 		return authRefresh(raw)
-	case "model.register", "model.static", "model.for_auth":
+	case "model.register", "model.static":
 		return modelRegistration(s.config()), nil
+	case "model.for_auth":
+		return s.authModelRegistration(raw)
+	case "model.route":
+		return s.routeModel(raw)
 	case "response.intercept_after":
 		return s.interceptModelCatalog(raw)
 	case "executor.execute":
@@ -280,8 +297,9 @@ func registration(cfg Config) map[string]any {
 		"capabilities": map[string]any{
 			"auth_provider":            true,
 			"model_provider":           true,
+			"model_router":             true,
 			"executor":                 true,
-			"executor_model_scope":     "both",
+			"executor_model_scope":     "oauth",
 			"executor_input_formats":   []string{"openai-response", "codex"},
 			"executor_output_formats":  []string{"openai-response", "codex"},
 			"response_interceptor":     true,
@@ -291,6 +309,44 @@ func registration(cfg Config) map[string]any {
 		},
 		"config": cfg,
 	}
+}
+
+func (s *Service) routeModel(raw json.RawMessage) (any, error) {
+	var request struct {
+		RequestedModel string
+	}
+	if err := json.Unmarshal(raw, &request); err != nil {
+		return nil, fail(400, "invalid_request", "model route request is invalid")
+	}
+	model := strings.TrimSpace(request.RequestedModel)
+	if !basispointsModelSupported(model, s.config()) {
+		return map[string]any{"Handled": false}, nil
+	}
+	return map[string]any{
+		"Handled":     true,
+		"TargetKind":  "provider",
+		"Target":      AuthProviderID,
+		"TargetModel": model,
+		"Reason":      "basispoints-capable Codex model",
+	}, nil
+}
+
+func (s *Service) authModelRegistration(raw json.RawMessage) (any, error) {
+	var request struct {
+		AuthKind string
+	}
+	if err := json.Unmarshal(raw, &request); err != nil {
+		return nil, fail(400, "invalid_request", "auth model request is invalid")
+	}
+	if !strings.EqualFold(strings.TrimSpace(request.AuthKind), "oauth") {
+		return map[string]any{"Provider": Provider, "Models": []map[string]any{}}, nil
+	}
+	static := modelRegistration(s.config())
+	return map[string]any{
+		"Provider": AuthProviderID,
+		"Models":   static["Models"],
+		"Augment":  true,
+	}, nil
 }
 
 func modelRegistration(cfg Config) map[string]any {

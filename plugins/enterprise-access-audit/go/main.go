@@ -136,6 +136,7 @@ type configField struct {
 type registrationCapability struct {
 	AuthProvider                bool     `json:"auth_provider,omitempty"`
 	ModelProvider               bool     `json:"model_provider,omitempty"`
+	ModelRouter                 bool     `json:"model_router,omitempty"`
 	Executor                    bool     `json:"executor,omitempty"`
 	ExecutorModelScope          string   `json:"executor_model_scope,omitempty"`
 	ExecutorInputFormats        []string `json:"executor_input_formats,omitempty"`
@@ -185,6 +186,7 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_a
 	callbackMu.Unlock()
 	basispointsSvc = basispoints.NewService()
 	basispointsSvc.SetHost(callHost)
+	basispointsSvc.SetState(pluginState)
 	plugin.abi_version = C.uint32_t(abiVersion)
 	plugin.call = C.cliproxy_plugin_call_fn(C.cliproxyPluginCall)
 	plugin.free_buffer = C.cliproxy_plugin_free_fn(C.cliproxyPluginFree)
@@ -265,7 +267,7 @@ func handleMethod(method string, raw []byte) ([]byte, error) {
 		return okEnvelope(struct{}{})
 	case "auth.identifier", "auth.parse", "auth.login.start", "auth.login.poll", "auth.refresh",
 		"executor.identifier", "executor.execute", "executor.execute_stream", "executor.count_tokens", "executor.http_request",
-		"model.register", "model.static", "model.for_auth", "response.intercept_after":
+		"model.register", "model.static", "model.for_auth", "model.route", "response.intercept_after":
 		return handleBasispointsMethod(method, raw)
 	case "management.register":
 		return managementRegistration(raw)
@@ -366,6 +368,7 @@ func ensureBasispointsService() {
 	}
 	basispointsSvc = basispoints.NewService()
 	basispointsSvc.SetHost(callHost)
+	basispointsSvc.SetState(pluginState)
 }
 
 func pluginRegistration() registration {
@@ -373,8 +376,9 @@ func pluginRegistration() registration {
 	capabilities := registrationCapability{
 		AuthProvider:           true,
 		ModelProvider:          true,
+		ModelRouter:            true,
 		Executor:               true,
-		ExecutorModelScope:     "both",
+		ExecutorModelScope:     "oauth",
 		ExecutorInputFormats:   []string{"openai-response", "codex"},
 		ExecutorOutputFormats:  []string{"openai-response", "codex"},
 		RequestInterceptor:     true,
@@ -433,9 +437,6 @@ func schedulerCapabilityFor(cfg config.Config) (providers []string, acrossPriori
 	if len(providers) == 0 && cfg.AccountPool.Enabled {
 		providers = []string{accountpool.ExclusiveProvider}
 	}
-	if containsProvider(providers, accountpool.ExclusiveProvider) {
-		providers = appendUniqueProvider(providers, basispoints.Provider)
-	}
 	if len(providers) == 0 {
 		return nil, false
 	}
@@ -446,23 +447,6 @@ func schedulerCapabilityFor(cfg config.Config) (providers []string, acrossPriori
 
 // normalizeRegistrationProviders lowercases, trims, and dedupes the exclusive
 // provider claim list reported by the host config.
-func containsProvider(values []string, want string) bool {
-	want = strings.ToLower(strings.TrimSpace(want))
-	for _, value := range values {
-		if strings.ToLower(strings.TrimSpace(value)) == want {
-			return true
-		}
-	}
-	return false
-}
-
-func appendUniqueProvider(values []string, provider string) []string {
-	if !containsProvider(values, provider) {
-		return append(values, provider)
-	}
-	return values
-}
-
 func normalizeRegistrationProviders(values []string) []string {
 	if len(values) == 0 {
 		return nil
@@ -559,6 +543,9 @@ func mergeInterceptResponses(base, extra intercept.Response) intercept.Response 
 	if len(extra.Body) > 0 {
 		base.Body = extra.Body
 	}
+	if base.ExecutorProvider == "" {
+		base.ExecutorProvider = strings.TrimSpace(extra.ExecutorProvider)
+	}
 	return base
 }
 
@@ -646,9 +633,7 @@ func basispointsManagementPath(path string) bool {
 	normalized := strings.TrimRight(strings.TrimSpace(path), "/")
 	return strings.Contains(normalized, "/enterprise-access-audit/basispoints/") ||
 		strings.HasSuffix(normalized, "/enterprise-access-audit/basispoints") ||
-		strings.HasSuffix(normalized, "/basispoints/source-auths") ||
-		normalized == "/v0/management/enterprise-access-audit/basispoints/source-auths" ||
-		normalized == "/v0/resource/plugins/enterprise-access-audit/source-auths"
+		strings.HasSuffix(normalized, "/basispoints/source-auths")
 }
 
 func complete(raw []byte) ([]byte, error) {

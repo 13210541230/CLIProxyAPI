@@ -128,6 +128,9 @@ func (h *Host) interceptRequest(ctx context.Context, req pluginapi.RequestInterc
 			if len(resp.Body) > 0 {
 				current.Body = bytes.Clone(resp.Body)
 			}
+			if method == "RequestInterceptor.InterceptRequestAfterAuth" && current.ExecutorProvider == "" {
+				current.ExecutorProvider = strings.TrimSpace(resp.ExecutorProvider)
+			}
 			if resp.Terminate {
 				current.Terminate = true
 				current.StatusCode = resp.StatusCode

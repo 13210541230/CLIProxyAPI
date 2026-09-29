@@ -327,28 +327,47 @@ func isRequestTerminatedError(err error) bool {
 	return errors.As(err, &terminated) && terminated != nil
 }
 
-func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExecutor, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, requestedModel string) (cliproxyexecutor.Request, cliproxyexecutor.Options, error) {
+func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExecutor, provider string, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, requestedModel string, allowExecutorOverride bool) (cliproxyexecutor.Request, cliproxyexecutor.Options, string, error) {
 	if opts.RequestAfterAuthInterceptor == nil {
-		return req, opts, nil
+		return req, opts, "", nil
 	}
 	toFormat := requestToFormat(provider, executor, req, opts)
+	authID, authIndex, authProvider := "", "", provider
+	if auth != nil {
+		authID = auth.ID
+		authIndex = strings.TrimSpace(auth.Index)
+		if authIndex == "" {
+			authIndex = auth.EnsureIndex()
+		}
+		if strings.TrimSpace(auth.Provider) != "" {
+			authProvider = auth.Provider
+		}
+	}
 	resp := opts.RequestAfterAuthInterceptor(ctx, cliproxyexecutor.RequestAfterAuthInterceptRequest{
-		SourceFormat:   opts.SourceFormat,
-		ToFormat:       toFormat,
-		Model:          req.Model,
-		RequestedModel: requestedModel,
-		Stream:         opts.Stream,
-		Headers:        cloneRequestHeaders(opts.Headers),
-		Body:           bytes.Clone(req.Payload),
-		Metadata:       opts.Metadata,
+		SourceFormat:          opts.SourceFormat,
+		ToFormat:              toFormat,
+		Model:                 req.Model,
+		RequestedModel:        requestedModel,
+		AuthID:                authID,
+		AuthIndex:             authIndex,
+		AuthProvider:          authProvider,
+		AllowExecutorOverride: allowExecutorOverride,
+		Stream:                opts.Stream,
+		Headers:               cloneRequestHeaders(opts.Headers),
+		Body:                  bytes.Clone(req.Payload),
+		Metadata:              opts.Metadata,
 	})
 	opts.Headers = mergeRequestHeaders(opts.Headers, resp.Headers, resp.ClearHeaders)
 	if len(resp.Body) > 0 {
 		req.Payload = bytes.Clone(resp.Body)
 		opts.OriginalRequest = bytes.Clone(resp.Body)
 	}
+	executorProvider := ""
+	if allowExecutorOverride {
+		executorProvider = strings.TrimSpace(resp.ExecutorProvider)
+	}
 	if resp.Terminate {
-		return req, opts, &cliproxyexecutor.RequestTerminatedError{
+		return req, opts, "", &cliproxyexecutor.RequestTerminatedError{
 			HTTPStatus: resp.StatusCode,
 			Header:     cloneRequestHeaders(resp.ResponseHeaders),
 			Body:       bytes.Clone(resp.ResponseBody),
@@ -386,7 +405,7 @@ func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExec
 			}
 		}
 	}
-	return req, opts, nil
+	return req, opts, executorProvider, nil
 }
 
 func requestToFormat(provider string, executor ProviderExecutor, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) sdktranslator.Format {
@@ -566,16 +585,21 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			execOpts.Metadata = ensureCanonicalSessionMetadata(execOpts.Metadata, execOpts.Headers, payload)
 			var errIntercept error
-			execReq, execOpts, errIntercept = applyRequestAfterAuthInterceptor(execCtx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
+			var executorProvider string
+			execReq, execOpts, executorProvider, errIntercept = applyRequestAfterAuthInterceptor(execCtx, executor, provider, auth, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel), true)
 			if errIntercept != nil {
 				return cliproxyexecutor.Response{}, errIntercept
+			}
+			executionExecutor, executionProvider, errTarget := m.executionExecutorForProvider(executor, provider, executorProvider)
+			if errTarget != nil {
+				return cliproxyexecutor.Response{}, errTarget
 			}
 			if !restoreExecutionModel {
 				execReq = attachResolvedAPIKeyModelInfo(routing, execReq, auth, routeModel, upstreamModel)
 			}
 			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 			startExec := time.Now()
-			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
+			resp, errExec := executionExecutor.Execute(execCtx, auth, execReq, execOpts)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
 			if errExec != nil {
@@ -592,20 +616,20 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					execCtx = newUpstreamAttemptContext(execCtx)
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					startRetry := time.Now()
-					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
+					resp, errExec = executionExecutor.Execute(execCtx, auth, execReq, execOpts)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
 						if hasUpstreamExecutionAttempt(errExec) {
 							upstreamErr = errExec
 						}
-						warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationRetry, errExec)
+						warnLogUpstreamFailure(execCtx, entry, executionProvider, upstreamModel, auth, durationRetry, errExec)
 						if errCtx := execCtx.Err(); errCtx != nil {
 							return cliproxyexecutor.Response{}, errCtx
 						}
 					}
 				} else {
-					warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationExec, errExec)
+					warnLogUpstreamFailure(execCtx, entry, executionProvider, upstreamModel, auth, durationExec, errExec)
 				}
 			}
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
@@ -652,13 +676,13 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					}
 					execCtx = newUpstreamAttemptContext(execCtx)
 					startRetry := time.Now()
-					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
+					resp, errExec = executionExecutor.Execute(execCtx, auth, execReq, execOpts)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					if errExec != nil {
 						if hasUpstreamExecutionAttempt(errExec) {
 							upstreamErr = errExec
 						}
-						warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, time.Since(startRetry), errExec)
+						warnLogUpstreamFailure(execCtx, entry, executionProvider, upstreamModel, auth, time.Since(startRetry), errExec)
 						if errCtx := execCtx.Err(); errCtx != nil {
 							return cliproxyexecutor.Response{}, errCtx
 						}
@@ -811,7 +835,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			execOpts.Metadata = ensureCanonicalSessionMetadata(execOpts.Metadata, execOpts.Headers, payload)
 			var errIntercept error
-			execReq, execOpts, errIntercept = applyRequestAfterAuthInterceptor(execCtx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
+			execReq, execOpts, _, errIntercept = applyRequestAfterAuthInterceptor(execCtx, executor, provider, auth, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel), false)
 			if errIntercept != nil {
 				return cliproxyexecutor.Response{}, errIntercept
 			}
@@ -1841,6 +1865,18 @@ func (m *Manager) executorFor(provider string) ProviderExecutor {
 	defer m.mu.RUnlock()
 	exec, _ := m.executorLocked(provider)
 	return exec
+}
+
+func (m *Manager) executionExecutorForProvider(selected ProviderExecutor, selectedProvider, targetProvider string) (ProviderExecutor, string, error) {
+	targetProvider = strings.TrimSpace(targetProvider)
+	if targetProvider == "" || strings.EqualFold(targetProvider, selectedProvider) {
+		return selected, selectedProvider, nil
+	}
+	executor := m.executorFor(targetProvider)
+	if executor == nil {
+		return nil, "", &Error{Code: "executor_not_found", Message: fmt.Sprintf("executor %s not registered", targetProvider)}
+	}
+	return executor, strings.TrimSpace(executor.Identifier()), nil
 }
 
 // roundTripperContextKey is an unexported context key type to avoid collisions.

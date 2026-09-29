@@ -7,7 +7,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestRuntimeConfigEnterpriseAuditCodexClaimAlsoOwnsBasisPoints(t *testing.T) {
+func TestRuntimeConfigCodexClaimDoesNotAddBasisPointsScheduler(t *testing.T) {
 	var node yaml.Node
 	if err := yaml.Unmarshal([]byte("exclusive-scheduler-providers: [codex]\n"), &node); err != nil {
 		t.Fatalf("yaml.Unmarshal() error = %v", err)
@@ -24,7 +24,10 @@ func TestRuntimeConfigEnterpriseAuditCodexClaimAlsoOwnsBasisPoints(t *testing.T)
 	if err != nil {
 		t.Fatalf("runtimeConfigFromConfig() error = %v", err)
 	}
-	if owners := got.ExclusiveSchedulers["oai-basispoints"]; len(owners) != 1 || owners[0] != "enterprise-access-audit" {
-		t.Fatalf("BPS exclusive owners = %#v, want enterprise-access-audit", owners)
+	if owners := got.ExclusiveSchedulers["codex"]; len(owners) != 1 || owners[0] != "enterprise-access-audit" {
+		t.Fatalf("Codex exclusive owners = %#v, want enterprise-access-audit", owners)
+	}
+	if owners := got.ExclusiveSchedulers["oai-basispoints"]; len(owners) != 0 {
+		t.Fatalf("BPS executor unexpectedly claimed an account scheduler: %#v", owners)
 	}
 }
