@@ -228,6 +228,9 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	}
 	if pinnedAuthID := pinnedAuthIDFromContext(ctx); pinnedAuthID != "" {
 		meta[coreexecutor.PinnedAuthMetadataKey] = pinnedAuthID
+		if probeID, _ := ctx.Value(managementCredentialProbeContextKey{}).(string); probeID == pinnedAuthID {
+			meta["management_credential_probe"] = true
+		}
 	}
 	if selectedCallback := selectedAuthIDCallbackFromContext(ctx); selectedCallback != nil {
 		meta[coreexecutor.SelectedAuthCallbackMetadataKey] = selectedCallback

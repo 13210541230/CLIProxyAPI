@@ -15,7 +15,7 @@ func (h *Host) PickAuth(ctx context.Context, req pluginapi.SchedulerPickRequest)
 	provider := schedulerRequestProvider(req)
 	exclusive, ownerID, ownerConflict := h.exclusiveScheduler(provider)
 	var identityErr error
-	if exclusive {
+	if exclusive && !isManagementCredentialProbe(req) {
 		identityErr = validateSchedulerCallerHash(req.Options.Metadata)
 	}
 	record := h.schedulerRecordForRequest(provider, exclusive, ownerID, ownerConflict)
@@ -200,6 +200,17 @@ func schedulerDecisionError(resp pluginapi.SchedulerPickResponse) error {
 		Retryable:  resp.Retryable,
 		HTTPStatus: resp.HTTPStatus,
 	}
+}
+
+// The marker is emitted only from a typed internal SDK context. Require its
+// internal source and an already narrowed candidate list; normal HTTP callers
+// cannot acquire this capability through headers or request bodies.
+func isManagementCredentialProbe(req pluginapi.SchedulerPickRequest) bool {
+	metadata := req.Options.Metadata
+	probe, _ := metadata["management_credential_probe"].(bool)
+	pin, _ := metadata["pinned_auth_id"].(string)
+	return probe && metadata["source"] == "plugin_host_model_callback" &&
+		strings.TrimSpace(pin) != "" && len(req.Candidates) == 1 && req.Candidates[0].ID == pin
 }
 
 func validateSchedulerCallerHash(metadata map[string]any) error {

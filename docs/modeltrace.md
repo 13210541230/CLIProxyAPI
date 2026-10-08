@@ -21,7 +21,9 @@ Invalid requests/targets return 400; unknown credentials/records 404; duplicate,
 
 Execution reuses `BaseAPIHandler.ExecuteModelStream`, `ForcedProvider=codex`, `AuthID`, and the original Codex protocol/context. Existing CPA accounting, selection constraints and hooks remain active. There is one run per credential and at most two distinct runs globally, hence at most six concurrent challenge requests; excess runs are rejected without a queue. No evaluator retries or post-connect network timeouts are added. Cancellation and `Server.Stop` cancel outstanding streams.
 
-SSE deltas and complete response output are supported without duplicate accumulation. SDK chunks are explicitly complete SSE lines without delimiters; HTTP byte fragments use a separate accumulating decoder. Event/comment prefixes do not determine the framing contract, and limits count raw whitespace. Limits are 64,000 text bytes per challenge, 256 KiB per pending SSE frame and 2 MiB per entire stream. Incomplete/failed streams are not accepted as valid samples. Errors are sanitized rather than persisting potentially secret-bearing upstream error bodies.
+When enterprise account-pool exclusive scheduling is enabled, management detection uses a typed internal credential-probe context rather than impersonating a business API key. The host accepts this scope only from an internal SDK execution whose candidates have already been narrowed to the pinned AuthID. Employee pool bindings do not reroute the diagnostic, but the plugin's ordinary account admission, concurrency and request-window limits still apply. Normal business requests without canonical caller identity remain rejected; clients cannot enable this scope through HTTP headers or JSON. Upgrading this integration requires both CPA and the bundled enterprise-audit plugin.
+
+SSE deltas and complete response output are supported without duplicate accumulation. SDK chunks are explicitly complete SSE lines without delimiters; HTTP byte fragments use a separate accumulating decoder. Event/comment prefixes do not determine the framing contract, and limits count raw whitespace. Limits are 64,000 text bytes per challenge, 256 KiB per pending SSE frame and 2 MiB per entire stream. Incomplete/failed streams are not accepted as valid samples. Errors retain a static execution stage and HTTP status where available (for example, `model execution rejected (HTTP 401)`), rather than persisting potentially secret-bearing upstream error bodies, tokens or prompts. Existing generic failure records cannot recover a previously discarded status; reading them never reruns the model.
 
 ## Durable state
 
@@ -47,6 +49,7 @@ The copied bank/context bytes are unchanged. Bank revision is the original bank'
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/verify-modeltrace.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/verify-modeltrace.ps1 -Race
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/verify-modeltrace-probe.ps1 -Race
 ```
 
 The script overwrites bounded logs under `logs/`, runs package, management, routes and existing pinning tests, then incrementally builds `build/cpa-modeltrace-verify.exe`. No server is started and no credentials are loaded by this verification. Keep deployment/browser validation isolated from production.

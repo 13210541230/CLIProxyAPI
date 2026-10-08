@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
@@ -27,7 +28,7 @@ type ModelExecutor interface {
 // Execute retains the original Codex context and delegates auth selection and
 // normal accounting to CPA. Cancellation is explicit; no extra timeout/retry.
 func Execute(ctx context.Context, executor ModelExecutor, c Credential, model string, ch Challenge) (Output, error) {
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(handlers.WithManagementCredentialProbe(ctx, c.ID))
 	defer cancel()
 	body, headers := codexTurn(c.ID, model, "", ch.Prompt)
 	raw, err := json.Marshal(body)
@@ -36,12 +37,30 @@ func Execute(ctx context.Context, executor ModelExecutor, c Credential, model st
 	}
 	stream, errMsg := executor.ExecuteModelStream(ctx, handlers.ModelExecutionRequest{EntryProtocol: "codex", ExitProtocol: "codex", ForcedProvider: "codex", AuthID: c.ID, Model: model, Stream: true, Body: raw, Headers: headers})
 	if errMsg != nil {
-		return Output{}, errors.New("model execution rejected")
+		return Output{}, executionFailure("model execution rejected", errMsg.StatusCode)
 	}
 	if stream.StatusCode >= 400 {
-		return Output{}, errors.New("model execution failed")
+		return Output{}, executionFailure("model execution failed", stream.StatusCode)
 	}
-	return readSDKStream(ctx, stream.Chunks)
+	out, err := readSDKStream(ctx, stream.Chunks)
+	if err != nil && ctx.Err() == nil {
+		// Decoder failures are static local messages, never upstream bodies.
+		err = &executionDiagnostic{message: err.Error()}
+	}
+	return out, err
+}
+
+// Only this trusted diagnostic type may be persisted by the service. Never
+// include upstream error bodies, headers, credential URLs, or request context.
+type executionDiagnostic struct{ message string }
+
+func (e *executionDiagnostic) Error() string { return e.message }
+
+func executionFailure(stage string, status int) error {
+	if status >= 400 && status <= 599 {
+		stage = fmt.Sprintf("%s (HTTP %d)", stage, status)
+	}
+	return &executionDiagnostic{message: stage}
 }
 
 // SDK chunks contain complete Codex SSE lines, not arbitrary HTTP fragments.
@@ -150,7 +169,7 @@ func readStreamFramed(ctx context.Context, chunks <-chan handlers.ModelExecution
 				return out, nil
 			}
 			if chunk.Err != nil {
-				return out, errors.New("model stream failed")
+				return out, executionFailure("model stream failed", chunk.Err.StatusCode)
 			}
 			wire += len(chunk.Payload)
 			if wire > maxWire {

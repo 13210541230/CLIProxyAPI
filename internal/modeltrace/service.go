@@ -4,6 +4,7 @@ package modeltrace
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -330,6 +331,10 @@ func (s *Service) run(ctx context.Context, active *activeRun) {
 			out, err := s.execute(ctx, active.credential, r.Model, ch)
 			if err != nil {
 				sample.Error = "model request failed"
+				var diagnostic *executionDiagnostic
+				if errors.As(err, &diagnostic) {
+					sample.Error = diagnostic.Error()
+				}
 				if ctx.Err() != nil {
 					sample.Error = "request cancelled"
 				}

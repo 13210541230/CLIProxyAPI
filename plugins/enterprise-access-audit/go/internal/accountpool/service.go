@@ -332,6 +332,16 @@ func (s *Service) pickOAuthLayer(request SchedulerPickRequest, candidates []sche
 		return globalPick(oauthNamespace(false, false, "", caller))
 	}
 
+	// A management-authorized probe targets a single credential rather than
+	// an employee's pool binding. Still use the same engine and AdmitIntercept
+	// so reservations, concurrency and request-window limits remain enforced.
+	probe, _ := request.Options.Metadata["management_credential_probe"].(bool)
+	pin := metadataString(request.Options.Metadata, "pinned_auth_id")
+	if probe && metadataString(request.Options.Metadata, "source") == "plugin_host_model_callback" &&
+		strings.TrimSpace(pin) != "" && len(request.Candidates) == 1 && request.Candidates[0].ID == pin {
+		return globalPick("management-probe:" + pin)
+	}
+
 	// Empty policy: nothing to enforce. Pass codex through to the global
 	// selector so the service stays usable before any pool is configured.
 	if !ready {
@@ -498,6 +508,11 @@ func oauthNamespace(enabled, ready bool, poolID, boundCaller string) string {
 // admissionNamespace recomputes the pick-time namespace from execution
 // metadata. It intentionally mirrors Pick's branch order.
 func (s *Service) admissionNamespace(authID string, metadata map[string]any) string {
+	probe, _ := metadata["management_credential_probe"].(bool)
+	if probe && metadataString(metadata, "source") == "plugin_host_model_callback" &&
+		metadataString(metadata, "pinned_auth_id") == authID {
+		return "management-probe:" + authID
+	}
 	caller := callerNamespace(metadata)
 	if isProviderAPIKeyAuthID(authID) {
 		return nsJoin("apikey", caller)

@@ -12,6 +12,20 @@ import (
 
 type pinnedAuthContextKey struct{}
 
+type managementCredentialProbeContextKey struct{}
+
+// WithManagementCredentialProbe scopes a management-authorized diagnostic to one
+// credential. This is an SDK-only context capability, never an HTTP parameter.
+// It does not impersonate an employee API key or bypass account admission limits.
+func WithManagementCredentialProbe(ctx context.Context, authID string) context.Context {
+	authID = strings.TrimSpace(authID)
+	if authID == "" {
+		return ctx
+	}
+	ctx = WithPinnedAuthID(ctx, authID)
+	return context.WithValue(ctx, managementCredentialProbeContextKey{}, authID)
+}
+
 type selectedAuthCallbackContextKey struct{}
 
 type preparedModelRouteContextKey struct{}
