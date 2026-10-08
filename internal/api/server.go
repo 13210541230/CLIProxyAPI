@@ -204,6 +204,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	applySignatureCacheConfig(nil, cfg)
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
+	s.mgmt.InitializeModelTrace(s.handlers)
 	s.mgmt.SetPluginHost(optionState.pluginHost)
 	s.mgmt.SetConfigReloadHook(optionState.configReloadHook)
 	if optionState.localPassword != "" {
@@ -407,6 +408,8 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
+	// Stop internal charged work even when HTTP shutdown has no active requests.
+	errModelTrace := s.mgmt.StopModelTrace(ctx)
 	// Shutdown the HTTP server.
 	errShutdown := s.server.Shutdown(ctx)
 	if s.codexLiveHandler != nil {
@@ -419,6 +422,9 @@ func (s *Server) Stop(ctx context.Context) error {
 		return fmt.Errorf("failed to shutdown HTTP server: %v", errShutdown)
 	}
 
+	if errModelTrace != nil {
+		return fmt.Errorf("failed to stop ModelTrace: %w", errModelTrace)
+	}
 	log.Debug("API server stopped")
 	return nil
 }

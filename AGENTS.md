@@ -32,6 +32,7 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - `internal/registry/` — Model registry + remote updater (`StartModelsUpdater`); `--local-model` disables remote updates
 - `internal/store/` — Storage implementations and secret resolution
 - `internal/managementasset/` — Config snapshots and management assets
+- `internal/modeltrace/` — Native, management-authenticated Codex model attribution; config-adjacent bounded state, two runs/six challenges maximum; see `docs/modeltrace.md`
 - `internal/cache/` — Request signature caching
 - `internal/watcher/` — Config hot-reload and watchers
 - `internal/wsrelay/` — WebSocket relay sessions
@@ -59,3 +60,11 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - Timeouts are allowed only during credential acquisition; after an upstream connection is established, do not set timeouts for any subsequent network behavior. Intentional exceptions that must remain allowed are the Codex websocket liveness deadlines in `internal/runtime/executor/codex_websockets_executor.go`, the wsrelay session deadlines in `internal/wsrelay/session.go`, the management APICall timeout in `internal/api/handlers/management/api_tools.go`, and the `cmd/fetch_antigravity_models` utility timeouts
 - Avoid wall-clock `time.Sleep` in TTL, expiration, ordering, or cache-eviction unit tests due to platform timer granularity (e.g. Windows default timer resolution of ~15.6ms) and CI jitter under load; prefer controllable clocks (`nowFunc` / mock clock), explicit timestamp manipulation, or deterministic synchronization primitives.
 - Note: if modifying features that involve CLIProxyAPIHome, check if corresponding updates are needed in the CLIProxyAPIHome repository.
+
+## ModelTrace change record
+- Native ModelTrace routes reuse management authentication and fixed AuthID execution; do not route evaluations through `/api-call` or add post-connect timeouts/retries.
+- Keep original bank/context bytes and both embedded MIT notices. `.gitattributes` marks `internal/modeltrace/data/**/*.json` binary because BankRevision hashes the raw JSON; verify index/worktree bytes match when staging data. Attribution confidence is relative to the candidate bank, not a measured downgrade probability; the 0.8 display threshold is uncalibrated.
+- Product verdict: only exact `gpt-5.6-luna` is suspicious; other candidates (including `gpt-6-luna`) use `consistent` (no degradation detected). Target/fingerprint matching is independent. Reclassify saved evidence at load without model execution; keep the three-valid-challenge/0.8 confidence gate.
+- Persist running markers before execution to `modeltrace-state.json` next to config, not under auth-dir. Restart marks interrupted work without reissuing it; keep 20 records per account-bound credential.
+- Codex SDK chunks are complete SSE lines without delimiters. ModelTrace explicitly decodes SDK lines; HTTP byte fragments use a separate accumulation contract. Never infer framing from event/comment prefixes; frame limits count raw whitespace. Cover both contracts and their error/limit paths.
+- Focused verification: `scripts/windows/verify-modeltrace.ps1` (`-Race` optional); logs in `logs/`, incremental binary in `build/`. Never use production credentials/ports for unit verification.

@@ -1,0 +1,2 @@
+# Keep embedded fingerprint data byte-identical: BankRevision hashes the raw JSON.
+/internal/modeltrace/data/**/*.json binary
