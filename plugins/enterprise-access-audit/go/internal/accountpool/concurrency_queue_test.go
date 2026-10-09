@@ -154,3 +154,60 @@ func TestAdmitQueueDrainsByCompletionNotTimeout(t *testing.T) {
 		t.Fatalf("post-drain state = %+v, want active=3 waiting=0", got)
 	}
 }
+
+func TestCompleteCancelsRequestStillWaitingForAdmission(t *testing.T) {
+	fakeNow := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	sleepEntered := make(chan struct{}, 1)
+	releaseSleep := make(chan struct{})
+	engine := NewEngine(10*time.Second, 30*time.Second, nil)
+	engine.SetClock(
+		func() time.Time { return fakeNow },
+		func(time.Duration) {
+			select {
+			case sleepEntered <- struct{}{}:
+			default:
+			}
+			<-releaseSleep
+		},
+	)
+	engine.Configure(map[string]Limit{"acct": {Max: 1}})
+	if code, _, _, ok := engine.Admit("active", "acct", ""); !ok || code != "" {
+		t.Fatalf("active admission = (%q, ok=%v), want admitted", code, ok)
+	}
+
+	type result struct {
+		code     string
+		status   int
+		admitted bool
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		code, status, _, admitted := engine.Admit("canceled-waiter", "acct", "")
+		resultCh <- result{code: code, status: status, admitted: admitted}
+	}()
+	select {
+	case <-sleepEntered:
+	case <-time.After(time.Second):
+		t.Fatal("request never entered the admission queue")
+	}
+
+	// The request context can finish before the queued plugin call returns.
+	// Its lifecycle completion must prevent that abandoned request from later
+	// consuming a slot after the current request completes.
+	engine.Complete("canceled-waiter")
+	engine.Complete("active")
+	close(releaseSleep)
+
+	select {
+	case got := <-resultCh:
+		if got.admitted || got.code != "request_canceled" || got.status != 499 {
+			engine.Complete("canceled-waiter")
+			t.Fatalf("canceled waiter result = %+v, want request_canceled/499", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled waiter did not leave the queue")
+	}
+	if got := engine.Snapshot("acct"); got.Active != 0 || got.Waiting != 0 {
+		t.Fatalf("state after canceled waiter = %+v, want active=0 waiting=0", got)
+	}
+}

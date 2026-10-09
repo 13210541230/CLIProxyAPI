@@ -586,7 +586,7 @@ func (s *Service) AdmitIntercept(requestID string, headers map[string][]string, 
 	return admissionRejected(code, status, retryable)
 }
 
-// Complete releases an admitted request at terminal state.
+// Complete releases an admitted request or cancels one still waiting for admission.
 func (s *Service) Complete(requestID string) {
 	if s == nil || requestID == "" {
 		return

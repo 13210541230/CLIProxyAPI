@@ -81,6 +81,7 @@ type Engine struct {
 	active             map[string]int
 	waiting            map[string]int
 	requests           map[string]admissionRecord
+	pending            map[string]bool // requestID -> completed while waiting for admission
 	reserved           map[string][]time.Time
 	sessions           map[string]sessionBinding // sessionKey -> binding + last request time
 	sessionExpiry      sessionExpiryQueue        // ordered by last request time for bounded idle cleanup
@@ -121,6 +122,7 @@ func NewEngine(reserve, maxWait time.Duration, sessionFn func(schedulerPickReque
 		active:             map[string]int{},
 		waiting:            map[string]int{},
 		requests:           map[string]admissionRecord{},
+		pending:            map[string]bool{},
 		reserved:           map[string][]time.Time{},
 		sessions:           map[string]sessionBinding{},
 		sessionExpiryByKey: map[string]*sessionExpiryEntry{},
@@ -415,6 +417,14 @@ func (e *Engine) Admit(requestID, authID, sessionKey string) (code string, statu
 			e.releaseAuthLocked(record.AuthID)
 			delete(e.requests, requestID)
 		}
+		if canceled, exists := e.pending[requestID]; exists && canceled {
+			delete(e.pending, requestID)
+			e.mu.Unlock()
+			return "request_canceled", 499, false, false
+		}
+		if _, exists := e.pending[requestID]; !exists {
+			e.pending[requestID] = false
+		}
 		e.consumeReservationLocked(authID, now)
 
 		windowUse := 0
@@ -437,6 +447,7 @@ func (e *Engine) Admit(requestID, authID, sessionKey string) (code string, statu
 			if _, tracked := e.sessions[sessionKey]; sessionKey != "" && tracked {
 				e.busyRejections[sessionKey] = 0 // a success clears the failure streak
 			}
+			delete(e.pending, requestID)
 			e.requests[requestID] = admissionRecord{AuthID: authID, SessionKey: sessionKey}
 			e.mu.Unlock()
 			return "", 0, false, true
@@ -451,6 +462,7 @@ func (e *Engine) Admit(requestID, authID, sessionKey string) (code string, statu
 			if _, tracked := e.sessions[sessionKey]; sessionKey != "" && tracked {
 				e.busyRejections[sessionKey]++
 			}
+			delete(e.pending, requestID)
 			e.mu.Unlock()
 			return "account_busy", 503, true, false
 		}
@@ -458,14 +470,19 @@ func (e *Engine) Admit(requestID, authID, sessionKey string) (code string, statu
 		waiterEpoch := e.epoch
 		e.mu.Unlock()
 
-		e.waitForSlot(authID, waiterEpoch, deadline)
+		e.waitForSlot(requestID, authID, waiterEpoch, deadline)
 		now = e.now().UTC()
 	}
 }
 
-func (e *Engine) waitForSlot(authID string, waiterEpoch uint64, deadline time.Time) {
+func (e *Engine) waitForSlot(requestID, authID string, waiterEpoch uint64, deadline time.Time) {
 	for {
 		e.mu.Lock()
+		if canceled, exists := e.pending[requestID]; exists && canceled {
+			e.lowerWaitingLocked(authID)
+			e.mu.Unlock()
+			return
+		}
 		if e.epoch != waiterEpoch {
 			e.lowerWaitingLocked(authID)
 			e.mu.Unlock()
@@ -495,7 +512,8 @@ func (e *Engine) waitForSlot(authID string, waiterEpoch uint64, deadline time.Ti
 	}
 }
 
-// Complete releases an admitted request when it ends.
+// Complete releases an admitted request or cancels a queued one when its caller
+// finishes before admission returns.
 func (e *Engine) Complete(requestID string) {
 	if e == nil || requestID == "" {
 		return
@@ -505,6 +523,10 @@ func (e *Engine) Complete(requestID string) {
 	if record, exists := e.requests[requestID]; exists {
 		delete(e.requests, requestID)
 		e.releaseAuthLocked(record.AuthID)
+		return
+	}
+	if _, exists := e.pending[requestID]; exists {
+		e.pending[requestID] = true
 	}
 }
 
