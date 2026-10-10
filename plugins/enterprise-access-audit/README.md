@@ -141,7 +141,7 @@ The account-pool management UI is a tab inside the plugin's own resource page. S
 
 ### Targeted cross-pool exemption
 
-In the account-pool tab, enable **Cross-pool exemption** beside a specific bound user. It defaults off and does not remove the primary-pool binding. The full snapshot carries `crossPoolExempt: true` on that binding; omitted/false fields preserve legacy policy hashes. Changes become effective only after the plugin acknowledges the published snapshot.
+Exemption remains an advanced policy setting, not a visible account-pool checkbox. Set `crossPoolExempt: true` on the designated binding through the authenticated full-snapshot policy API; retain the complete pools/members/bindings, increment `version`, and omit the stale `hash` so the plugin computes the authoritative digest. It defaults off and retains the primary-pool binding. Omitted/false fields preserve legacy policy hashes. Ordinary page edits preserve existing flags; changes become effective only after the plugin acknowledges publication. This is UI decluttering, not access-control secrecy: authorized policy readers can still inspect the field.
 
 Borrowing requires a stable session identity and an explicitly configured concurrency limit greater than one. Targets must be enabled members of existing enabled pools, deduplicated by AuthID. No new elastic pool or arbitrary global OAuth fallback is created. Conservative initial gates are:
 
