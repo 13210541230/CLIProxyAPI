@@ -19,6 +19,7 @@
     (() => {
       'use strict';
       const API = '/v0/management/enterprise-access-audit';
+      const exemptionWorkspace = new URLSearchParams(window.location.search).get('cpa_plugin_view') === 'account-pool-exemptions';
       const hostOrigin = (() => {
         try {
           const explicit = new URLSearchParams(window.location.search).get('cpa_plugin_host_origin');
@@ -29,7 +30,7 @@
       const pending = new Map();
       let sequence = 0;
       const state = {
-        tab:'audit', records:[], policies:[], settings:null, keyMetadata:[], metadataError:'',
+        tab:exemptionWorkspace ? 'account-pool-exemptions' : 'audit', records:[], policies:[], settings:null, keyMetadata:[], metadataError:'',
         models:[], modelLoading:false, modelError:'',
         pagination:{page:1,page_size:25,total:0,has_next:false},
         filters:{user_name:'',key_hash:'',model:'',source_format:'',outcome:'',security_signal:''},
@@ -369,6 +370,7 @@
       const renderError = (message) => { $('#app').innerHTML = '<div class="shell"><div class="error"><strong>Enterprise Access Audit 暂不可用</strong><div>' + escapeHTML(message) + '</div><button class="small" data-action="reload" style="margin-top:12px">重新加载</button></div></div>'; bindEvents(); };
       const render = () => {
         if (state.loading) { $('#app').innerHTML = '<div class="shell"><div class="loading">正在加载插件数据…</div></div>'; return; }
+        if (exemptionWorkspace) { $('#app').innerHTML = renderExemptionWorkspace(); bindEvents(); return; }
         const enabledPolicies = state.policies.filter((item) => item.audit_enabled !== false).length;
         const deniedPolicies = state.policies.filter((item) => item.denied_models && item.denied_models.length).length;
         const overview = state.tab === 'account-pools' ? '<section class="cards ap-summary">' + renderPoolCards() + '</section>' : state.tab === 'account-status' ? '<section class="cards ap-summary">' + renderStatusCards() + '</section>' : state.tab === 'basispoints' ? '<section class="cards ap-summary"><div class="card"><div class="label">可配置认证</div><div class="value">' + escapeHTML((state.bps.files || []).length) + '</div></div><div class="card"><div class="label">BPS 账号</div><div class="value">' + escapeHTML((state.bps.files || []).filter((file) => file.basispoints_enabled).length) + '</div></div><div class="card"><div class="label">正常端点</div><div class="value">' + escapeHTML((state.bps.files || []).filter((file) => !file.basispoints_enabled).length) + '</div></div><div class="card"><div class="label">说明</div><div class="value" style="font-size:16px">按账号生效</div></div></section>' : '<section class="cards"><div class="card"><div class="label">审计记录</div><div class="value">' + escapeHTML(state.pagination.total || 0) + '</div></div><div class="card"><div class="label">策略数量</div><div class="value">' + escapeHTML(state.policies.length) + '</div></div><div class="card"><div class="label">审计开启</div><div class="value">' + escapeHTML(enabledPolicies) + '</div></div><div class="card"><div class="label">含禁止模型</div><div class="value">' + escapeHTML(deniedPolicies) + '</div></div></section>';
@@ -453,6 +455,9 @@
       const toggleAllGroups = (checked) => { filteredPolicyGroups().forEach((group) => checked ? state.selectedGroups.add(group.id) : state.selectedGroups.delete(group.id)); render(); };
       const bindEvents = () => {
         document.querySelectorAll('[data-audit-enabled]').forEach((node) => node.addEventListener('change', () => persistAuditEnabled(node.checked)));
+        document.querySelectorAll('[data-exemption-toggle]').forEach((node) => node.addEventListener('change', () => apSetExemption(node.dataset.hash, node.checked)));
+        const exemptionSearch = document.querySelector('[data-exemption-search]');
+        if (exemptionSearch) exemptionSearch.addEventListener('input', () => { state.ap.exemptionQuery = exemptionSearch.value; apApplyExemptionQuery(); });
         document.querySelectorAll('[data-tab]').forEach((node) => node.addEventListener('click', () => { const tab = node.dataset.tab; state.tab = tab; render(); if (tab === 'account-pools' || tab === 'account-status') { apLoad(); apStartStatesPoll(); } else { apStopStatesPoll(); } if (tab === 'basispoints' && !state.bps.files.length) loadBasispoints(); }));
         document.addEventListener('click', (event) => {
           const target = event.target;
@@ -609,7 +614,7 @@
 // ============ 账号池管理 ============
       const AP = '/v0/management/enterprise-access-audit/account-pool';
       const AP_CONFIG = '/v0/management/plugins/enterprise-access-audit/config';
-      Object.assign(state, { ap: { policy: null, status: null, hostConfig: null, configLoaded: false, authFiles: [], selectedPoolId: '', memberDraftPoolId: '', newPoolId: '', newPoolName: '', memberIds: [], selectedDeptId: '', selectedDeptHashes: [], userQuery: '', renameText: '', limits: [], states: {}, busy: false, apError: '' } });
+      Object.assign(state, { ap: { policy: null, status: null, hostConfig: null, configLoaded: false, authFiles: [], selectedPoolId: '', memberDraftPoolId: '', newPoolId: '', newPoolName: '', memberIds: [], selectedDeptId: '', selectedDeptHashes: [], userQuery: '', exemptionQuery: '', renameText: '', limits: [], states: {}, busy: false, apError: '' } });
       // Account-pool binding identity: canonical first-8 form so bindings stored
       // as either the full 64-char digest or the runtime short hash resolve the
       // same enterprise-key metadata (mirrors BindingPool on the Go side).
@@ -707,6 +712,41 @@
         document.querySelectorAll('[data-action="ap-clear-users"]').forEach((node) => { node.disabled = !count; });
       };
       const apBindSelected = async () => { const pool = apSelectedPool(); if (!pool) return; const selected = state.ap.selectedDeptHashes; if (!selected.length) { showToast('请先选择用户'); return; } const next = apBuild((p) => { selected.forEach((hash) => { const existing = p.bindings.find((b) => apHash(b.apiKeyHash) === apHash(hash)); if (existing) existing.poolId = pool.id; else p.bindings.push({ apiKeyHash: apHash(hash), poolId: pool.id }); }); }); await apPublish(next, '已为 ' + selected.length + ' 个用户分配 ' + pool.name); };
+      const apSetExemption = async (hash, enabled) => {
+        if (!exemptionWorkspace || state.ap.busy || !state.ap.policy) { render(); return; }
+        const value = normalizeKeyHash(hash);
+        if (!state.ap.policy.bindings.some((binding) => normalizeKeyHash(binding.apiKeyHash) === value)) { showToast('该用户的主池绑定已变更，请刷新'); render(); return; }
+        const next = apBuild((policy) => {
+          const binding = policy.bindings.find((item) => normalizeKeyHash(item.apiKeyHash) === value);
+          if (enabled) binding.crossPoolExempt = true; else delete binding.crossPoolExempt;
+        });
+        await apPublish(next, enabled ? '豁免已保存，仅影响新会话选号' : '豁免已撤销，活跃会话保留原账号');
+      };
+      const apApplyExemptionQuery = () => {
+        const query = state.ap.exemptionQuery.trim().toLocaleLowerCase();
+        const rows = Array.from(document.querySelectorAll('[data-exemption-row]'));
+        rows.forEach((row) => { row.hidden = !row.dataset.query.includes(query); });
+        const empty = document.querySelector('[data-exemption-empty]');
+        if (empty) empty.hidden = rows.some((row) => !row.hidden);
+      };
+      const renderExemptionWorkspace = () => {
+        const bindings = (state.ap.policy && state.ap.policy.bindings) || [];
+        const query = state.ap.exemptionQuery.trim().toLocaleLowerCase();
+        const rows = bindings.map((binding) => {
+          const meta = apMetaForHash(binding.apiKeyHash);
+          const user = apUserLabel(meta);
+          const pool = apPools().find((item) => item.id === binding.poolId);
+          const search = [user.username, user.department, user.email, binding.apiKeyHash, binding.poolId, pool && pool.name].join(' ').toLocaleLowerCase();
+          const keyLabel = normalizeKeyHash(binding.apiKeyHash);
+          return '<tr data-exemption-row data-query="' + escapeHTML(search) + '" ' + (!search.includes(query) ? 'hidden' : '') + '><td class="user-cell"><strong>' + escapeHTML(meta ? user.username : '未关联用户') + '</strong><small>' + escapeHTML(user.department + ' · ' + user.email) + '</small></td><td>' + escapeHTML(pool ? pool.name : binding.poolId) + '</td><td class="mono" title="' + escapeHTML(keyLabel) + '">' + escapeHTML(maskHash(keyLabel)) + '</td><td><label class="check"><input type="checkbox" data-exemption-toggle data-hash="' + escapeHTML(keyLabel) + '" aria-label="' + escapeHTML((meta ? user.username : '未关联用户') + ' ' + maskHash(keyLabel) + ' 跨池豁免') + '" ' + (binding.crossPoolExempt === true ? 'checked ' : '') + (state.ap.busy ? 'disabled ' : '') + '>跨池豁免</label></td></tr>';
+        }).join('');
+        const visible = bindings.some((binding) => {
+          const user = apUserLabel(apMetaForHash(binding.apiKeyHash));
+          const pool = apPools().find((item) => item.id === binding.poolId);
+          return [user.username, user.department, user.email, binding.apiKeyHash, binding.poolId, pool && pool.name].join(' ').toLocaleLowerCase().includes(query);
+        });
+        return '<div class="shell"><header class="hero"><div><div class="eyebrow">Enterprise plugin · advanced</div><h1>账号池豁免配置</h1><p>沿用管理中心登录权限，此专用页面不出现在普通导航中。</p></div><button data-action="ap-reload" ' + (state.ap.busy ? 'disabled' : '') + '>刷新</button></header><section class="panel"><div class="panel-head"><h2>已绑定用户 / Key</h2><span class="muted">策略 v' + escapeHTML(state.ap.status && state.ap.status.version || '-') + (state.ap.busy ? ' · 正在保存…' : '') + '</span></div><p class="ap-session-note">勾选后自动保存；仅新会话或连续空闲超过 2 小时的会话可按现有容量规则跨池选号。撤销豁免不迁移活跃会话。同一用户有多个 Key 时，按下方各 Key 分别设置；未绑定用户请先在普通账号池页面分配主池。</p>' + (state.metadataError ? '<p class="muted">用户信息暂不可用，可按 Key Hash 配置。</p>' : '') + (state.ap.apError ? '<div class="error-text" role="alert">' + escapeHTML(state.ap.apError) + '</div>' : '') + '<div class="field" style="margin-bottom:14px"><label>搜索用户、部门、邮箱、主池或 Key Hash</label><input data-exemption-search value="' + escapeHTML(state.ap.exemptionQuery) + '" placeholder="搜索已绑定用户"></div><div class="table-wrap"><table class="table" style="min-width:640px"><thead><tr><th>用户</th><th>主池</th><th>Key Hash</th><th>跨池豁免</th></tr></thead><tbody>' + rows + '<tr data-exemption-empty ' + (visible ? 'hidden' : '') + '><td colspan="4" class="empty">没有匹配的绑定用户</td></tr></tbody></table></div></section></div>';
+      };
       const apClearDeptBindings = async () => { const keys = apDeptKeys(); if (!keys.length) return; const hashes = keys.map((item) => apHash(item.apiKeyHash)); const next = apBuild((p) => { p.bindings = p.bindings.filter((b) => !hashes.includes(apHash(b.apiKeyHash))); }); await apPublish(next, '已清除 ' + keys.length + ' 个用户的账号池绑定'); };
       const apLimitFor = (authId) => { const item = state.ap.limits.find((l) => l.authId === authId); return item || { authId, limit: 0, limit15s: 0, windowSeconds: 15 }; };
       const apSaveLimits = async () => { if (state.ap.busy) return; state.ap.busy = true; state.ap.apError = ''; render(); const items = state.ap.limits.map((item) => ({ authId: item.authId, limit: Number(item.limit) || 0, limit15s: Number(item.limit15s) || 0, windowSeconds: Number(item.windowSeconds) || 15 })); try { await callHost('PUT', AP + '/concurrency-limits', { items }); showToast('并发限制已保存'); await apLoad(); } catch (error) { state.ap.apError = error.message || '并发限制保存失败'; showToast(state.ap.apError); } state.ap.busy = false; render(); };
@@ -898,6 +938,12 @@
       const load = async () => {
         state.loading = true; render();
         try {
+          if (exemptionWorkspace) {
+            await loadKeyMetadata();
+            await apLoad();
+            state.loading = false; render();
+            return;
+          }
           const metadataPromise = loadKeyMetadata();
           const [settings, policies, audit] = await Promise.all([callHost('GET', API + '/settings'), callHost('GET', API + '/policies'), loadAudit(1)]);
           await metadataPromise;

@@ -82,7 +82,7 @@ def wait_until(predicate, timeout=30, label="condition"):
 
 
 def key_hash(key):
-    return hashlib.sha256(key.encode()).hexdigest()[:8]
+    return hashlib.sha256(key.encode()).hexdigest()
 
 
 class Stub(BaseHTTPRequestHandler):
@@ -152,7 +152,7 @@ class Stub(BaseHTTPRequestHandler):
             pass
 
 
-def prepare():
+def prepare(manager_binary=None):
     for port in (CPA_PORT, MANAGER_PORT, STUB_PORT):
         with socket.socket() as sock:
             assert sock.connect_ex(("127.0.0.1", port)) != 0, f"Port {port} occupied; refusing to affect another process"
@@ -163,7 +163,7 @@ def prepare():
     LOGS.mkdir(exist_ok=True)
     shutil.copy2(ROOT / "build" / "cli-proxy-api-e2e.exe", SCRATCH / "cli-proxy-api.exe")
     shutil.copy2(ROOT / "build" / "enterprise-access-audit.dll", SCRATCH / "plugins" / "windows" / "amd64" / "enterprise-access-audit.dll")
-    shutil.copy2(ROOT.parent / "Cli-Proxy-API-Management-Center" / "bin" / "cpa-manager.exe", SCRATCH / "cpa-manager.exe")
+    shutil.copy2(manager_binary or ROOT.parent / "Cli-Proxy-API-Management-Center" / "bin" / "cpa-manager.exe", SCRATCH / "cpa-manager.exe")
     digest = bcrypt.hashpw(KEY.encode(), bcrypt.gensalt(prefix=b"2a")).decode()
     (SCRATCH / "config.yaml").write_text(f'''host: "127.0.0.1"
 port: {CPA_PORT}
@@ -210,8 +210,8 @@ def state(auth):
     return checked(MANAGER, API + "/state?authId=" + auth)["state"]
 
 
-def run(keep_alive=False):
-    prepare()
+def run(keep_alive=False, manager_binary=None):
+    prepare(manager_binary)
     upstream = ThreadingHTTPServer(("127.0.0.1", STUB_PORT), Stub)
     threading.Thread(target=upstream.serve_forever, daemon=True).start()
     report = {"checks": [], "ports": {"cpa": CPA_PORT, "manager": MANAGER_PORT, "stub": STUB_PORT}}
@@ -336,8 +336,10 @@ def run(keep_alive=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--keep-alive", action="store_true")
+    parser.add_argument("--manager-binary", type=Path)
     try:
-        run(parser.parse_args().keep_alive)
+        args = parser.parse_args()
+        run(args.keep_alive, args.manager_binary)
     except Exception:
         traceback.print_exc(file=sys.stdout)
         sys.exit(1)
