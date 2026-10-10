@@ -43,9 +43,10 @@ Each native update package contains:
 - `cli-proxy-api` or `cli-proxy-api.exe`
 - `cpa-manager` or `cpa-manager.exe`
 - `cpa-updater` or `cpa-updater.exe`
-- `config.example.yaml`
-- `README.md`, `README_CN.md`, `LICENSE`
-- `start.sh` or `start.bat` that starts CPA-Manager as the single entry point
+- `suite-version.json` with the CPA and CPA-Manager versions
+- `config.example.yaml`, `README.md`, `README_CN.md`, `SUITE-README.md`, `SUITE-README_CN.md`, and `LICENSE`
+- Windows: `start.bat`, `start.ps1`, and `stop.bat`
+- Linux/macOS: `start.sh` and `stop.sh`
 
 The CPA-Manager binary contains the generated management page. The package does
 not require a separate `management.html` replacement for the embedded-panel mode.
@@ -97,21 +98,25 @@ equivalent JavaScript `\\uXXXX` escapes. This keeps YAML parser and
 
 ## Runtime Model
 
-CPA-Manager is the local control plane. Its local runtime configuration stores the
-CPA executable path, working directory, arguments, and auto-start preference. An
-empty executable path resolves to `cli-proxy-api` beside CPA-Manager, allowing a
-fresh unified package to be launched through one `start.*` script.
+The launcher starts CLIProxyAPI first with `config.yaml` (creating it from
+`config.example.yaml` on first use), then starts CPA-Manager with automatic CPA
+startup suppressed. It accepts `--config <path>` for a custom configuration and
+records both process IDs, executable paths, exact arguments, working directories,
+and the selected config path in `.suite-runtime.json`. The matching stop script
+terminates only processes whose PID and executable path match that recorded state.
 
-The update flow is:
+The Management Center System page performs manual version checks and package
+downloads only. With both services running from the launcher, running
+`cpa-updater` with no arguments (or double-clicking `cpa-updater.exe`) performs
+automatic installation; `--check` only checks for a newer version. The updater:
 
-1. Fetch `manifest.json` from the canonical release.
-2. Download the current platform archive.
-3. Verify SHA-256 and safely extract the archive.
-4. Start `cpa-updater` as a separate process.
-5. Stop the managed CPA and CPA-Manager processes.
-6. Replace binaries with backup copies.
-7. Start the updated processes and check CPA-Manager `/health`.
-8. Restore the backups and restart the old processes if health validation fails.
+1. Fetches the canonical release manifest and checks both installed versions.
+2. Downloads the current platform archive, verifies SHA-256, and safely extracts it.
+3. Stops the recorded CPA and CPA-Manager processes.
+4. Replaces the CPA, Manager, updater, version metadata, launch scripts, and bundled program assets with rollback backups.
+5. Preserves `config.yaml`, auth files, databases, logs, and local plugin settings.
+6. Restarts both services with the saved configuration and arguments and checks CPA and Manager health.
+7. Restores the previous program assets and restarts the old suite if replacement or health validation fails.
 
 ## Operational Notes
 

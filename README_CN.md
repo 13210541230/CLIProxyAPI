@@ -132,7 +132,7 @@ CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-fo
 
 ### CPA-Manager 原生联合包
 
-我们的 fork 发布仓库 [13210541230/CLIProxyAPI](https://github.com/13210541230/CLIProxyAPI/releases) 会发布包含 CLIProxyAPI、CPA-Manager 和更新助手的 `CLIProxyAPI-Suite` 平台联合包。解压后启动 `cpa-manager`，即可使用内嵌管理页面和本机 CPA 监督启动功能。
+我们的 fork 发布仓库 [13210541230/CLIProxyAPI](https://github.com/13210541230/CLIProxyAPI/releases) 会发布包含 CLIProxyAPI、CPA-Manager 和 `cpa-updater` 的 `CLIProxyAPI-Suite` 平台联合包。解压后运行 `start.sh`（macOS/Linux）或 `start.bat`（Windows）启动两个服务；首次启动会创建默认 `config.yaml`，也可用 `--config <路径>` 指定配置。管理面板“系统”页仅手动检查并下载更新包；两个服务通过启动脚本运行时，在套件目录运行 `cpa-updater`（Windows 为 `cpa-updater.exe`）自动校验、安装和重启。更新保留用户配置、认证文件、数据库、日志和插件设置，失败时回滚。详见 [联合发布说明](release/unified-release.md)。
 
 ## 管理 API 文档
 

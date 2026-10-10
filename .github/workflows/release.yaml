@@ -14,7 +14,7 @@ env:
   GH_REPO: 13210541230/CLIProxyAPI
   MANAGEMENT_CENTER_REPO: 13210541230/Cli-Proxy-API-Management-Center
   # Keep the embedded manager source immutable and auditable for each CPA release.
-  MANAGEMENT_CENTER_REF: dae745914d5dadc9f8922207bf311d1738f4268e
+  MANAGEMENT_CENTER_REF: 3c6b14286fed04c390724fa5ae16062b6aff13c1
   GO_VERSION: '1.26.4'
 
 jobs:
@@ -836,6 +836,11 @@ jobs:
           git -C /tmp/cpa-manager remote add origin "https://github.com/${MANAGEMENT_CENTER_REPO}.git"
           git -C /tmp/cpa-manager fetch --depth 1 --tags origin "${MANAGEMENT_CENTER_REF}"
           git -C /tmp/cpa-manager checkout --detach FETCH_HEAD
+          if ! grep -q 'no-start-cpa' /tmp/cpa-manager/usage-service/cmd/cpa-manager/main.go || \
+             ! grep -q 'runAutomaticUpdate' /tmp/cpa-manager/usage-service/cmd/cpa-updater/auto_update.go; then
+            echo "Pinned CPA-Manager source does not include the suite launcher/automatic updater contract; advance MANAGEMENT_CENTER_REF before releasing" >&2
+            exit 1
+          fi
           manager_commit="$(git -C /tmp/cpa-manager rev-parse HEAD)"
           manager_version="$(git -C /tmp/cpa-manager describe --tags --exact-match HEAD 2>/dev/null || git -C /tmp/cpa-manager describe --tags --always HEAD)"
           printf '%s\n' "$manager_commit" > /tmp/cpa-manager-commit
@@ -920,12 +925,14 @@ jobs:
               CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath \
                 -ldflags "-s -w -X github.com/seakee/cpa-manager/usage-service/internal/buildinfo.Version=${manager_version} -X github.com/seakee/cpa-manager/usage-service/internal/buildinfo.Commit=${manager_commit} -X github.com/seakee/cpa-manager/usage-service/internal/buildinfo.BuildDate=${build_date}" \
                 -o "$manager_bin" ./cmd/cpa-manager
-              CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags "-s -w" \
+              CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath \
+                -ldflags "-s -w -X github.com/seakee/cpa-manager/usage-service/internal/buildinfo.Version=${manager_version} -X github.com/seakee/cpa-manager/usage-service/internal/buildinfo.Commit=${manager_commit} -X github.com/seakee/cpa-manager/usage-service/internal/buildinfo.BuildDate=${build_date}" \
                 -o "$updater_bin" ./cmd/cpa-updater
             )
 
             bash release/package-unified.sh \
               --version "${GITHUB_REF_NAME}" \
+              --manager-version "$manager_version" \
               --os "$goos" \
               --arch "$release_arch" \
               --server-bin "$server_bin" \

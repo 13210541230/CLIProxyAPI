@@ -136,7 +136,7 @@ CLIProxyAPI Guides: [https://help.router-for.me/](https://help.router-for.me/)
 
 ### Unified CPA-Manager native bundle
 
-The fork release at [13210541230/CLIProxyAPI](https://github.com/13210541230/CLIProxyAPI/releases) publishes platform-specific `CLIProxyAPI-Suite` archives containing CLIProxyAPI, CPA-Manager, and the update helper. Start `cpa-manager` from the extracted directory to use the embedded management panel and the local CPA supervisor.
+The fork release at [13210541230/CLIProxyAPI](https://github.com/13210541230/CLIProxyAPI/releases) publishes platform-specific `CLIProxyAPI-Suite` archives containing CLIProxyAPI, CPA-Manager, and `cpa-updater`. Start both services with `start.sh` (macOS/Linux) or `start.bat` (Windows); first launch creates the default `config.yaml`, and `--config <path>` selects another file. The System page only checks for and downloads updates. With both launcher-started services running, run `cpa-updater` (`cpa-updater.exe` on Windows) from the suite directory to verify, install, and restart automatically. User configuration, auth files, databases, logs, and plugin settings are preserved, with rollback on failure. See the [unified release guide](release/unified-release.md).
 
 ## Management API
 
