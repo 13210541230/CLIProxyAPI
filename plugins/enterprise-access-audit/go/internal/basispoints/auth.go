@@ -191,7 +191,7 @@ func nativeCodexAuthData(raw []byte, fileName string, c credential) (map[string]
 		label = fileName
 	}
 	planType := codexPlanType(raw, c.AccessToken)
-	// CPA 原生执行器直接读取 Metadata，必须保留源凭据字段。
+	// The native CPA executor reads Metadata directly; preserve source fields.
 	var metadata map[string]any
 	if err := json.Unmarshal(raw, &metadata); err != nil {
 		return nil, fail(400, "invalid_auth", "OAuth credential is not valid JSON")
@@ -207,6 +207,9 @@ func nativeCodexAuthData(raw []byte, fileName string, c credential) (map[string]
 		"auth_kind":  "oauth",
 		"account_id": c.AccountID,
 		"auth_mode":  c.AuthMode,
+	}
+	if baseURL := firstString(metadata, "base_url"); baseURL != "" {
+		attributes["base_url"] = baseURL
 	}
 	if planType != "" {
 		metadata["plan_type"] = planType
@@ -240,7 +243,7 @@ func codexPlanType(raw []byte, accessToken string) string {
 			return planType
 		}
 	}
-	// 与 CPA 原生解析一致，优先读取 id_token 套餐。
+	// Match native CPA parsing by preferring the id_token plan.
 	idClaims := jwtPayload(stringValue(root["id_token"]))
 	if auth, ok := idClaims["https://api.openai.com/auth"].(map[string]any); ok {
 		if planType := firstString(auth, "chatgpt_plan_type", "plan_type"); planType != "" {
@@ -318,7 +321,8 @@ func authRefresh(raw []byte) (map[string]any, error) {
 	return map[string]any{"Auth": auth, "NextRefreshAfter": next.UTC()}, nil
 }
 
-// WS 不经过宿主 HTTP 客户端，解析和刷新都必须继承同一份代理，不能悄悄改为直连。
+// WebSockets bypass the host HTTP client; parsing and refresh must inherit
+// the same proxy rather than silently switching to direct connections.
 func setWebSocketProxy(auth map[string]any, raw []byte, hostProxy string) {
 	var settings map[string]any
 	_ = json.Unmarshal(raw, &settings)

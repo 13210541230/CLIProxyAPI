@@ -523,7 +523,29 @@ func interceptRequest(raw []byte, afterAuth bool) ([]byte, error) {
 		}
 		result = mergeInterceptResponses(result, bpsResult)
 	}
+	if afterAuth {
+		// Hosts apply updates after ClearHeaders. Remove the ID from both,
+		// otherwise the original request headers would reintroduce it.
+		clearPoolPickRequestID(result.Headers)
+		result.ClearHeaders = append(result.ClearHeaders, accountpool.PickRequestIDHeader)
+	} else if svc := pluginState.AccountPool(); svc != nil && svc.Enabled() {
+		if result.Headers == nil {
+			result.Headers = make(http.Header)
+		}
+		// The host owns this ID. An empty ID also overwrites forged input,
+		// leaving missing-correlation requests ineligible for borrowing.
+		clearPoolPickRequestID(result.Headers)
+		result.Headers.Set(accountpool.PickRequestIDHeader, request.RequestID)
+	}
 	return okEnvelope(result)
+}
+
+func clearPoolPickRequestID(headers http.Header) {
+	for name := range headers {
+		if strings.EqualFold(name, accountpool.PickRequestIDHeader) {
+			delete(headers, name)
+		}
+	}
 }
 
 func mergeInterceptResponses(base, extra intercept.Response) intercept.Response {
@@ -585,6 +607,7 @@ func accountPoolAdmit(request intercept.Request) *intercept.Response {
 	}
 	return &intercept.Response{
 		Terminate:       true,
+		ClearHeaders:    []string{accountpool.PickRequestIDHeader},
 		StatusCode:      status,
 		ResponseHeaders: http.Header{"Content-Type": []string{"application/json"}},
 		ResponseBody:    result.Body,

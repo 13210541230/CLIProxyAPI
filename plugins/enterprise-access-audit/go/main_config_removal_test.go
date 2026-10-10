@@ -180,8 +180,12 @@ func TestRemovingConfigThenImmediateRequest(t *testing.T) {
 		t.Fatalf("in-flight slot from before the removal must still be honored after re-enable: %+v", result)
 	}
 	svc.Complete("removal-before-1")
+	if active := svc.StateSnapshot("auth-x").Active; active != 1 {
+		t.Fatalf("the off-period execution must remain visible after re-enable: active=%d", active)
+	}
+	svc.Complete("removal-immediately")
 	if result := interceptAfter("after-reenable-2"); result.Terminate {
-		t.Fatalf("gating should admit once the pre-removal slot is released: %+v", result)
+		t.Fatalf("gating should admit once pre-removal and off-period executions finish: %+v", result)
 	}
 
 	// Phase 5: deleting the whole account-pool block behaves like (1).

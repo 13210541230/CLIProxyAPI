@@ -375,8 +375,13 @@ func TestAdmitInterceptBypassesLimitsWhenPoolDisabled(t *testing.T) {
 			t.Fatalf("admit %s = %+v, want pass-through while disabled", requestID, result)
 		}
 	}
+	if active := svc.StateSnapshot("auth-x").Active; active != 2 {
+		t.Fatalf("Active = %d, want 2 observed but ungated executions", active)
+	}
+	svc.Complete("r1")
+	svc.Complete("r2")
 	if active := svc.StateSnapshot("auth-x").Active; active != 0 {
-		t.Fatalf("Active = %d, want 0 while pool is disabled", active)
+		t.Fatalf("Active = %d, want 0 after off-period completions", active)
 	}
 }
 

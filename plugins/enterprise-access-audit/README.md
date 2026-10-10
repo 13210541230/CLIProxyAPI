@@ -100,7 +100,7 @@ The account-endpoint controls are integrated into the enterprise audit page. Sav
 
 Account pools are an inhouse extension of the same plugin binary, implemented as an isolated `go/internal/accountpool` package so upstream merges stay conflict-free. When `account_pool.enabled: true` plus the host-level `exclusive-scheduler-providers: [codex]` are set:
 
-- `scheduler.pick` resolves the caller's primary pool by its 8-character API-key hash (`quota_key_hash`), filters candidates strictly to pool members, then selects by priority + least pressure + session stickiness with a 10s reservation. Pool bindings are strict: the session stays on its account through cooldowns, removals, and persistent saturation (deferring to the api-key provider instead of hopping), and only the idle TTL (`session_idle_ttl_seconds`, default 2h) releases the binding.
+- `scheduler.pick` resolves the caller's primary pool by its 8-character API-key hash (`quota_key_hash`). Ordinary new sessions select only primary-pool members. Explicitly exempt callers may borrow sustained spare capacity from other existing enabled department pools when their primary pool cannot admit immediately; primary capacity always takes precedence. All pool sessions remain strictly pinned through cooldowns, removals, and persistent saturation (deferring to the API-key provider instead of hopping). Only idle expiry (`session_idle_ttl_seconds`, default 2h) permits fresh allocation; in-flight requests prevent expiry.
 - Unbound callers keep the host's existing global scheduling (`delegate_builtin`).
 - Bound callers are gated at `request.intercept_after` with bounded admission; only accounts with an explicit `/concurrency-limits` entry (non-zero) are gated, unconfigured or zero-limit accounts are never throttled.
 - `request.complete` releases the slot; lifecycle capability is shared with audit so both features coexist on the same hooks.
@@ -128,16 +128,34 @@ plugins:
 
 > Enabling account pools makes this plugin the exclusive Codex scheduler owner, bypassing other plugins' Codex scheduling/concurrency (for example `cpa-account-config-manager`); disable that plugin when both are deployed. Pool members and concurrency limits are keyed by the CPA auth file `id` (Auth ID), which matches scheduler candidates.
 
-Management routes (fixed paths, under `/v0/management/plugins/enterprise-access-audit/`):
+Management routes (fixed paths, under `/v0/management/enterprise-access-audit/`):
 
 | Method | Path | Description |
 |---|---|---|
 | GET | `account-pool` | Policy snapshot and applied status. |
 | GET/PUT | `account-pool/policy` | Read / atomically replace the versioned policy snapshot (hash canonicalized by the plugin). |
 | GET/PUT | `account-pool/concurrency-limits` | Read / replace per-account concurrency limits. |
-| GET | `account-pool/state?authId=...` | Per-auth concurrency diagnostics (active/waiting/reserved/window). |
+| GET | `account-pool/state?authId=...` | Per-auth diagnostics (`active`, `waiting`, `reserved`, `windowHit`, `averageActive`, `borrowReady`, `borrowable`). |
 
 The account-pool management UI is a tab inside the plugin's own resource page. State files: `account-pool-policy.json` (versioned full snapshot, SHA-256 validated) and `account-pool-limits.json` (per-account limits).
+
+### Targeted cross-pool exemption
+
+In the account-pool tab, enable **Cross-pool exemption** beside a specific bound user. It defaults off and does not remove the primary-pool binding. The full snapshot carries `crossPoolExempt: true` on that binding; omitted/false fields preserve legacy policy hashes. Changes become effective only after the plugin acknowledges the published snapshot.
+
+Borrowing requires a stable session identity and an explicitly configured concurrency limit greater than one. Targets must be enabled members of existing enabled pools, deduplicated by AuthID. No new elastic pool or arbitrary global OAuth fallback is created. Conservative initial gates are:
+
+- At least 60 complete seconds of process-local observations, with mean execution concurrency over those seconds at most 40% of the configured concurrency limit.
+- No current waiters and no queuing/full execution concurrency in the preceding 15 seconds.
+- Execution count plus effective outstanding pick reservations plus this pick at most `limit - 1`. With limit 5, borrowing leaves one slot free at allocation. Request-window capacity is also checked.
+
+Selection and reservation are atomic. If no target qualifies, requests retain primary-pool queuing/rejection behavior. **The spare slot is not permanently protected**: an already-bound borrowed session uses ordinary admission and may later occupy the fifth slot. Borrowing qualification is not rechecked for an existing binding. Exemption revocation affects new/expired sessions only; existing borrowed sessions remain on their account. Pool/exemption/policy changes do not change a bound caller's session namespace.
+
+Execution telemetry remains active while account-pool scheduling is disabled, but saved admission limits are bypassed. This prevents re-enabling from mistaking still-running off-period requests for idle capacity; completion releases these observations normally. The UI labels borrowing as disabled until account-pool scheduling is enabled.
+
+`reserved` counts short-lived picks before admission, not idle sessions or a protected department slot. Admission consumes only its own host execution-ID reservation once (including queued admission and fresh same-account repicks); expired/unselected requests cannot consume a newer request's pick, and losing provider-layer picks release their own unused reservation. The plugin propagates this host-owned ID through a private before-auth header and strips it after auth from both the returned header map and the effective request via `ClearHeaders`, using existing interceptor APIs; the host's clear-then-update order cannot reintroduce it. Missing correlation excludes borrowing. Running API-provider fallback holds the original OAuth session's lifetime reference as well. Unconsumed picks expire after `reserve_seconds` (default 10). The telemetry ring is bounded, requires fresh warmup after restart, and is a capacity heuristic, not a guarantee against future bursts or upstream risk controls. Account-status rows display observation readiness and the 60-second mean. Session bindings remain process-local, as before; this change does not add restart persistence.
+
+Focused Windows verification: `scripts/windows/verify-account-pool-exemption.ps1 -Phase Full -Race`; compiled artifacts are staged in `build/` and logs in `logs/`. Do not replace a running deployment during verification.
 
 ## Phase-1 request behavior
 

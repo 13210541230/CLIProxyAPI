@@ -36,9 +36,10 @@ type Member struct {
 
 // Binding maps one caller (API-key hash) to its primary pool.
 type Binding struct {
-	APIKeyHash  string `json:"apiKeyHash"`
-	PoolID      string `json:"poolId"`
-	UpdatedAtMS int64  `json:"updatedAtMs"`
+	APIKeyHash      string `json:"apiKeyHash"`
+	PoolID          string `json:"poolId"`
+	UpdatedAtMS     int64  `json:"updatedAtMs"`
+	CrossPoolExempt bool   `json:"crossPoolExempt,omitempty"`
 }
 
 // Policy is the versioned full snapshot applied by the account pool service.
@@ -208,16 +209,22 @@ func canonicalBindingHash(hash string) string {
 	return normalized
 }
 
-// BindingPool returns the primary pool id for a caller hash and whether bound.
-func BindingPool(p Policy, callerHash string) (string, bool) {
+// CallerBinding returns the caller's primary pool and optional exemption.
+func CallerBinding(p Policy, callerHash string) (Binding, bool) {
 	want := canonicalBindingHash(callerHash)
 	if want == "" {
-		return "", false
+		return Binding{}, false
 	}
 	for _, binding := range p.Bindings {
 		if canonicalBindingHash(binding.APIKeyHash) == want {
-			return binding.PoolID, true
+			return binding, true
 		}
 	}
-	return "", false
+	return Binding{}, false
+}
+
+// BindingPool returns the primary pool id for a caller hash and whether bound.
+func BindingPool(p Policy, callerHash string) (string, bool) {
+	binding, bound := CallerBinding(p, callerHash)
+	return binding.PoolID, bound
 }

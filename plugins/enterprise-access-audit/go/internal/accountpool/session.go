@@ -16,6 +16,20 @@ var (
 
 const sessionKeyMaxLen = 128
 
+// PickRequestIDHeader carries the host-generated execution ID from the
+// before-auth interceptor to selection. The after-auth interceptor strips it
+// before upstream execution; clients cannot choose the ID in the normal path.
+const PickRequestIDHeader = "X-CPA-Account-Pool-Request-Id"
+
+func reservationRequestID(request schedulerPickRequest) string {
+	for name, values := range request.Options.Headers {
+		if strings.EqualFold(name, PickRequestIDHeader) && len(values) > 0 {
+			return normalizeSessionKey(values[0])
+		}
+	}
+	return ""
+}
+
 // sessionNamespaceKey carries the routing-layer namespace injected by the
 // service into the scoped pick request (pool id, policy version, caller hash,
 // or the api-key layer marker). It isolates session bindings so different

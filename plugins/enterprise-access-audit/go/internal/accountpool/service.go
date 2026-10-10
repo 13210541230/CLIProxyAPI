@@ -213,8 +213,8 @@ func (s *Service) Apply(raw []byte) (Status, error) {
 	status.Enabled = s.enabled
 	s.mu.Unlock()
 	// Live session bindings deliberately survive publication: the pool
-	// namespace excludes the policy version, and only the idle TTL (or an
-	// explicit pool reassignment changing the namespace) rebinds sessions.
+	// namespace excludes pool and policy identity. Exemption toggles and pool
+	// reassignment must not rekey an active conversation.
 	return status, nil
 }
 
@@ -300,7 +300,13 @@ func (s *Service) Pick(request SchedulerPickRequest) SchedulerPickResponse {
 	}
 
 	oauthResp := s.pickOAuthLayer(request, oauthCands)
-	return decideLayeredPick(request, oauthResp, apiKeyResp)
+	result := decideLayeredPick(request, oauthResp, apiKeyResp)
+	for _, resp := range []*SchedulerPickResponse{oauthResp, apiKeyResp} {
+		if resp != nil && resp.Decision == "selected" && resp.AuthID != result.AuthID {
+			s.engine.releaseReservation(resp.AuthID, reservationRequestID(request))
+		}
+	}
+	return result
 }
 
 // pickOAuthLayer applies pool semantics to OAuth candidates: disabled or
@@ -353,24 +359,34 @@ func (s *Service) pickOAuthLayer(request SchedulerPickRequest, candidates []sche
 		resp := reject("identity_missing", http.StatusBadRequest, false, "caller hash is required for Codex pool routing")
 		return &resp
 	}
-	poolID, bound := BindingPool(p, callerHash)
+	binding, bound := CallerBinding(p, callerHash)
 	if !bound {
 		return globalPick(oauthNamespace(true, true, "", caller))
 	}
+	poolID := binding.PoolID
 	pool, ok := PoolByID(p, poolID)
 	if !ok || !pool.Enabled {
 		resp := reject("account_pool_disabled", http.StatusServiceUnavailable, true, "assigned pool is disabled or missing")
 		return &resp
 	}
-	members := EnabledMembers(p, poolID)
-	if len(members) == 0 {
-		resp := reject("account_pool_unavailable", http.StatusServiceUnavailable, true, "assigned account pool has no enabled members")
-		return &resp
+	primary := make(map[string]struct{})
+	allowed := make(map[string]struct{})
+	enabledPools := make(map[string]bool, len(p.Pools))
+	for _, item := range p.Pools {
+		enabledPools[item.ID] = item.Enabled
 	}
-	allowed := make(map[string]struct{}, len(members))
-	for _, member := range members {
+	for _, member := range p.Members {
+		if !member.Enabled || !enabledPools[member.PoolID] {
+			continue
+		}
 		allowed[member.AuthID] = struct{}{}
+		if member.PoolID == poolID {
+			primary[member.AuthID] = struct{}{}
+		}
 	}
+	// Existing bindings can remain on a previously borrowed enabled member
+	// after exemption revocation. New-session permissions are checked inside
+	// the engine, under the same lock as account reservation.
 	filtered := make([]schedulerAuthCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
 		if _, ok := allowed[candidate.ID]; ok {
@@ -387,7 +403,7 @@ func (s *Service) pickOAuthLayer(request SchedulerPickRequest, candidates []sche
 	// sibling account. A decline (bound account cooled/removed, or a
 	// persistent busy streak) surfaces here and decideLayeredPick hands the
 	// request to the api-key provider when one exists.
-	authID, decline := s.engine.PickPool(scoped)
+	authID, decline := s.engine.pickPool(scoped, primary, binding.CrossPoolExempt)
 	if authID != "" {
 		resp := selected(authID)
 		return &resp
@@ -483,14 +499,9 @@ func withSessionNamespace(request schedulerPickRequest, namespace string) schedu
 	return scoped
 }
 
-// oauthNamespace builds the OAuth-layer session namespace for a pick. It is
-// mirrored byte-for-byte by admissionNamespace so Pick and Admit always agree
-// on the caller's session key (pool + policy version + caller hash per the
-// affinity decision).
-// oauthNamespace derives the session namespace for OAuth-layer routing. The
-// pool namespace intentionally excludes the policy version: a publication
-// must never rebind live sessions — bindings live until the session goes
-// idle past the idle TTL or the caller is reassigned to another pool.
+// oauthNamespace is mirrored by admissionNamespace. Bound OAuth sessions are
+// keyed by caller, not department pool or exemption status: policy changes
+// must never create a new identity for an active conversation.
 func oauthNamespace(enabled, ready bool, poolID, boundCaller string) string {
 	caller := normalizeNamespace(boundCaller)
 	switch {
@@ -499,7 +510,7 @@ func oauthNamespace(enabled, ready bool, poolID, boundCaller string) string {
 	case !ready:
 		return nsJoin("oauth-empty", caller)
 	case poolID != "":
-		return nsJoin("pool", poolID, caller)
+		return nsJoin("pool", caller)
 	default:
 		return nsJoin("oauth-glob", caller)
 	}
@@ -568,7 +579,7 @@ func priorityOfCandidate(request SchedulerPickRequest, authID string) int {
 // limits remain persisted and apply again if the pool is re-enabled. It returns
 // nil when the request may proceed; otherwise a termination result.
 func (s *Service) AdmitIntercept(requestID string, headers map[string][]string, metadata map[string]any) *AdmitResult {
-	if s == nil || requestID == "" || !s.Enabled() {
+	if s == nil || requestID == "" {
 		return nil
 	}
 	authID := strings.TrimSpace(metadataString(metadata, metadataSelectedAuthID))
@@ -579,7 +590,19 @@ func (s *Service) AdmitIntercept(requestID string, headers map[string][]string, 
 	// (headers first, then metadata) so streak accounting never borrows
 	// another caller's session.
 	sessionKey := sessionKeyFrom(headers, metadata, s.admissionNamespace(authID, metadata))
-	code, status, retryable, admitted := s.engine.Admit(requestID, authID, sessionKey)
+	if !s.Enabled() {
+		// Keep off-period executions visible: re-enabling scheduling must not
+		// mistake still-running requests for sustained spare capacity.
+		s.engine.observeRequest(requestID, authID, sessionKey)
+		return nil
+	}
+	bindingKey := ""
+	if isProviderAPIKeyAuthID(authID) {
+		// API fallback execution is activity in the same conversation. Keep
+		// its original OAuth binding alive even if the call lasts past TTL.
+		bindingKey = sessionKeyFrom(headers, metadata, s.admissionNamespace("", metadata))
+	}
+	code, status, retryable, admitted := s.engine.Admit(requestID, authID, sessionKey, bindingKey)
 	if admitted {
 		return nil
 	}

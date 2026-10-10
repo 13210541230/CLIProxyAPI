@@ -483,7 +483,8 @@ PUT /v0/management/enterprise-access-audit/settings
 
 账号池是 `enterprise-access-audit` 插件的内建扩展能力（实现于独立的 `go/internal/accountpool` 子包，便于后续合并上游时保持隔离）。开启后：
 
-- 插件在 `scheduler.pick` 阶段按调用方 8 位 API Key Hash（`quota_key_hash`）定位其主池，把候选严格过滤到池内成员后，以“优先级 + 最低压力 + 会话粘性 + 10 秒预留”选号；
+- 插件在 `scheduler.pick` 阶段按调用方 8 位 API Key Hash（`quota_key_hash`）定位主池；普通用户的新会话严格在主池内选号，仅明确开启跨池豁免的用户可在主池无法立即准入时借用其他现有启用部门池的持续闲置账号；有主池余量时始终优先主池；
+- 所有池会话均保持严格粘滞：请求失败、冷却、满并发、豁免开关或策略发布均不会迁移活跃会话；连续空闲超过 2 小时才允许重新选号，执行中或排队中的请求不会使绑定过期；
 - 未绑定用户不受影响，走 CPA 原有全局调度（`delegate_builtin`）；
 - 已绑定用户的请求在 `request.intercept_after` 做有界并发准入；仅对显式配置了并发限制（`/concurrency-limits`）的账号做并发/窗口 gate，未配置或 0 限制的账号不限流；
 - `request.complete` 释放占位；审计功能仍按原有范围工作。
@@ -499,15 +500,35 @@ PUT /v0/management/enterprise-access-audit/settings
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/v0/management/plugins/enterprise-access-audit/account-pool` | 读取当前策略快照与生效状态 |
+| GET | `/v0/management/enterprise-access-audit/account-pool` | 读取当前策略快照与生效状态 |
 | GET/PUT | `.../account-pool/policy` | 读取 / 原子替换策略快照（`version` 单调递增，`hash` 由插件规范化） |
 | GET/PUT | `.../account-pool/concurrency-limits` | 读取 / 替换每账号并发限制 |
-| GET | `.../account-pool/state?authId=...` | 读取单账号并发诊断（active / waiting / reserved / window） |
+| GET | `.../account-pool/state?authId=...` | 单账号诊断：`active` / `waiting` / `reserved` / `windowHit`，以及 `averageActive`（60 秒均值）、`borrowReady`（观察完成）、`borrowable`（容量满足借用条件） |
+
+关闭账号池调度后，已保存的并发/窗口限制不执行，但执行中请求仍记入观测并在完成时释放；重新启用不能将关闭期间尚未结束的请求误判为闲置。界面在停用时明确显示“账号池未启用”。
+
+选号预留按宿主执行 ID 精确关联；重复准入只释放本请求新产生的重选预留，不增加执行计数，不消耗其他请求的预留。私有关联头在执行前同时从返回头更新和 `ClearHeaders` 流程清除，避免宿主先删除、再合并时重新带入。
 
 ### 11.3 数据文件
 
 - `account-pool-policy.json`：版本化完整策略（池、成员、绑定），SHA-256 校验；
 - `account-pool-limits.json`：每账号并发/窗口限制。
+
+### 11.4 指定用户跨池豁免
+
+在「账号池 → 当前池已绑定」列表中，按用户勾选「跨池豁免」，默认关闭。配置保留用户主池，完整策略中仅增加该绑定的 `crossPoolExempt: true`；省略或 false 不改变旧策略的编码与哈希。发布获得插件确认后显示已保存状态。
+
+跨池仅针对新会话或连续空闲过期的会话，需要稳定的 session 标识。借用目标必须来自现有启用池的启用成员，同一 AuthID 跨池重复出现时去重，且显式配置并发上限大于 1。初始保守判定如下：
+
+- 至少观测满 60 个完整秒；最近 60 秒平均执行并发不超过账号上限的 40%（上限 5 时不超过 2）。
+- 当前没有排队，最近 15 秒没有排队或执行并发满额；刚释放一个名额的繁忙账号不能马上借用。
+- 当前执行中 + 有效选号预留 + 本次选号 ≤ 并发上限 − 1。上限 5 时借用后只留一个名额；还需有请求窗口余量。
+
+检查与预留在同一锁内完成，避免同时到来的新会话扎堆。没有合格目标则保持主池排队或拒绝，不放宽阈值。**只在借用选号当时留名额，不持续保护本部门**；已绑定的借用会话后续可以按普通准入占用第 5 个名额。撤销豁免不迁移已有借用会话，新会话恢复主池隔离。绑定键不依赖部门池、策略版本或豁免状态。
+
+「预留」仅表示已选号、尚未进入准入的短期占位，不是活跃会话数或本部门保护名额。进入执行或排队时仅按宿主执行 ID 消耗自己的预留一次，过期或未选号的请求不得消耗后来请求的预留；未采用的另一 provider 层选号释放自己的预留。插件通过既有请求拦截接口传递宿主生成的关联 ID，覆盖客户端伪造值并在准入后移除，不向上游转发；缺少关联 ID 时不允许新会话跨池。API-provider 兜底请求在执行期间同样保护原 OAuth 会话绑定；未消耗预留默认 10 秒过期。账号状态表显示观测进度、是否可借用和 60 秒均值。观测数据有界且仅在当前进程内维护，重启后重新预热；这些阈值不保证未来没有突发流量，也不是上游风控安全保证。会话绑定仍按既有实现保存在进程内，本次不新增重启持久化。
+
+Windows 专项验证：`scripts/windows/verify-account-pool-exemption.ps1 -Phase Full -Race`，编译产物暂存 `build/`、日志进入 `logs/`；不要在验证过程中替换正在运行的部署。
 
 ## 12. 从源码构建
 

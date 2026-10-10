@@ -82,7 +82,10 @@ type Engine struct {
 	waiting            map[string]int
 	requests           map[string]admissionRecord
 	pending            map[string]bool // requestID -> completed while waiting for admission
-	reserved           map[string][]time.Time
+	pendingSessions    map[string]admissionRecord
+	inFlight           map[string]int
+	history            map[string]*occupancyHistory
+	reserved           map[string][]pickReservation
 	sessions           map[string]sessionBinding // sessionKey -> binding + last request time
 	sessionExpiry      sessionExpiryQueue        // ordered by last request time for bounded idle cleanup
 	sessionExpiryByKey map[string]*sessionExpiryEntry
@@ -107,6 +110,12 @@ type engineOptions struct {
 type admissionRecord struct {
 	AuthID     string
 	SessionKey string
+	BindingKey string
+}
+
+type pickReservation struct {
+	At        time.Time
+	RequestID string
 }
 
 // NewEngine creates an engine with the given options.
@@ -123,7 +132,10 @@ func NewEngine(reserve, maxWait time.Duration, sessionFn func(schedulerPickReque
 		waiting:            map[string]int{},
 		requests:           map[string]admissionRecord{},
 		pending:            map[string]bool{},
-		reserved:           map[string][]time.Time{},
+		pendingSessions:    map[string]admissionRecord{},
+		inFlight:           map[string]int{},
+		history:            map[string]*occupancyHistory{},
+		reserved:           map[string][]pickReservation{},
 		sessions:           map[string]sessionBinding{},
 		sessionExpiryByKey: map[string]*sessionExpiryEntry{},
 		busyRejections:     map[string]int{},
@@ -189,7 +201,14 @@ func (e *Engine) Configure(limits map[string]Limit) {
 			next[authID] = limit
 		}
 	}
+	now := e.now().UTC()
+	for authID := range e.limits {
+		e.observeLocked(authID, now)
+	}
 	e.limits = next
+	for authID := range next {
+		e.observeLocked(authID, now)
+	}
 	e.epoch++
 	e.mu.Unlock()
 }
@@ -217,7 +236,7 @@ func (e *Engine) SetClock(now func() time.Time, sleep func(time.Duration)) {
 // eligible, and silently rebinds when the account leaves the candidate set.
 // Idle sessions expire after sessionIdleTTL.
 func (e *Engine) Pick(request schedulerPickRequest) string {
-	authID, _ := e.pick(request, false)
+	authID, _ := e.pick(request, false, nil)
 	return authID
 }
 
@@ -227,10 +246,14 @@ func (e *Engine) Pick(request schedulerPickRequest) string {
 // can defer to the api-key provider layer — never a sibling OAuth account.
 // Only an idle gap longer than sessionIdleTTL releases the binding.
 func (e *Engine) PickPool(request schedulerPickRequest) (string, string) {
-	return e.pick(request, true)
+	return e.pick(request, true, nil)
 }
 
-func (e *Engine) pick(request schedulerPickRequest, strict bool) (string, string) {
+func (e *Engine) pickPool(request schedulerPickRequest, primary map[string]struct{}, borrow bool) (string, string) {
+	return e.pick(request, true, &poolSelection{primary: primary, borrow: borrow})
+}
+
+func (e *Engine) pick(request schedulerPickRequest, strict bool, selection *poolSelection) (string, string) {
 	if e == nil || len(request.Candidates) == 0 {
 		return "", ""
 	}
@@ -249,6 +272,7 @@ func (e *Engine) pick(request schedulerPickRequest, strict bool) (string, string
 			continue
 		}
 		seen[authID] = struct{}{}
+		e.observeLocked(authID, now)
 		limit := e.limitOf(authID)
 		reserved := len(e.reserved[authID])
 		activeLoad := e.active[authID] + e.waiting[authID] + reserved
@@ -292,7 +316,7 @@ func (e *Engine) pick(request schedulerPickRequest, strict bool) (string, string
 						e.mu.Unlock()
 						return "", "account_busy"
 					}
-					e.reserved[binding.AuthID] = append(e.reserved[binding.AuthID], now)
+					e.reserveLocked(binding.AuthID, reservationRequestID(request), now)
 					e.mu.Unlock()
 					return binding.AuthID, ""
 				}
@@ -303,7 +327,7 @@ func (e *Engine) pick(request schedulerPickRequest, strict bool) (string, string
 					e.deleteSessionLocked(sessionKey)
 					// Fall through to load-balanced rebind below.
 				} else {
-					e.reserved[binding.AuthID] = append(e.reserved[binding.AuthID], now)
+					e.reserveLocked(binding.AuthID, reservationRequestID(request), now)
 					e.mu.Unlock()
 					return binding.AuthID, ""
 				}
@@ -314,6 +338,17 @@ func (e *Engine) pick(request schedulerPickRequest, strict bool) (string, string
 				return "", "account_pool_unavailable"
 			}
 			// Lenient layers rebind silently when their account disappears.
+		}
+	}
+
+	if selection != nil {
+		// Without a stable session identity borrowing cannot promise affinity.
+		permissions := *selection
+		permissions.borrow = permissions.borrow && sessionKey != "" && reservationRequestID(request) != ""
+		loads = e.poolLoadsLocked(loads, &permissions, now)
+		if len(loads) == 0 {
+			e.mu.Unlock()
+			return "", "account_pool_unavailable"
 		}
 	}
 
@@ -337,7 +372,7 @@ func (e *Engine) pick(request schedulerPickRequest, strict bool) (string, string
 		selected = equal[e.cursor%uint64(len(equal))]
 		e.cursor++
 	}
-	e.reserved[selected] = append(e.reserved[selected], now)
+	e.reserveLocked(selected, reservationRequestID(request), now)
 	if sessionKey != "" {
 		e.rememberSessionLocked(sessionKey, sessionBinding{AuthID: selected, LastSeen: now})
 	}
@@ -380,7 +415,7 @@ func (e *Engine) Touch(request schedulerPickRequest) {
 	if !ok || binding.AuthID == "" {
 		return
 	}
-	if binding.LastSeen.Before(now.Add(-e.sessionIdleTTL)) {
+	if binding.LastSeen.Before(now.Add(-e.sessionIdleTTL)) && e.inFlight[sessionKey] == 0 {
 		e.deleteSessionLocked(sessionKey)
 		return
 	}
@@ -391,9 +426,19 @@ func (e *Engine) Touch(request schedulerPickRequest) {
 // Admit enters bounded admission for an already-selected auth. It blocks up to
 // MaxWait when the account is saturated, then rejects retryably. admitted is
 // true when the request may proceed (empty rejection). Transient rejections
-// keep the session on its account; only a persistent streak of rejections
-// (maxBusy consecutive, reset by any success) fails the session over in-pool.
-func (e *Engine) Admit(requestID, authID, sessionKey string) (code string, status int, retryable bool, admitted bool) {
+// keep the session on its account. Persistent busy permits provider API-key
+// fallback under PickPool, but never releases an active OAuth binding.
+func (e *Engine) Admit(requestID, authID, sessionKey string, bindingKeys ...string) (code string, status int, retryable bool, admitted bool) {
+	return e.admit(requestID, authID, sessionKey, true, bindingKeys...)
+}
+
+// observeRequest retains execution telemetry while scheduling/admission is
+// disabled. It never queues or enforces saved account limits.
+func (e *Engine) observeRequest(requestID, authID, sessionKey string) {
+	e.admit(requestID, authID, sessionKey, false)
+}
+
+func (e *Engine) admit(requestID, authID, sessionKey string, enforce bool, bindingKeys ...string) (code string, status int, retryable bool, admitted bool) {
 	if e == nil {
 		return "account_pool_unavailable", 503, true, false
 	}
@@ -403,6 +448,10 @@ func (e *Engine) Admit(requestID, authID, sessionKey string) (code string, statu
 	}
 	now := e.now().UTC()
 	deadline := now.Add(e.cfg.MaxWait)
+	record := admissionRecord{AuthID: authID, SessionKey: sessionKey}
+	if len(bindingKeys) > 0 {
+		record.BindingKey = bindingKeys[0]
+	}
 
 	for {
 		e.mu.Lock()
@@ -411,21 +460,28 @@ func (e *Engine) Admit(requestID, authID, sessionKey string) (code string, statu
 
 		if record, exists := e.requests[requestID]; exists {
 			if record.AuthID == authID {
+				// A same-account retry may have made another pick. Consume only
+				// its fresh reservation without recounting the held execution.
+				e.consumeReservationLocked(authID, requestID)
 				e.mu.Unlock()
 				return "", 0, false, true // duplicate admission for the same request
 			}
 			e.releaseAuthLocked(record.AuthID)
+			e.releaseAdmissionSessionsLocked(record, now)
 			delete(e.requests, requestID)
 		}
 		if canceled, exists := e.pending[requestID]; exists && canceled {
-			delete(e.pending, requestID)
+			e.finishPendingLocked(requestID, now, true)
 			e.mu.Unlock()
 			return "request_canceled", 499, false, false
 		}
 		if _, exists := e.pending[requestID]; !exists {
 			e.pending[requestID] = false
+			e.pendingSessions[requestID] = record
+			e.holdAdmissionSessionsLocked(record)
+			// An expired or unselected request must not consume another pick.
+			e.consumeReservationLocked(authID, requestID)
 		}
-		e.consumeReservationLocked(authID, now)
 
 		windowUse := 0
 		if limit.Max15s > 0 {
@@ -436,8 +492,9 @@ func (e *Engine) Admit(requestID, authID, sessionKey string) (code string, statu
 		// leaving an idle account unable to drain its queue until timeouts fire.
 		busyConcurrent := limit.Max > 0 && e.active[authID] >= limit.Max
 		busyWindow := limit.Max15s > 0 && windowUse >= limit.Max15s
-		if !busyConcurrent && !busyWindow {
+		if !enforce || (!busyConcurrent && !busyWindow) {
 			e.active[authID]++
+			e.observeLocked(authID, now)
 			if limit.Max15s > 0 {
 				e.appendWindowLocked(authID, now)
 			}
@@ -447,8 +504,8 @@ func (e *Engine) Admit(requestID, authID, sessionKey string) (code string, statu
 			if _, tracked := e.sessions[sessionKey]; sessionKey != "" && tracked {
 				e.busyRejections[sessionKey] = 0 // a success clears the failure streak
 			}
-			delete(e.pending, requestID)
-			e.requests[requestID] = admissionRecord{AuthID: authID, SessionKey: sessionKey}
+			e.finishPendingLocked(requestID, now, false)
+			e.requests[requestID] = record
 			e.mu.Unlock()
 			return "", 0, false, true
 		}
@@ -462,11 +519,12 @@ func (e *Engine) Admit(requestID, authID, sessionKey string) (code string, statu
 			if _, tracked := e.sessions[sessionKey]; sessionKey != "" && tracked {
 				e.busyRejections[sessionKey]++
 			}
-			delete(e.pending, requestID)
+			e.finishPendingLocked(requestID, now, true)
 			e.mu.Unlock()
 			return "account_busy", 503, true, false
 		}
 		e.waiting[authID]++
+		e.observeLocked(authID, now)
 		waiterEpoch := e.epoch
 		e.mu.Unlock()
 
@@ -523,6 +581,7 @@ func (e *Engine) Complete(requestID string) {
 	if record, exists := e.requests[requestID]; exists {
 		delete(e.requests, requestID)
 		e.releaseAuthLocked(record.AuthID)
+		e.releaseAdmissionSessionsLocked(record, e.now().UTC())
 		return
 	}
 	if _, exists := e.pending[requestID]; exists {
@@ -532,11 +591,14 @@ func (e *Engine) Complete(requestID string) {
 
 // StateSnapshot returns per-auth diagnostics.
 type StateSnapshot struct {
-	Active    int   `json:"active"`
-	Waiting   int   `json:"waiting"`
-	Reserved  int   `json:"reserved"`
-	WindowHit int   `json:"windowHit"`
-	Limit     Limit `json:"-"`
+	Active        int     `json:"active"`
+	Waiting       int     `json:"waiting"`
+	Reserved      int     `json:"reserved"`
+	WindowHit     int     `json:"windowHit"`
+	AverageActive float64 `json:"averageActive"`
+	BorrowReady   bool    `json:"borrowReady"`
+	Borrowable    bool    `json:"borrowable"`
+	Limit         Limit   `json:"-"`
 }
 
 // Snapshot returns per-auth concurrency diagnostics for management display.
@@ -545,12 +607,16 @@ func (e *Engine) Snapshot(authID string) StateSnapshot {
 	defer e.mu.Unlock()
 	now := e.now()
 	e.pruneLocked(now)
+	mean, ready := e.observeLocked(authID, now).mean(now)
 	return StateSnapshot{
-		Active:    e.active[authID],
-		Waiting:   e.waiting[authID],
-		Reserved:  len(e.reserved[authID]),
-		WindowHit: e.windowCountLocked(authID, now),
-		Limit:     e.limitOf(authID),
+		Active:        e.active[authID],
+		Waiting:       e.waiting[authID],
+		Reserved:      len(e.reserved[authID]),
+		WindowHit:     e.windowCountLocked(authID, now),
+		AverageActive: mean,
+		BorrowReady:   ready,
+		Borrowable:    e.borrowableLocked(authID, now),
+		Limit:         e.limitOf(authID),
 	}
 }
 
@@ -560,26 +626,92 @@ func (e *Engine) limitOf(authID string) Limit {
 	return e.limits[authID]
 }
 
-func (e *Engine) consumeReservationLocked(authID string, now time.Time) {
-	queue := e.reserved[authID]
-	for len(queue) > 0 && queue[0].Before(now) {
-		queue = queue[1:]
+func (e *Engine) reserveLocked(authID, requestID string, now time.Time) {
+	if requestID != "" {
+		for _, reservation := range e.reserved[authID] {
+			if reservation.RequestID == requestID {
+				return
+			}
+		}
 	}
-	if len(queue) == 0 {
+	e.reserved[authID] = append(e.reserved[authID], pickReservation{At: now, RequestID: requestID})
+}
+
+func (e *Engine) consumeReservationLocked(authID, requestID string) {
+	if requestID == "" {
 		return
 	}
-	e.reserved[authID] = queue[1:]
+	queue := e.reserved[authID]
+	for index, reservation := range queue {
+		if reservation.RequestID != requestID {
+			continue
+		}
+		queue = append(queue[:index], queue[index+1:]...)
+		if len(queue) == 0 {
+			delete(e.reserved, authID)
+		} else {
+			e.reserved[authID] = queue
+		}
+		return
+	}
+}
+
+// releaseReservation drops an unused selection from the losing provider layer.
+func (e *Engine) releaseReservation(authID, requestID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.consumeReservationLocked(authID, requestID)
+}
+
+func (e *Engine) finishPendingLocked(requestID string, now time.Time, release bool) {
+	if release {
+		e.releaseAdmissionSessionsLocked(e.pendingSessions[requestID], now)
+	}
+	delete(e.pendingSessions, requestID)
+	delete(e.pending, requestID)
+}
+
+func (e *Engine) holdAdmissionSessionsLocked(record admissionRecord) {
+	if record.SessionKey != "" {
+		e.inFlight[record.SessionKey]++
+	}
+	if record.BindingKey != "" && record.BindingKey != record.SessionKey {
+		e.inFlight[record.BindingKey]++
+	}
+}
+
+func (e *Engine) releaseAdmissionSessionsLocked(record admissionRecord, now time.Time) {
+	e.releaseSessionLocked(record.SessionKey, now)
+	if record.BindingKey != record.SessionKey {
+		e.releaseSessionLocked(record.BindingKey, now)
+	}
+}
+
+func (e *Engine) releaseSessionLocked(key string, now time.Time) {
+	if key == "" || e.inFlight[key] == 0 {
+		return
+	}
+	e.inFlight[key]--
+	if e.inFlight[key] == 0 {
+		delete(e.inFlight, key)
+	}
+	if binding, ok := e.sessions[key]; ok {
+		binding.LastSeen = now
+		e.rememberSessionLocked(key, binding)
+	}
 }
 
 func (e *Engine) releaseAuthLocked(authID string) {
 	if e.active[authID] > 0 {
 		e.active[authID]--
+		e.observeLocked(authID, e.now().UTC())
 	}
 }
 
 func (e *Engine) lowerWaitingLocked(authID string) {
 	if e.waiting[authID] > 0 {
 		e.waiting[authID]--
+		e.observeLocked(authID, e.now().UTC())
 	}
 }
 
@@ -610,16 +742,23 @@ func (e *Engine) pruneLocked(now time.Time) {
 	// of scanning every binding while the engine lock is held.
 	sessionCutoff := now.Add(-e.sessionIdleTTL)
 	for len(e.sessionExpiry) > 0 && e.sessionExpiry[0].lastSeen.Before(sessionCutoff) {
-		e.deleteSessionLocked(e.sessionExpiry[0].key)
+		key := e.sessionExpiry[0].key
+		if e.inFlight[key] > 0 {
+			binding := e.sessions[key]
+			binding.LastSeen = now
+			e.rememberSessionLocked(key, binding)
+		} else {
+			e.deleteSessionLocked(key)
+		}
 	}
 	for authID, queue := range e.reserved {
 		if len(queue) == 0 {
 			continue
 		}
 		kept := queue[:0]
-		for _, reservedAt := range queue {
-			if !reservedAt.Before(cutoff) {
-				kept = append(kept, reservedAt)
+		for _, reservation := range queue {
+			if !reservation.At.Before(cutoff) {
+				kept = append(kept, reservation)
 			}
 		}
 		if len(kept) == 0 {

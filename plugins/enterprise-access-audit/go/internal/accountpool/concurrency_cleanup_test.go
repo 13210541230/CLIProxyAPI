@@ -43,6 +43,7 @@ func TestAdmissionWithoutPoolSelectionDoesNotLeakBusyState(t *testing.T) {
 		t.Fatalf("busy state after unpicked admission: orphan=%v entries=%d, want no orphan and one picked session", orphaned, busyCount)
 	}
 
+	engine.Complete("hold")
 	current = current.Add(time.Minute + time.Second)
 	engine.Snapshot("auth-a") // pruning is driven by normal engine operations
 

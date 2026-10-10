@@ -51,9 +51,9 @@ func TestAdmissionNamespaceMirrorsPick(t *testing.T) {
 	svc := newLayeredService(t, true, &p)
 	meta := map[string]any{metadataKeyHash: "abcd1234"}
 
-	// Bound OAuth: namespace must embed pool id and policy version.
+	// Bound OAuth: namespace must remain stable across pool and policy changes.
 	ns := svc.admissionNamespace("auth-a", meta)
-	if want := nsJoin("pool", "eng", "abcd1234"); ns != want {
+	if want := nsJoin("pool", "abcd1234"); ns != want {
 		t.Fatalf("bound admission ns = %q, want %q", ns, want)
 	}
 	// Pick side computes the same value when building the scoped request.
