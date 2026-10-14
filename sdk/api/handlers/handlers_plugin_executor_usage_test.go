@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -438,6 +441,48 @@ func TestHandlerPluginExecutorPublishesFailure(t *testing.T) {
 	if record.Fail.Body != "upstream plugin failure" {
 		t.Errorf("record.Fail.Body = %q, want %q", record.Fail.Body, "upstream plugin failure")
 	}
+}
+
+func TestAfterAuthTerminationPublishesFailureUsage(t *testing.T) {
+	plugin := newCapturePluginExecutorUsagePlugin("")
+	registerUsagePluginForTest(t, "test-after-auth-termination-usage", plugin)
+
+	model := "after-auth-termination-usage-model"
+	gin.SetMode(gin.TestMode)
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ginCtx.Set("userApiKey", "caller-api-key")
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	executor := &interceptorCaptureExecutor{}
+	handler := newInterceptorHandler(t, model, executor, &sdkconfig.SDKConfig{})
+	handler.SetPluginHost(&handlerInterceptorTestHost{
+		interceptRequestAfterAuth: func(_ context.Context, _ pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse {
+			return pluginapi.RequestInterceptResponse{
+				Terminate:    true,
+				StatusCode:   http.StatusServiceUnavailable,
+				ResponseBody: []byte(`{"error":{"code":"account_busy"}}`),
+			}
+		},
+	})
+
+	_, _, errMsg := handler.ExecuteWithAuthManager(ctx, "openai", model, []byte(fmt.Sprintf(`{"model":%q}`, model)), "")
+	if errMsg == nil || errMsg.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("ExecuteWithAuthManager() error = %+v, want HTTP 503", errMsg)
+	}
+
+	record := plugin.waitRecord(t)
+	if !record.Failed {
+		t.Fatal("record.Failed = false, want true")
+	}
+	if record.Fail.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("record.Fail.StatusCode = %d, want %d", record.Fail.StatusCode, http.StatusServiceUnavailable)
+	}
+	if record.APIKey != "caller-api-key" {
+		t.Errorf("record.APIKey = %q, want caller key", record.APIKey)
+	}
+	if record.Provider != "codex" {
+		t.Errorf("record.Provider = %q, want codex", record.Provider)
+	}
+	plugin.assertNoRecord(t)
 }
 
 func TestHandlerPluginExecutorPublishesStreamFailure(t *testing.T) {

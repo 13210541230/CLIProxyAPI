@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"golang.org/x/net/context"
@@ -568,7 +569,7 @@ func (h *BaseAPIHandler) applyRequestInterceptorsAfterAuth(ctx context.Context, 
 		Body:                  cloneBytes(req.Body),
 		Metadata:              req.Metadata,
 	}, skipPluginID)
-	return coreexecutor.RequestAfterAuthInterceptResponse{
+	result := coreexecutor.RequestAfterAuthInterceptResponse{
 		Headers:          resp.Headers,
 		Body:             resp.Body,
 		ExecutorProvider: resp.ExecutorProvider,
@@ -578,6 +579,16 @@ func (h *BaseAPIHandler) applyRequestInterceptorsAfterAuth(ctx context.Context, 
 		ResponseHeaders:  resp.ResponseHeaders,
 		ResponseBody:     resp.ResponseBody,
 	}
+	if result.Terminate {
+		termination := &coreexecutor.RequestTerminatedError{
+			HTTPStatus: result.StatusCode,
+			Header:     result.ResponseHeaders,
+			Body:       result.ResponseBody,
+		}
+		// Interceptor terminations bypass provider execution and its usage reporter.
+		helps.NewUsageReporter(ctx, req.AuthProvider, req.Model, nil).PublishFailure(ctx, termination)
+	}
+	return result
 }
 
 func (h *BaseAPIHandler) applyResponseInterceptors(ctx context.Context, requestID, handlerType, normalizedModel, requestedModel string, opts coreexecutor.Options, rawResponseHeaders, responseHeaders http.Header, originalRequest, requestBody, body []byte, statusCode int, skipPluginID string, passthrough bool) ([]byte, http.Header) {
