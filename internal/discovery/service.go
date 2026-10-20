@@ -8,8 +8,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -231,6 +231,9 @@ func BuildServiceSpec(cfg *config.Config, port int, tlsEnabled bool) (ServiceSpe
 			if net.ParseIP(advertisedIP).Equal(bindIP) {
 				filtered = append(filtered, advertisedIP)
 			}
+		}
+		if len(filtered) == 0 {
+			filtered = append(filtered, bindIP.String())
 		}
 		advertisedIPs = filtered
 	}

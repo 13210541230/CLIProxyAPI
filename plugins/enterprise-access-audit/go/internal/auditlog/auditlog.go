@@ -16,7 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/textclean"
+	"github.com/router-for-me/CLIProxyAPI/v8/plugins/enterprise-access-audit/go/internal/textclean"
 )
 
 var ErrClosed = errors.New("enterprise audit log is closed")

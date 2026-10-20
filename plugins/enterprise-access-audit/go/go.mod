@@ -1,4 +1,4 @@
-module github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go
+module github.com/router-for-me/CLIProxyAPI/v8/plugins/enterprise-access-audit/go
 
 go 1.26.0
 

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/store"
+	"github.com/router-for-me/CLIProxyAPI/v8/plugins/enterprise-access-audit/go/internal/store"
 )
 
 func insertAuditRecord(t *testing.T, manager interface {

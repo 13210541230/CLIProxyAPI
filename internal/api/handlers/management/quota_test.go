@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/quota"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 func TestGetPausedKeysReturnsEmptyListWhenQuotaDisabled(t *testing.T) {
@@ -177,11 +177,13 @@ func TestPutQuotaConfigPersistsModeAndTokenLimits(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if cfg.Quota.Mode != "tokens" || cfg.Quota.Default.DailyTokens != 1000 || cfg.Quota.Default.WeeklyTokens != 7000 {
-		t.Fatalf("quota config = %+v, want token mode and limits", cfg.Quota)
+	// v8 handlers own a runtime clone of the caller's config, so the update is
+	// visible on the handler copy and in the persisted file, not on cfg itself.
+	if h.cfg.Quota.Mode != "tokens" || h.cfg.Quota.Default.DailyTokens != 1000 || h.cfg.Quota.Default.WeeklyTokens != 7000 {
+		t.Fatalf("quota config = %+v, want token mode and limits", h.cfg.Quota)
 	}
-	if len(cfg.Quota.Overrides) != 1 || cfg.Quota.Overrides[0].DailyTokens != 2000 || cfg.Quota.Overrides[0].WeeklyTokens != 14000 {
-		t.Fatalf("quota overrides = %+v, want token limits", cfg.Quota.Overrides)
+	if len(h.cfg.Quota.Overrides) != 1 || h.cfg.Quota.Overrides[0].DailyTokens != 2000 || h.cfg.Quota.Overrides[0].WeeklyTokens != 14000 {
+		t.Fatalf("quota overrides = %+v, want token limits", h.cfg.Quota.Overrides)
 	}
 	persisted, err := os.ReadFile(configPath)
 	if err != nil {

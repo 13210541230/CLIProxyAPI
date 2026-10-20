@@ -9,10 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -680,6 +678,14 @@ func xaiFunctionParametersNeedSimplification(tool gjson.Result, namespaceName st
 }
 
 func sanitizeXAIInputEncryptedContent(body []byte) []byte {
+	return sanitizeXAIInputEncryptedContentWithOptions(body, false)
+}
+
+func sanitizeXAIInputEncryptedContentForBaseURL(body []byte, baseURL string) []byte {
+	return sanitizeXAIInputEncryptedContentWithOptions(body, isOpenRouterUpstreamURL(baseURL))
+}
+
+func sanitizeXAIInputEncryptedContentWithOptions(body []byte, allowRouterSuffix bool) []byte {
 	input := gjson.GetBytes(body, "input")
 	if !input.Exists() || !input.IsArray() {
 		return body
@@ -701,10 +707,14 @@ func sanitizeXAIInputEncryptedContent(body []byte) []byte {
 			continue
 		}
 		reason := ""
+		rewrittenSig := ""
 		switch encryptedContent.Type {
 		case gjson.String:
-			if _, err := signature.InspectGrokEncryptedContent(encryptedContent.String()); err != nil {
+			rawSig := encryptedContent.String()
+			if info, err := signature.InspectGrokEncryptedContent(rawSig); err != nil {
 				reason = err.Error()
+			} else if info.RouterSuffix != "" && !allowRouterSuffix {
+				rewrittenSig = stripRouterSuffix(rawSig, info.RouterSuffix)
 			}
 		case gjson.Null:
 			reason = "encrypted_content is null"
@@ -712,6 +722,13 @@ func sanitizeXAIInputEncryptedContent(body []byte) []byte {
 			reason = fmt.Sprintf("encrypted_content must be a string, got %s", encryptedContent.Type.String())
 		}
 		if reason == "" {
+			if rewrittenSig != "" {
+				if next, errSet := sjson.SetBytes([]byte(item.Raw), "encrypted_content", rewrittenSig); errSet == nil {
+					items = append(items, json.RawMessage(next))
+					changed = true
+					continue
+				}
+			}
 			items = append(items, json.RawMessage(item.Raw))
 			continue
 		}
@@ -860,24 +877,6 @@ func appendXAIReasoningSummary(previous json.RawMessage, currentSummary []gjson.
 		updated = updatedItem
 	}
 	return updated, true
-}
-
-// xaiSupportsReasoningEffort reports whether the model accepts Responses API
-// reasoning.effort. Capability comes from model registry thinking metadata
-// (static models.json and dynamic registrations), not a hard-coded name allowlist.
-func xaiSupportsReasoningEffort(model string) bool {
-	name := strings.ToLower(strings.TrimSpace(thinking.ParseSuffix(model).ModelName))
-	if idx := strings.LastIndex(name, "/"); idx >= 0 {
-		name = name[idx+1:]
-	}
-	if name == "" {
-		return false
-	}
-	info := registry.LookupModelInfo(name, "xai")
-	if info == nil || info.Thinking == nil {
-		return false
-	}
-	return len(info.Thinking.Levels) > 0
 }
 
 func xaiNormalizeReasoningSummaryEventLine(line []byte, eventName string) []byte {

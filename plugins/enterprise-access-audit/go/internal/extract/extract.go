@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/textclean"
+	"github.com/router-for-me/CLIProxyAPI/v8/plugins/enterprise-access-audit/go/internal/textclean"
 )
 
 // Result is the allowlisted, text-only representation of one request body.

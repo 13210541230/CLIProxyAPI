@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/state"
-	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/store"
+	"github.com/router-for-me/CLIProxyAPI/v8/plugins/enterprise-access-audit/go/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/plugins/enterprise-access-audit/go/internal/state"
+	"github.com/router-for-me/CLIProxyAPI/v8/plugins/enterprise-access-audit/go/internal/store"
 )
 
 func newTestHandler(t *testing.T) (*Handler, *state.Manager) {

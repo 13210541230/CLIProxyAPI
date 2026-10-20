@@ -4,8 +4,8 @@ import (
 	"context"
 	"strings"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -142,6 +142,18 @@ func normalizeSchedulerResponse(resp pluginapi.SchedulerPickResponse, req plugin
 	resp.DelegateBuiltin = strings.TrimSpace(resp.DelegateBuiltin)
 	resp.ErrorCode = strings.TrimSpace(resp.ErrorCode)
 	resp.Reason = boundedSchedulerReason(resp.Reason)
+	resp.RejectCode = strings.TrimSpace(resp.RejectCode)
+	resp.RejectReason = strings.TrimSpace(resp.RejectReason)
+
+	if resp.Reject {
+		if resp.RejectCode == "" {
+			resp.RejectCode = "auth_unavailable"
+		}
+		if resp.RejectReason == "" {
+			resp.RejectReason = "scheduler rejected candidate selection"
+		}
+		return resp, true, ""
+	}
 
 	// Empty Decision is the legacy response shape. It is converted locally so
 	// older non-exclusive plugins retain their existing ABI behavior.

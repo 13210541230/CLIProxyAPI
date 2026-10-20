@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/accountpool"
-	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/plugins/enterprise-access-audit/go/internal/store"
+	"github.com/router-for-me/CLIProxyAPI/v8/plugins/enterprise-access-audit/go/internal/accountpool"
+	"github.com/router-for-me/CLIProxyAPI/v8/plugins/enterprise-access-audit/go/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/plugins/enterprise-access-audit/go/internal/store"
 )
 
 var ErrUnavailable = errors.New("enterprise access audit plugin unavailable")

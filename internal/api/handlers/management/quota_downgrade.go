@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/quota"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
 // PostDowngradeKey creates or refreshes a key's fallback-model state.

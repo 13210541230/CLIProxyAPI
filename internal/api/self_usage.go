@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
 	log "github.com/sirupsen/logrus"
 )
 
