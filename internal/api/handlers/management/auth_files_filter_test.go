@@ -76,6 +76,73 @@ func TestListAuthFilesFiltersByNameAndAuthIndex(t *testing.T) {
 	}
 }
 
+func TestListAuthFilesExcludesNestedAuthDirectoryState(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+
+	authDir := t.TempDir()
+	nestedName := filepath.Join(".cpa-account-config-manager", "ai-provider-names.json")
+	nestedPath := filepath.Join(authDir, nestedName)
+	if errMkdir := os.MkdirAll(filepath.Dir(nestedPath), 0o700); errMkdir != nil {
+		t.Fatalf("create nested state directory: %v", errMkdir)
+	}
+	for _, path := range []string{nestedPath, filepath.Join(authDir, "account.json")} {
+		if errWrite := os.WriteFile(path, []byte(`{"type":"codex"}`), 0o600); errWrite != nil {
+			t.Fatalf("write auth file %q: %v", path, errWrite)
+		}
+	}
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	for _, auth := range []*coreauth.Auth{
+		{
+			ID:       "nested-plugin-state",
+			FileName: nestedName,
+			Provider: "codex",
+			Status:   coreauth.StatusActive,
+			Attributes: map[string]string{
+				"path": nestedPath,
+			},
+		},
+		{
+			ID:       "account",
+			FileName: "account.json",
+			Provider: "codex",
+			Status:   coreauth.StatusActive,
+			Attributes: map[string]string{
+				"path": filepath.Join(authDir, "account.json"),
+			},
+		},
+	} {
+		registerAuthForLookupTest(t, manager, auth)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
+	for _, route := range []string{
+		"/v0/management/auth-files",
+		"/v0/management/auth-files?page=1&page_size=10",
+	} {
+		rec := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(rec)
+		ctx.Request = httptest.NewRequest(http.MethodGet, route, nil)
+		h.ListAuthFiles(ctx)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("route %q status = %d body=%s", route, rec.Code, rec.Body.String())
+		}
+		var payload struct {
+			Files []map[string]any `json:"files"`
+			Total int              `json:"total"`
+		}
+		if errDecode := json.Unmarshal(rec.Body.Bytes(), &payload); errDecode != nil {
+			t.Fatalf("decode response for %q: %v", route, errDecode)
+		}
+		if len(payload.Files) != 1 || payload.Files[0]["name"] != "account.json" {
+			t.Fatalf("route %q files = %#v, want only account.json", route, payload.Files)
+		}
+		if strings.Contains(route, "page=") && payload.Total != 1 {
+			t.Fatalf("paginated total = %d, want 1", payload.Total)
+		}
+	}
+}
+
 func TestListAuthFilesFromDiskFiltersByNameAndRejectsAuthIndex(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 

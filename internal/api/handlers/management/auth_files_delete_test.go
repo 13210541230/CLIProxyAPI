@@ -170,3 +170,37 @@ func TestDeleteAuthFile_RemovesRuntimeAuth(t *testing.T) {
 		t.Fatalf("expected runtime auth %q to be removed", record.ID)
 	}
 }
+
+func TestDeleteAuthFile_RejectsUnsafeUnregisteredPaths(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+
+	authDir := t.TempDir()
+	nestedDir := filepath.Join(authDir, ".cpa-account-config-manager")
+	if errMkdir := os.MkdirAll(nestedDir, 0o700); errMkdir != nil {
+		t.Fatalf("failed to create plugin state directory: %v", errMkdir)
+	}
+	pluginStatePath := filepath.Join(nestedDir, "ai-provider-names.json")
+	outsidePath := filepath.Join(authDir, "outside.json")
+	for _, path := range []string{pluginStatePath, outsidePath} {
+		if errWrite := os.WriteFile(path, []byte(`{"type":"codex"}`), 0o600); errWrite != nil {
+			t.Fatalf("failed to write test file %q: %v", path, errWrite)
+		}
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, coreauth.NewManager(nil, nil, nil))
+	h.tokenStore = &memoryAuthStore{}
+	for _, name := range []string{"../outside.json", `.cpa-account-config-manager\ai-provider-names.json`} {
+		deleteRec := httptest.NewRecorder()
+		deleteCtx, _ := gin.CreateTestContext(deleteRec)
+		deleteCtx.Request = httptest.NewRequest(http.MethodDelete, "/v0/management/auth-files?name="+url.QueryEscape(name), nil)
+		h.DeleteAuthFile(deleteCtx)
+		if deleteRec.Code != http.StatusBadRequest {
+			t.Fatalf("name %q status = %d, want %d body=%s", name, deleteRec.Code, http.StatusBadRequest, deleteRec.Body.String())
+		}
+	}
+	for _, path := range []string{pluginStatePath, outsidePath} {
+		if _, errStat := os.Stat(path); errStat != nil {
+			t.Fatalf("expected file to remain untouched at %q, stat err: %v", path, errStat)
+		}
+	}
+}

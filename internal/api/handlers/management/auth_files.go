@@ -129,7 +129,7 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 	if pagination.enabled {
 		matching := make([]*coreauth.Auth, 0, len(auths))
 		for _, auth := range auths {
-			if !matchesAuthFileLookup(auth, nameFilter, authIndexFilter) || !isAuthFileListable(auth) {
+			if !matchesAuthFileLookup(auth, nameFilter, authIndexFilter) || !h.authFileListable(auth) {
 				continue
 			}
 			matching = append(matching, auth)
@@ -154,7 +154,7 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 	}
 	files := make([]gin.H, 0, len(auths))
 	for _, auth := range auths {
-		if !matchesAuthFileLookup(auth, nameFilter, authIndexFilter) {
+		if !matchesAuthFileLookup(auth, nameFilter, authIndexFilter) || !h.authFileListable(auth) {
 			continue
 		}
 		if entry := h.buildAuthFileEntry(auth, quotaSupportedProviders); entry != nil {
@@ -278,6 +278,44 @@ func isAuthFileListable(auth *coreauth.Auth) bool {
 		return false
 	}
 	return true
+}
+
+// File-based auth discovery only scans direct children of AuthDir; nested plugin state is not an auth-file entry.
+func (h *Handler) authFileListable(auth *coreauth.Auth) bool {
+	if !isAuthFileListable(auth) {
+		return false
+	}
+	if h == nil || h.cfg == nil {
+		return true
+	}
+	path := strings.TrimSpace(authAttribute(auth, "path"))
+	authDir := strings.TrimSpace(h.cfg.AuthDir)
+	if path == "" || authDir == "" || !isNestedPathWithinDirectory(authDir, path) {
+		return true
+	}
+	return false
+}
+
+func isNestedPathWithinDirectory(root, target string) bool {
+	root, errRoot := filepath.Abs(root)
+	if errRoot != nil {
+		return false
+	}
+	target, errTarget := filepath.Abs(target)
+	if errTarget != nil {
+		return false
+	}
+	if resolvedRoot, errResolve := filepath.EvalSymlinks(root); errResolve == nil {
+		root = resolvedRoot
+	}
+	if resolvedTarget, errResolve := filepath.EvalSymlinks(target); errResolve == nil {
+		target = resolvedTarget
+	}
+	relative, errRelative := filepath.Rel(root, target)
+	if errRelative != nil || !filepath.IsLocal(relative) || relative == "." {
+		return false
+	}
+	return filepath.Dir(relative) != "."
 }
 
 func lockedAuthIndex(auth *coreauth.Auth) string {
