@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="CLIProxyAPI Suite 客户端配置与风控基线：codex config.toml 逐项说明、CPA 侧配置项与账号运营规范。">
+  <title>配置与风控基线 · CLIProxyAPI Suite</title>
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <a class="brand" href="index.html"><span class="brand-mark">CPA</span><span><strong>Suite 部署手册</strong><small>CLIProxyAPI · CPA-Manager</small></span></a>
+    <p class="nav-caption">从零开始</p>
+    <nav aria-label="文档导航"><ul class="nav-list">
+      <li><a href="index.html">概览</a></li><li><a href="install.html">下载与安装</a></li><li><a href="oauth.html">OAuth 与调用</a></li><li><a href="manager.html">管理面板</a></li><li><a href="enterprise-audit.html">Enterprise Audit</a></li><li><a href="hardening.html" aria-current="page">配置与风控基线</a></li>
+    </ul></nav>
+    <div class="sidebar-note">本页是运营基线，不是通用安装步骤。<br><a href="https://github.com/13210541230/CLIProxyAPI/releases" target="_blank" rel="noopener">你们的 GitHub Releases ↗</a></div>
+  </aside>
+  <div class="main">
+    <header class="topbar"><span class="topbar-label">部署手册 <span aria-hidden="true">/</span> 配置与风控基线</span><div class="topbar-links"><a href="install.html">下载与安装 ↗</a><a href="oauth.html">OAuth 与调用 ↗</a></div></header>
+    <main class="content">
+      <p class="eyebrow">05 · Harden</p><h1>配置与风控基线</h1>
+      <p class="lead">本页把三件事收敛到同一条基线：客户端 <code>config.toml</code>、CPA 转发配置、账号与运营规范。目标是让账号在"地域一致性、设备画像、行为时序"三个维度上都表现为一个真实用户，而不是一个被集中管理的账号池。</p>
+
+      <div class="callout warn"><strong>前提：</strong>客户端不持有 <code>auth.json</code>，全部请求经 CPA 转发；客户端只配置 <code>base_url</code> 与 CPA 下发的客户端密钥。<b>任何时候不要把 OAuth 凭据分发到客户端</b>——一旦客户端持有凭据，它会自行登录与刷新，直接暴露真实出口。</div>
+      <div class="callout"><strong>只想要一页速查？</strong>看 <a href="../hardening-quick.html">风控预防速查</a>；本页提供完整原理、逐项配置与运营规范。</div>
+
+      <h2>1. 风控模型速览</h2>
+      <p>上游对账号的打分是多因素综合的；执行层则是动态的：同一账号可能出现"被降权 → 恢复数天 → 再次被降权"。因此本页的目标不是"骗过单次检测"，而是把账号级曲线拉回单人基线。</p>
+      <div class="table-wrap"><table><thead><tr><th>判据</th><th>说明</th><th>本页对应章节</th></tr></thead><tbody>
+        <tr><td><strong>地域一致性</strong></td><td>请求体携带的时区与日期、活跃时段分布、出口地区、支付地区四者是否自洽。</td><td>2.4、4</td></tr>
+        <tr><td><strong>设备与画像</strong></td><td>UA/版本等指纹、<code>installation_id</code> 数量、工作区与仓库集合、会话连通性。</td><td>2、3</td></tr>
+        <tr><td><strong>行为时序</strong></td><td>并发饱和度、额度窗口命中节奏、活跃时段直方图是否符合人类使用形态。</td><td>4</td></tr>
+      </tbody></table></div>
+      <div class="callout"><strong>分层经验：</strong>账号获取质量决定"首杀"（批量注册的新号往往在早期就被整批清理），而环境与行为决定后续波次与复发。两层都要修，但获号质量的收益更靠前。</div>
+
+      <h2>2. 客户端 codex 配置</h2>
+      <h3>2.1 推荐基线</h3>
+      <p class="muted small">TOML 的顶层键必须写在第一个 <code>[table]</code> 之前；表格顺序如下，可直接替换客户端 <code>~/.codex/config.toml</code>。</p>
+      <pre><code>model_provider = "cliproxyapi"
+model = "gpt-6-sol"
+model_reasoning_effort = "medium"
+plan_mode_reasoning_effort = "high"
+model_reasoning_summary = "auto"
+
+# 按团队工作流选择；如无必要，避免长期使用 danger-full-access + never
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+tool_timeout_sec = 1_800
+
+# 关闭启动时更新检查（默认开启，会访问 GitHub）
+check_for_update_on_startup = false
+
+model_catalog_url = "http://&lt;CPA地址&gt;/v1/models"
+
+[model_providers.cliproxyapi]
+name = "OpenAI"
+base_url = "http://&lt;CPA地址&gt;:8317/v1"
+wire_api = "responses"
+http_headers = { "X-OpenAI-Actor-Authorization" = "local-proxy" }
+requires_openai_auth = false
+experimental_bearer_token = "sk-替换为CPA下发的客户端密钥"
+
+# 关闭遥测：默认会把指标直连发送到 ab.chatgpt.com，来源是客户端本机出口
+[analytics]
+enabled = false
+
+# 关闭反馈上传：反馈/诊断附件可能包含内网地址、本机路径与日志
+[feedback]
+enabled = false
+
+# 双保险：显式指定不使用 OTEL 导出器
+[otel]
+metrics_exporter = "none"</code></pre>
+
+      <h3>2.2 配置项说明</h3>
+      <div class="table-wrap"><table><thead><tr><th>配置</th><th>推荐值</th><th>原因</th></tr></thead><tbody>
+        <tr><td><code>requires_openai_auth</code></td><td><code>false</code></td><td>客户端不建立 ChatGPT 身份，因此不会自行登录、刷新令牌或访问账号级接口。</td></tr>
+        <tr><td><code>experimental_bearer_token</code></td><td>CPA 下发的客户端密钥</td><td>该密钥是消费 CPA 的凭据，不要提交到仓库，也不要复用到其他客户端。</td></tr>
+        <tr><td><code>http_headers</code></td><td>内部约定头（如 <code>X-OpenAI-Actor-Authorization</code>）</td><td>CPA 出站采用请求头白名单，此类自定义头不会转发到上游，仅用于内部标识。</td></tr>
+        <tr><td><code>sandbox_mode</code> / <code>approval_policy</code></td><td><code>workspace-write</code> / <code>on-request</code></td><td>两者会随 turn 元数据逐轮上行；长期"免审 + 全权限 + 高吞吐"是典型的无人值守自动化画像。确有需要时再放开。</td></tr>
+        <tr><td><code>[analytics] enabled</code></td><td><code>false</code></td><td>默认导出器会把指标发往 <code>ab.chatgpt.com</code>，标签含客户端类型、模型与鉴权模式，来源是客户端本机出口。</td></tr>
+        <tr><td><code>[feedback] enabled</code></td><td><code>false</code></td><td>反馈与诊断附件可能带出内网地址、路径与日志。</td></tr>
+        <tr><td><code>[otel] metrics_exporter</code></td><td><code>"none"</code></td><td>双保险，显式声明不使用 OTEL 导出器。</td></tr>
+        <tr><td><code>check_for_update_on_startup</code></td><td><code>false</code></td><td>启动检查会访问外部服务；内网环境也没有更新需求。</td></tr>
+      </tbody></table></div>
+
+      <h3>2.3 机器与环境（人工项）</h3>
+      <div class="table-wrap"><table><thead><tr><th>项</th><th>做法</th><th>说明</th></tr></thead><tbody>
+        <tr><td>系统时区</td><td>与账号叙事保持一致，并<b>同时</b>调整实际作息与活跃时段</td><td>请求体每轮携带客户端时区与日期。<b>只改时区文本、作息仍是原时段</b>会造成"声明与行为矛盾"，比如实暴露更可疑。要么一起改，要么维持真实。</td></tr>
+        <tr><td>出口地区</td><td>客户端本身不需要额外代理；账号侧出口由 CPA 决定</td><td>客户端只连内网 CPA，其公网出口是内网出口，与上游账号叙事无关。</td></tr>
+        <tr><td>路径与用户名</td><td>按需；属于内容层，无法技术遮蔽</td><td>中文路径、中文提示词与代码会随请求体完整上行，作为残余风险接受。</td></tr>
+        <tr><td>凭据存放</td><td>客户端不落盘 <code>auth.json</code></td><td>这是「客户端不产生直连」的根本原因。</td></tr>
+        <tr><td>客户端版本</td><td>同一批用户保持接近但不强制完全一致</td><td>版本号会随请求头真实上行，没必要也不建议伪造。</td></tr>
+      </tbody></table></div>
+
+      <h2>3. CPA 侧配置</h2>
+      <h3>3.1 统一出口</h3>
+      <p>所有账号统一使用一个新加坡出口，在凭据文件里用 <code>proxy_url</code> 指定（未设置时回退到全局 <code>proxy-url</code>）。同一出口上的账号在上游图谱里会被关联，因此其余维度（并发、节奏、时段、内容）的收敛更重要。</p>
+      <pre><code>{
+  "type": "codex",
+  "access_token": "...",
+  "refresh_token": "...",
+  "proxy_url": "socks5://user:pass@sg-egress.example.com:1080"
+}</code></pre>
+      <div class="callout"><strong>已验证：</strong>令牌刷新与 API 请求使用同一份凭据级代理（后台自动刷新每 15 分钟一次，走的也是同一条刷新路径），因此配置 <code>proxy_url</code> 即可覆盖"刷新与请求同源"的问题。</div>
+      <div class="callout warn"><strong>迁移注意：</strong>不要在同一时间窗内批量更换出口——"一批账号同时换 IP"本身就是一个关联事件。按天错峰，并且已停用的账号不要在新出口上继续活动。</div>
+
+      <h3>3.2 身份改写</h3>
+      <pre><code>codex:
+  # 按所选账号改写 prompt_cache_key / 安装标识 / turn / window 标识
+  identity-confuse: true
+  # 默认 false：强制官方 UA 与 Originator。需要真实客户端指纹时再评估关闭
+  disable-codex-cloaking: false
+  # 客户端未发送时使用的兜底头（仅 file/OAuth 凭据）
+  # codex-header-defaults:
+  #   user-agent: "codex_cli_rs/0.114.0 (Mac OS 14.2.0; x86_64) vscode/1.111.0"
+  #   beta-features: "multi_agent"</code></pre>
+      <div class="table-wrap"><table><thead><tr><th>配置</th><th>作用</th><th>注意</th></tr></thead><tbody>
+        <tr><td><code>identity-confuse</code></td><td>把 <code>prompt_cache_key</code>、安装标识与部分请求标识按账号改写。</td><td><b>生效前提：</b>需要 <code>routing.strategy</code> 为 <code>fill-first</code> 或 <code>routing.session-affinity</code> 为真（见 <code>codex_executor_request.go</code> 的判断）。插件独占调度时该前提未必成立，改为 <code>true</code> 后务必抓一次上游请求确认真的生效。</td></tr>
+        <tr><td><code>disable-codex-cloaking</code></td><td>关闭后不再强制统一 UA/Originator，客户端与配置提供的真实值生效，可按凭据用 <code>header:</code> 属性差异化。</td><td>强制伪装本身是异常信号（全网同一 UA 与真实版本头互相矛盾），但关闭后需实测是否会触发 Cloudflare 拦截；建议先小流量验证。</td></tr>
+        <tr><td><code>codex-header-defaults</code></td><td>客户端未发送头时的兜底值。</td><td>只影响 HTTP/WebSocket 的缺失场景，不会覆盖客户端真实值。</td></tr>
+      </tbody></table></div>
+      <p class="muted small">如需按账号差异化 UA，可在凭据属性中使用 <code>header:User-Agent</code> 形式（转发层会应用到上游请求），并在关闭强制伪装后生效。</p>
+
+      <h3>3.3 凭据与账号管理</h3>
+      <div class="grid"><div class="card"><h3>可以放心保持</h3><ul><li>客户端只持客户端密钥，凭据留在 CPA。</li><li>出站请求头白名单，客户端自定义头不外发。</li><li>凭据级代理、身份改写能力均已内置。</li></ul></div><div class="card"><h3>需要人工执行</h3><ul><li>为账号配置统一的新加坡出口（见 4）。</li><li>把被降权的账号从池中摘除，停止探活与续费。</li><li>按账号控制并发与总用量（建议每账号约 10 名用户）。</li></ul></div></div>
+
+      <h2>4. 账号资产与运营规范</h2>
+      <p class="muted small">以下各项无法由代码解决，需要运营与人工执行；按收益排序。</p>
+      <div class="table-wrap"><table><thead><tr><th>#</th><th>项</th><th>做法</th><th>原因</th></tr></thead><tbody>
+        <tr><td>1</td><td>账号获取质量</td><td>优先老号与单独注册的账号；不使用批量注册的临时邮箱批次；注册时间与注册环境尽量离散。</td><td>批量注册的账号在上游注册期就已成簇，往往在早期被整批处置，使用环境再干净也救不回来。</td></tr>
+        <tr><td>2</td><td>新号预热</td><td>注册后先有正常网页活动，再充值，随后轻量使用数天、逐步爬量；避开充值后 24–72 小时的支付复核窗口。</td><td>"注册 → 充值 → 立刻高并发"三连会同时触发注册簇与支付复核两条路径。</td></tr>
+        <tr><td>3</td><td>支付规范</td><td>一卡一号；充值会话隔离（不同设备、浏览器与出口）；充值时间错开；已停用账号不再续费。</td><td>支付是图谱里最硬的边之一；同卡段、同时间窗、同会话会把一批账号直接连起来。</td></tr>
+        <tr><td>4</td><td>统一出口</td><td>所有账号统一使用一个新加坡出口，优先住宅/静态 IP；更换出口时按天错峰。</td><td>出口地区与充值、时区保持一致；但同一出口上的账号在上游图谱里会互相关联，所以不要在同一时间窗集中更换出口。</td></tr>
+        <tr><td>5</td><td>风控账号处置与养号</td><td>被降权账号立即从池中摘除，停止探活与续费；在 ChatGPT 网页端登出全部会话，静置一段时间（如 24 小时）后再逐步恢复：先低强度使用，避免再次高强度占用。</td><td>持续活动会不断刷新该出口的负分并继续供关联信号；已有账号恢复的实例说明养号有效，但“恢复 ≠ 清白”，不应把恢复后的账号立即当作健康资产。</td></tr>
+        <tr><td>6</td><td>行为节奏</td><td>下调并发上限、人为留出空窗、额度留余量、避免"额度重置即打满"。</td><td>并发长期顶格与连续无空窗是账号级标记的主要判据，也是单人几乎不可能出现的形态。</td></tr>
+        <tr><td>7</td><td>账号人数与用量</td><td>建议每个账号绑定约 10 名用户；重点是按账号设置并发上限，并控制总用量与使用节奏，使账号的时序形态接近单人基线。</td><td>人数决定并发与用量的量级；并发上限与使用节奏才是账号级判定的直接依据。</td></tr>
+        <tr><td>8</td><td>绑定稳定</td><td>用户与账号保持长期稳定绑定，避免频繁重新选号或跨池借用。</td><td>频繁换号会让同一名使用者的内容散布到多个账号，在图谱上补边；长期绑定则让账号画像保持稳定。</td></tr>
+        <tr><td>9</td><td>机器与运维</td><td>凭据文件分散存放；重启、升级按账号错峰，避免整批同时沉默或同时恢复。</td><td>同一批账号同步的存活/沉默窗口是最容易识别的关联特征。</td></tr>
+        <tr><td>10</td><td>地区一致性</td><td>支付地区、出口地区、作息时段、内容语言四者尽量自洽，避免"支付在一地、出口在另一地、作息在第三地"。</td><td>多层地域互相矛盾会构成"账号归属者与使用者不是同一人"的叙事。</td></tr>
+      </tbody></table></div>
+
+      <h2>5. 上线自查清单</h2>
+      <ol class="steps">
+        <li><strong>客户端配置落地。</strong>每台机器确认 <code>[analytics]</code>、<code>[feedback]</code>、<code>check_for_update_on_startup</code> 已关闭，密钥换成 CPA 下发的客户端密钥。</li>
+        <li><strong>连通性验证。</strong>先取模型列表，再发一次真实请求，确认经 CPA 正常返回（见 <a href="oauth.html">OAuth 与调用</a>）。</li>
+        <li><strong>抓一次上游请求。</strong>确认时区、UA/版本、安装标识与 turn 元数据是否符合基线（身份改写是否真的生效）。</li>
+        <li><strong>确认账号出口。</strong>在出口侧日志确认每个账号（或分组）使用的是预期出口，且刷新请求同源。</li>
+        <li><strong>确认账号健康。</strong>用管理面板或用量视图观察各账号状态，异常账号立即停用并摘除。</li>
+        <li><strong>确认无外联。</strong>在客户端机器上确认没有指向外部遥测/反馈端点的稳定连接。</li>
+      </ol>
+
+      <h2>6. 残余风险</h2>
+      <div class="table-wrap"><table><thead><tr><th>项</th><th>为什么无法消除</th></tr></thead><tbody>
+        <tr><td>中文提示词、注释与路径</td><td>内容对上游模型完全可见，任何技术手段都无法遮蔽。</td></tr>
+        <tr><td>缺少官方客户端的证明头</td><td>该类证明由官方客户端与账号身份共同产生，网关转发无法伪造。</td></tr>
+        <tr><td>历史出口与账号的关联</td><td>已经发生的关联无法删除，只能靠后续流量转移与时间衰减弱化。</td></tr>
+        <tr><td>多用户共用同一账号的画像多样性</td><td>只能通过控制每账号人数、更长的绑定周期与更收敛的使用节奏缓解。</td></tr>
+      </tbody></table></div>
+      <div class="callout warn"><strong>不要做的事：</strong>把凭据分发到客户端；同一张卡批量充值；整批账号同时更换出口；整机同时重启；在被判定降权的账号上继续跑生产请求。</div>
+
+      <footer class="page-footer"><a href="enterprise-audit.html">← 上一步：Enterprise Audit</a><a href="index.html">返回概览 →</a></footer>
+    </main>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="从 CPA-Manager（18317）添加 OAuth 账号，并验证 CLIProxyAPI 请求。">
+  <title>OAuth 与调用 · CLIProxyAPI Suite</title>
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <a class="brand" href="index.html"><span class="brand-mark">CPA</span><span><strong>Suite 部署手册</strong><small>CLIProxyAPI · CPA-Manager</small></span></a>
+    <p class="nav-caption">从零开始</p>
+    <nav aria-label="文档导航"><ul class="nav-list">
+      <li><a href="index.html">概览</a></li><li><a href="install.html">下载与安装</a></li><li><a href="oauth.html" aria-current="page">OAuth 与调用</a></li><li><a href="manager.html">管理面板</a></li><li><a href="enterprise-audit.html">Enterprise Audit</a></li><li><a href="hardening.html">配置与风控基线</a></li>
+    </ul></nav>
+    <div class="sidebar-note"><a href="https://github.com/13210541230/CLIProxyAPI/releases" target="_blank" rel="noopener">你们的 GitHub Releases ↗</a></div>
+  </aside>
+  <div class="main">
+    <header class="topbar"><span class="topbar-label">部署手册 <span aria-hidden="true">/</span> OAuth 与调用</span><div class="topbar-links"><a href="https://help.router-for.me/cn/introduction/quick-start.html" target="_blank" rel="noopener">官方快速开始 ↗</a><a href="https://github.com/13210541230/CLIProxyAPI" target="_blank" rel="noopener">项目仓库 ↗</a></div></header>
+    <main class="content">
+      <p class="eyebrow">02 · Authorize</p><h1>添加 OAuth 账号</h1>
+      <p class="lead">OAuth 账号从 CPA-Manager（18317）的 OAuth 页面添加和维护。Manager 连接 CPA（默认 8317）后可在一个面板完成授权、查看认证文件与配额；代理客户端仍使用 CPA 的客户端 API Key。</p>
+      <div class="callout warn"><strong>授权边界：</strong>只登录你有权使用的服务商账号，确认服务商的使用条款、配额和地区要求。CLIProxyAPI 不会授予订阅权限，也不会绕过服务商策略。</div>
+
+      <h2>授权步骤</h2>
+      <ol class="steps">
+        <li>确认 Suite 已启动，打开 CPA-Manager 主面板：<code>http://127.0.0.1:18317/management.html</code>。</li>
+        <li>首次使用时完成初始化向导：CPA 连接地址填 <code>http://127.0.0.1:8317</code>，管理密码填 <code>config.yaml</code> 中的 <code>remote-management.secret-key</code>；可选的请求监控设置先保留默认值，点击登录进入面板。</li>
+        <li>从 CPA-Manager 导航进入 <strong>OAuth</strong> 页面，选择页面列出的服务商与登录方式，例如 Codex、Anthropic/Claude、Gemini CLI 等；具体选项以当前 Suite 版本为准。</li>
+        <li>点击对应的开始登录/授权按钮，在服务商页面登录并确认授权。不要把验证码、回调链接或凭据粘贴到公开聊天。</li>
+        <li>授权完成后回到 CPA-Manager 的 OAuth 页面查看状态；必要时在认证文件或配额页面确认账号已出现。其他账号逐个重复授权即可。</li>
+        <li>随后使用代理 API 地址 <code>http://127.0.0.1:8317/v1</code> 和 <code>config.yaml</code> 中的客户端 API Key 验证请求。</li>
+      </ol>
+
+      <h2>无法自动完成回调时</h2>
+      <p>有些环境可以成功登录，但浏览器无法访问本机的 OAuth 回调地址。此时在浏览器授权结束后的地址栏复制完整回调 URL，切回 CPA-Manager（18317）的 OAuth 页面，粘贴到回调 URL 输入框并提交。提交后应看到授权成功状态或认证文件新增。</p>
+      <div class="callout"><strong>不要反复重新授权。</strong>先按页面要求提交本次完整回调 URL；它通常包含一次性 code/state，应视为敏感信息，在成功或失效后不要继续传播。</div>
+
+      <h2>凭据存放在哪里</h2>
+      <p>CPA 按 <code>config.yaml</code> 中的 <code>auth-dir</code> 管理 OAuth 认证文件。默认配置为 <code>~/.cli-proxy-api</code>，即运行 CPA 的用户主目录下目录。更改运行用户或服务账户时，要同时确认该账户的配置路径和文件读写权限。</p>
+      <ul>
+        <li>不要把认证目录提交到 Git、放进网站可公开访问的目录，或附在普通故障工单中。</li>
+        <li>备份应按凭据级敏感数据处理，限制可读人员并验证恢复流程。</li>
+        <li>多个账号可以加入同一 CPA；实际选用哪个账号由请求模型、可用凭据和 CPA 路由策略决定。</li>
+      </ul>
+
+      <h2>验证模型与代理请求</h2>
+      <p>先请求可用模型列表。Windows PowerShell 使用 <code>curl.exe</code>：</p>
+      <pre><code># PowerShell
+curl.exe http://127.0.0.1:8317/v1/models `
+  -H "Authorization: Bearer 替换为 config.yaml 中的客户端API密钥"
+
+# Linux / macOS
+curl http://127.0.0.1:8317/v1/models \
+  -H 'Authorization: Bearer 替换为 config.yaml 中的客户端API密钥'</code></pre>
+      <p>选用返回结果中的模型 ID，发起一条 OpenAI Chat Completions 示例请求：</p>
+      <pre><code>curl http://127.0.0.1:8317/v1/chat/completions \
+  -H 'Authorization: Bearer 替换为你的客户端API密钥' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"替换为实际模型ID","messages":[{"role":"user","content":"回复：连接成功"}]}'</code></pre>
+      <p>成功收到上游响应后，客户端配置通常使用：</p>
+      <div class="table-wrap"><table><thead><tr><th>字段</th><th>填写值</th></tr></thead><tbody>
+        <tr><td>Base URL</td><td><code>http://127.0.0.1:8317/v1</code></td></tr>
+        <tr><td>API Key</td><td><code>config.yaml</code> 中的 <code>api-keys</code> 项</td></tr>
+        <tr><td>Model</td><td><code>/v1/models</code> 返回的模型 ID</td></tr>
+      </tbody></table></div>
+      <p class="muted">示例以 Chat Completions 为例，不代表所有模型都支持该协议。若模型支持 Responses、Anthropic Messages 或 Gemini 协议，请使用相应端点与客户端配置。</p>
+
+      <h2>遇到问题时</h2>
+      <div class="grid">
+        <div class="card"><h3>请求返回 401</h3><p>检查请求头里的代理 API Key 是否来自 <code>api-keys</code>；它不同于管理密钥。</p></div>
+        <div class="card"><h3>模型列表为空</h3><p>确认 OAuth 已成功保存、凭据没有过期，并检查 CPA 日志中的账号/模型加载结果。</p></div>
+        <div class="card"><h3>回调访问失败</h3><p>保持授权页开启，复制最终回调地址并回到 OAuth 页面提交；不要重复点击授权直到确认状态。</p></div>
+        <div class="card"><h3>Manager 无法登录或连接</h3><p>先确认 18317 的 CPA-Manager 和 8317 的 CPA 都在运行；核对 CPA 地址、<code>remote-management.secret-key</code> 与防火墙设置。</p></div>
+      </div>
+      <div class="callout">更详尽的基础安装和配置方式请参阅<a href="https://help.router-for.me/cn/introduction/quick-start.html" target="_blank" rel="noopener">官方快速开始 ↗</a>。本手册的下载源与 Suite 包则以<a href="https://github.com/13210541230/CLIProxyAPI/releases" target="_blank" rel="noopener">你们的 GitHub Releases ↗</a>为准。</div>
+      <footer class="page-footer"><a href="install.html">← 下载与安装</a><a href="manager.html">下一步：管理面板 →</a></footer>
+    </main>
+  </div>
+</div>
+</body>
+</html>

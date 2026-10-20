@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="从零部署 CLIProxyAPI 与 CPA-Manager Suite：下载、配置、OAuth、管理面板与 enterprise-access-audit 插件。">
+  <title>CLIProxyAPI Suite 部署手册</title>
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <a class="brand" href="index.html"><span class="brand-mark">CPA</span><span><strong>Suite 部署手册</strong><small>CLIProxyAPI · CPA-Manager</small></span></a>
+    <p class="nav-caption">从零开始</p>
+    <nav aria-label="文档导航"><ul class="nav-list">
+      <li><a href="index.html" aria-current="page">概览</a></li>
+      <li><a href="install.html">下载与安装</a></li>
+      <li><a href="oauth.html">OAuth 与调用</a></li>
+      <li><a href="manager.html">管理面板</a></li>
+      <li><a href="enterprise-audit.html">Enterprise Audit</a></li>
+      <li><a href="hardening.html">配置与风控基线</a></li>
+    </ul></nav>
+    <div class="sidebar-note">本手册以你们的联合发布包为准。<br><a href="https://github.com/13210541230/CLIProxyAPI/releases" target="_blank" rel="noopener">打开你们的 GitHub Releases ↗</a></div>
+  </aside>
+  <div class="main">
+    <header class="topbar"><span class="topbar-label">运维文档 <span aria-hidden="true">/</span> 快速上手</span><div class="topbar-links"><a href="https://help.router-for.me/cn/introduction/quick-start.html" target="_blank" rel="noopener">官方快速开始 ↗</a><a href="https://github.com/13210541230/CLIProxyAPI" target="_blank" rel="noopener">你们的项目仓库 ↗</a></div></header>
+    <main class="content">
+      <section class="hero">
+        <p class="eyebrow">Self-hosted AI gateway</p>
+        <h1>从零搭建<br>CLIProxyAPI + CPA-Manager</h1>
+        <p class="lead">从下载联合包开始，完成安全配置、OAuth 账号授权、API 连通验证，并了解 CPA-Manager 与 Enterprise Access Audit 的日常用法。</p>
+        <div class="hero-actions"><a class="button" href="install.html">开始安装</a><a class="button secondary" href="https://github.com/13210541230/CLIProxyAPI/releases" target="_blank" rel="noopener">前往你们的 Releases</a></div>
+      </section>
+
+      <div class="callout warn"><strong>下载源说明：</strong>本手册部署的是包含 CLIProxyAPI、CPA-Manager 和 cpa-updater 的 <code>CLIProxyAPI-Suite</code> 联合包。请从你们维护的 <a href="https://github.com/13210541230/CLIProxyAPI/releases" target="_blank" rel="noopener">13210541230/CLIProxyAPI Releases</a> 下载；官方通用安装方式另见 <a href="https://help.router-for.me/cn/introduction/quick-start.html" target="_blank" rel="noopener">CLIProxyAPI 官方快速开始</a>，两者用途不同，不要混用发布包。</div>
+
+      <h2>六步跑通</h2>
+      <ol class="steps">
+        <li><strong>下载正确架构的 Suite 包。</strong>按 Windows/Linux/macOS 和 amd64/arm64 选择，再核对 SHA-256。</li>
+        <li><strong>解压并配置。</strong>从 <code>config.example.yaml</code> 创建 <code>config.yaml</code>，替换管理密钥和客户端 API Key。</li>
+        <li><strong>启动两个服务。</strong>使用 <code>start.bat</code> 或 <code>start.sh</code>，不要分别随意启动多个实例。</li>
+        <li><strong>授权 OAuth 账号。</strong>打开 CPA-Manager（18317），完成首次连接后从面板进入 OAuth 页面登录。</li>
+        <li><strong>发起真实请求。</strong>先访问 <code>/v1/models</code>，再用返回的模型 ID 发送一次聊天请求。</li>
+        <li><strong>应用客户端基线。</strong>按 <a href="hardening.html">配置与风控基线</a> 设置各用户机器的 <code>~/.codex/config.toml</code>，并关闭客户端遥测与反馈上传。</li>
+      </ol>
+
+      <h2>文档目录</h2>
+      <div class="grid">
+        <a class="card card-link" href="install.html"><h3>01 · 下载与安装</h3><p>Release 资产选择、校验、解压、安全配置、启停脚本和端口。</p></a>
+        <a class="card card-link" href="oauth.html"><h3>02 · OAuth 与 API 调用</h3><p>服务商授权、回调处理、模型列表及 curl 连通性验证。</p></a>
+        <a class="card card-link" href="manager.html"><h3>03 · 管理面板</h3><p>以 CPA-Manager（18317）为主线：初始化、配置、OAuth、监控、配额与插件操作。</p></a>
+        <a class="card card-link" href="enterprise-audit.html"><h3>04 · Enterprise Access Audit</h3><p>启用插件、模型策略、请求审计、数据边界与可选账号池。</p></a>
+        <a class="card card-link" href="hardening.html"><h3>05 · 配置与风控基线</h3><p>客户端 config.toml 逐项说明、CPA 侧改写与出口配置、账号与运营规范。</p></a>
+      </div>
+      <p class="muted small">另见独立页：<a href="../hardening-quick.html">风控预防速查</a>（账号 · 环境 · 配置，可单独分发或打印）。</p>
+
+      <h2>服务关系与默认地址</h2>
+      <div class="table-wrap"><table><thead><tr><th>组件</th><th>用途</th><th>默认地址 / 入口</th></tr></thead><tbody>
+        <tr><td><strong>CPA-Manager（推荐日常入口）</strong></td><td>管理 CPA 配置、OAuth、请求监控、配额、系统更新和插件资源</td><td><code>http://127.0.0.1:18317/management.html</code></td></tr>
+        <tr><td>CLIProxyAPI</td><td>接收 AI 客户端请求并路由到已授权上游账号</td><td><code>http://127.0.0.1:8317</code></td></tr>
+        <tr><td>CPA 原生管理页（备用）</td><td>需要直接访问 CPA 管理接口时使用；日常操作优先在 CPA-Manager 完成</td><td><code>http://127.0.0.1:8317/management.html</code></td></tr>
+      </tbody></table></div>
+      <div class="callout"><strong>安全起点：</strong>仅本机验证时把 CPA 的 <code>host</code> 设为 <code>127.0.0.1</code>、保持 <code>remote-management.allow-remote: false</code>。管理密钥与客户端 API Key 分开设置；公网部署前另行配置 TLS、网络访问控制与安全备份。</div>
+
+      <h2>参考资料</h2>
+      <div class="grid">
+        <div class="card"><h3>本项目联合发布</h3><p><a href="https://github.com/13210541230/CLIProxyAPI/releases" target="_blank" rel="noopener">GitHub Releases ↗</a> · <a href="https://github.com/13210541230/CLIProxyAPI/blob/main/release/unified-release.md" target="_blank" rel="noopener">联合包说明 ↗</a></p></div>
+        <div class="card"><h3>官方通用文档</h3><p><a href="https://help.router-for.me/cn/introduction/quick-start.html" target="_blank" rel="noopener">快速开始 ↗</a> · <a href="https://help.router-for.me/cn/management/api" target="_blank" rel="noopener">Management API ↗</a></p></div>
+      </div>
+      <footer class="page-footer"><span>中文上手指南 · 随版本更新</span><a href="install.html">下一步：下载与安装 →</a></footer>
+    </main>
+  </div>
+</div>
+</body>
+</html>

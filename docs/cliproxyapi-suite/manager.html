@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="以 CPA-Manager（18317）为主入口，了解初始化、配置、OAuth、监控、插件和更新操作。">
+  <title>管理面板 · CLIProxyAPI Suite</title>
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <a class="brand" href="index.html"><span class="brand-mark">CPA</span><span><strong>Suite 部署手册</strong><small>CLIProxyAPI · CPA-Manager</small></span></a>
+    <p class="nav-caption">从零开始</p>
+    <nav aria-label="文档导航"><ul class="nav-list">
+      <li><a href="index.html">概览</a></li><li><a href="install.html">下载与安装</a></li><li><a href="oauth.html">OAuth 与调用</a></li><li><a href="manager.html" aria-current="page">管理面板</a></li><li><a href="enterprise-audit.html">Enterprise Audit</a></li><li><a href="hardening.html">配置与风控基线</a></li>
+    </ul></nav>
+    <div class="sidebar-note"><a href="https://github.com/13210541230/CLIProxyAPI/releases" target="_blank" rel="noopener">你们的 GitHub Releases ↗</a></div>
+  </aside>
+  <div class="main">
+    <header class="topbar"><span class="topbar-label">部署手册 <span aria-hidden="true">/</span> 管理面板</span><div class="topbar-links"><a href="https://help.router-for.me/cn/introduction/quick-start.html" target="_blank" rel="noopener">官方文档 ↗</a><a href="https://github.com/13210541230/CLIProxyAPI" target="_blank" rel="noopener">项目仓库 ↗</a></div></header>
+    <main class="content">
+      <p class="eyebrow">03 · Operate</p><h1>管理面板怎么用</h1>
+      <p class="lead">本手册以 CPA-Manager（18317）作为日常管理主入口：初始化连接后，在同一管理中心完成配置、OAuth、账号运维、监控和插件操作。CPA 的 8317 是后端服务地址。</p>
+
+      <div class="table-wrap"><table><thead><tr><th>入口</th><th>默认 URL</th><th>主要职责</th></tr></thead><tbody>
+        <tr><td><strong>CPA-Manager（主入口）</strong></td><td><code>http://127.0.0.1:18317/management.html</code></td><td>完成初始化后管理 CPA 配置、API Key、OAuth、认证文件、请求监控、账号配额、系统更新及插件资源。菜单依版本和启用功能略有差异。</td></tr>
+        <tr><td>CPA 原生管理页（备用）</td><td><code>http://127.0.0.1:8317/management.html</code></td><td>仅在 CPA-Manager 不可用或需要直接操作 CPA 原生页面时使用；日常讲解以 18317 为准。</td></tr>
+      </tbody></table></div>
+      <div class="callout"><strong>首次使用 CPA-Manager：</strong>向导中填 CPA 连接地址（默认 <code>http://127.0.0.1:8317</code>），再填写 <code>config.yaml</code> 的 <code>remote-management.secret-key</code> 并点击登录。可按需启用请求监控，采集间隔首次使用保持默认即可。这里不能填客户端调用代理 API 的 <code>api-keys</code>。</div>
+
+      <h2>日常功能一览</h2>
+      <div class="grid">
+        <div class="card"><h3>配置与 API Key</h3><p>从配置页管理服务监听、认证目录、入站 API Key 和远程管理等设置；修改后按页面提示保存并让 CPA 应用配置。</p></div>
+        <div class="card"><h3>OAuth 与认证文件</h3><p>从 OAuth 页面选择提供商并完成授权；认证文件页可查看、筛选或按需导入凭据。日常授权无需切换到 8317 原生页面。</p></div>
+        <div class="card"><h3>监控与配额</h3><p>在请求监控查看请求量、模型、账号和用量信息；配额页查看或刷新已授权账号配额。展示维度以当前版本和采集设置为准。</p></div>
+        <div class="card"><h3>系统与插件</h3><p>系统页查看运行/版本信息并手动检查更新；已加载的插件可在插件资源入口打开，例如 Enterprise Access Audit。</p></div>
+      </div>
+      <p class="muted small">CPA-Manager（18317）是本手册的主要操作界面。只有在 Manager 无法访问、某项高级管理操作未提供或需直接诊断时，才考虑使用 CPA 原生管理页（8317）或编辑 <code>config.yaml</code>；具体菜单名称可能随版本变化。</p>
+
+      <h2>首次登录与运行检查</h2>
+      <ol class="steps">
+        <li>从 Suite 目录运行 <code>start.bat</code>（Windows）或 <code>./start.sh</code>（Linux/macOS）；启动脚本会先启动 CPA，再启动 CPA-Manager。</li>
+        <li>直接打开主面板 <code>http://127.0.0.1:18317/management.html</code>。首次进入时按向导填写 CPA 地址和管理密钥，按需启用请求监控后提交登录。</li>
+        <li>进入后确认服务状态正常，并在 Manager 内打开配置、OAuth 或监控页面，避免把 8317 的原生管理页误当作 CPA-Manager。</li>
+        <li>若 Manager 无法连接 CPA，检查 CPA 是否运行、向导中的地址/端口是否对应 <code>config.yaml</code>、管理密钥是否正确及防火墙设置；查看 <code>logs/</code> 下两项服务日志。</li>
+      </ol>
+
+      <h2>停止、更新与数据保留</h2>
+      <div class="card">
+        <p>停止时使用 Suite 配套的 <code>stop.bat</code> 或 <code>./stop.sh</code>。脚本只针对该启动器记录的进程工作。</p>
+        <p>Manager 的“系统”页面主要用于手动检查版本并下载更新包，不等于自动安装。通过 Suite 启动两个服务后，可在套件目录执行：</p>
+        <pre><code># Linux / macOS：只检查版本
+./cpa-updater --check
+
+# Windows PowerShell：只检查版本
+.\cpa-updater.exe --check
+
+# 自动下载校验、安装并重启（按系统选择对应命令）
+./cpa-updater
+.\cpa-updater.exe</code></pre>
+        <p>更新器会校验联合发布清单中的 SHA-256，并在更新流程中保留用户配置、认证数据、数据库、日志和插件设置；建议仍在升级前自行备份重要数据。</p>
+      </div>
+      <div class="callout warn"><strong>不要混用版本：</strong>CPA、CPA-Manager、更新器与动态库应来自匹配的 Suite Release。单独替换其中一个组件可能导致管理协议或插件 ABI 不匹配。</div>
+      <h2>对应操作指南</h2>
+      <div class="grid"><a class="card card-link" href="install.html"><h3>安装、配置与启停</h3><p>返回安装章节查看脚本和网络安全配置。</p></a><a class="card card-link" href="enterprise-audit.html"><h3>Enterprise Audit 页面</h3><p>了解插件安装、策略、审计设置和数据范围。</p></a></div>
+      <footer class="page-footer"><a href="oauth.html">← OAuth 与调用</a><a href="enterprise-audit.html">下一步：Enterprise Audit →</a></footer>
+    </main>
+  </div>
+</div>
+</body>
+</html>

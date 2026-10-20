@@ -30,6 +30,9 @@ auths/*
 
 # Documentation
 docs/*
+!docs/account-pool-session-routing_CN.md
+!docs/CLIProxyAPI-Suite-从零部署指南.md
+!docs/cliproxyapi-suite/
 AGENTS.md
 CLAUDE.md
 GEMINI.md

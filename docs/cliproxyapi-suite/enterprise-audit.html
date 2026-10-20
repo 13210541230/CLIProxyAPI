@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="安装和使用 enterprise-access-audit 插件：Enterprise Key 模型策略、请求文本审计与 Cyber Policy 人工复核。">
+  <title>Enterprise Access Audit · CLIProxyAPI Suite</title>
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <a class="brand" href="index.html"><span class="brand-mark">CPA</span><span><strong>Suite 部署手册</strong><small>CLIProxyAPI · CPA-Manager</small></span></a>
+    <p class="nav-caption">从零开始</p>
+    <nav aria-label="文档导航"><ul class="nav-list">
+      <li><a href="index.html">概览</a></li><li><a href="install.html">下载与安装</a></li><li><a href="oauth.html">OAuth 与调用</a></li><li><a href="manager.html">管理面板</a></li><li><a href="enterprise-audit.html" aria-current="page">Enterprise Audit</a></li><li><a href="hardening.html">配置与风控基线</a></li>
+    </ul></nav>
+    <div class="sidebar-note"><a href="https://github.com/13210541230/CLIProxyAPI/blob/main/plugins/enterprise-access-audit/README_CN.md" target="_blank" rel="noopener">阅读完整插件说明 ↗</a></div>
+  </aside>
+  <div class="main">
+    <header class="topbar"><span class="topbar-label">部署手册 <span aria-hidden="true">/</span> Enterprise Access Audit</span><div class="topbar-links"><a href="https://github.com/13210541230/CLIProxyAPI/blob/main/plugins/enterprise-access-audit/README_CN.md" target="_blank" rel="noopener">插件完整说明 ↗</a><a href="https://github.com/13210541230/CLIProxyAPI/releases" target="_blank" rel="noopener">Suite Release ↗</a></div></header>
+    <main class="content">
+      <p class="eyebrow">04 · Enterprise access &amp; audit</p><h1>enterprise-access-audit</h1>
+      <p class="lead">这是 CPA 的动态库插件，提供 Enterprise Key 模型访问限制、按策略记录用户文本请求，以及人工查看明确的上游 Cyber Policy 信号。插件默认不会自动封禁账号。</p>
+      <div class="callout warn"><strong>从 CPA-Manager（18317）管理插件：</strong>先在 CPA-Manager 的插件资源页面检查 Enterprise Access Audit 是否有效启用，再进入其策略和审计页面。动态库由 CPA 进程加载；仅复制文件或只更新前端不代表功能已启用，必须使用匹配版本和架构的插件、正确设置开关并重启 CPA。</div>
+
+      <h2>1. 使用联合包内的匹配插件</h2>
+      <p>支持插件的完整 Suite 归档包含对应系统/架构的插件，例如：</p>
+      <pre><code>plugins/windows/amd64/enterprise-access-audit.dll
+plugins/linux/amd64/enterprise-access-audit.so
+plugins/darwin/arm64/enterprise-access-audit.dylib</code></pre>
+      <p>使用与 CPA 相同 Release 的动态库；Windows、Linux、macOS 以及 amd64、arm64 不可互换。无插件兼容的归档（例如 <code>*_no-plugin</code>）不会加载该插件。</p>
+
+      <h2>2. 启用插件</h2>
+      <p>将以下配置合并进当前 <code>config.yaml</code> 的 <code>plugins</code> 块。若模板已含有 <code>plugins:</code>，只合并子项，不要再添加重复的 YAML 根键。</p>
+      <pre><code>plugins:
+  enabled: true
+  dir: "plugins"
+  configs:
+    enterprise-access-audit:
+      enabled: true
+      priority: 100
+      data_dir: ".cli-proxy-api/plugins/enterprise-access-audit"
+      database_path: ".cli-proxy-api/plugins/enterprise-access-audit/enterprise-access-audit.sqlite"
+      retention_days: 30
+      audit_enabled: false
+      default_audit_enabled: false
+      max_text_bytes: 32768</code></pre>
+      <ol class="steps">
+        <li>确认动态库文件名为 <code>enterprise-access-audit</code>，并位于 CPA 插件目录的平台/架构子目录。</li>
+        <li>确认全局开关 <code>plugins.enabled</code> 与本插件开关 <code>configs.enterprise-access-audit.enabled</code> 都为 <code>true</code>。</li>
+        <li>使用 <code>stop.bat</code> / <code>stop.sh</code> 停止，再启动套件，使 CPA 重新加载动态库。</li>
+        <li>通过 CPA-Manager 的插件资源页面或管理接口确认 <code>effective_enabled: true</code>。接口为 <code>GET /v0/management/plugins</code>，需要 CPA 管理认证。</li>
+      </ol>
+      <p>默认数据路径相对于 CPA 工作目录。保持目录权限受限；插件会在其中创建策略数据库与审计 JSONL 文件。</p>
+
+      <h2>3. 管理页面主要功能</h2>
+      <div class="grid">
+        <div class="card"><h3>模型访问策略</h3><p>给 Enterprise Key 配置禁止使用的模型 ID。命中策略时请求在发往上游前被拒绝；策略同时比较客户端模型名和解析/改写后的模型，避免别名绕过。策略身份按 Key Hash 关联。</p></div>
+        <div class="card"><h3>请求审计</h3><p>按日期、Key 等条件查询已保存的审计记录。只有明确开启审计的请求才新增记录；可设置全局开关、Key 单独开关和默认 Key 审计状态。</p></div>
+        <div class="card"><h3>保留与文本长度</h3><p>根据业务要求设置保留天数和单条用户文本上限。默认数据目录中 SQLite 保存策略/设置，JSONL 文件保存受限的审计记录。</p></div>
+        <div class="card"><h3>人工查看安全信号</h3><p>只在上游错误 JSON 的 <code>error.code</code> 或 <code>response.error.code</code> 精确等于 <code>cyber_policy</code> 时记录相应信号。</p></div>
+      </div>
+
+      <h2>4. 审计默认关闭，按需开启</h2>
+      <p><code>audit_enabled</code> 是插件级全局请求审计开关，新配置建议保持 <code>false</code>。开启全局审计后，目标 Key 也必须允许审计才会写入；<code>default_audit_enabled</code> 仅决定没有显式 Key 设置时使用的默认值。</p>
+      <div class="callout"><strong>模型拒绝与审计是两套开关：</strong>全局审计关闭时不会新增请求审计记录，但已保存的模型禁止策略仍继续执行。要验证访问控制，应使用受控测试 Key 对允许/禁止模型分别发起请求。</div>
+      <p>审计只保留必要请求元数据和受限的用户文本。不会保存 system/developer 提示、assistant 对话历史、工具参数、工具输出或原始图片/音频/视频内容。API Key 不以明文保存，内部使用 Key Hash 关联策略与记录。</p>
+
+      <h2>5. Cyber Policy 信号边界</h2>
+      <p>只有上游响应结构明确返回下列字段之一时才标记：</p>
+      <pre><code>{"error":{"code":"cyber_policy"}}
+{"response":{"error":{"code":"cyber_policy"}}}</code></pre>
+      <p>普通 HTTP 4xx/5xx、消息文本提及 cyber_policy 或 CPA 本地模型策略拒绝，都不构成该信号。记录用于人工复核；插件不会自动封禁用户、禁用账号或阻断后续会话。</p>
+
+      <h2>6. 可选：Codex 账号池</h2>
+      <p>账号池是同一插件中的可选调度能力，与审计无关，首次部署保持关闭即可。确需启用时，在插件的账号池资源页面按实际 OAuth 账号、用户绑定和并发策略配置，并确保没有另一个插件同时接管 Codex 调度。</p>
+      <ul>
+        <li>账号池只针对 Codex OAuth 账号；API-key provider 不纳入 OAuth 池隔离。</li>
+        <li>用户绑定的活跃会话保持账号粘滞；不要期待失败或并发饱和时自动切换到另一 OAuth 账号。</li>
+        <li>启用账号池前停用会竞争 Codex 调度/并发管理的其他插件，确认实际 scheduler takeover 状态。</li>
+        <li>账号池的策略、部门绑定和并发细节请阅读<a href="https://github.com/13210541230/CLIProxyAPI/blob/main/plugins/enterprise-access-audit/README_CN.md" target="_blank" rel="noopener">插件完整说明 ↗</a>，不要只照抄一个开关。</li>
+      </ul>
+
+      <h2>7. 故障排查</h2>
+      <div class="table-wrap"><table><thead><tr><th>现象</th><th>先检查</th></tr></thead><tbody>
+        <tr><td>插件列表没有该插件</td><td>全局开关、本插件开关、插件目录、文件名、系统/架构、CPA 日志和是否已重启。</td></tr>
+        <tr><td>页面没有 Enterprise Access Audit</td><td>插件是否 <code>effective_enabled: true</code>；刷新 CPA-Manager，确认当前 Manager 与 CPA 版本配套。</td></tr>
+        <tr><td>审计没有记录</td><td>全局审计开关和 Key 开关、请求是否在支持的文本协议范围、当前 Key 和数据保留设置。</td></tr>
+        <tr><td>模型拒绝规则不生效</td><td>插件运行状态、策略所绑定的 Key Hash，以及客户端/解析后模型 ID。</td></tr>
+        <tr><td>动态库无法加载</td><td>重新下载同一 Suite Release 的匹配归档，校验 SHA-256；确认没有误用 no-plugin 包。</td></tr>
+      </tbody></table></div>
+      <div class="callout">完整字段、审计路径范围、数据格式和账号池行为见<a href="https://github.com/13210541230/CLIProxyAPI/blob/main/plugins/enterprise-access-audit/README_CN.md" target="_blank" rel="noopener">仓库内插件中文说明 ↗</a>。通用安装入口见<a href="https://help.router-for.me/cn/introduction/quick-start.html" target="_blank" rel="noopener">官方快速开始 ↗</a>。</div>
+      <footer class="page-footer"><a href="manager.html">← 管理面板</a><a href="index.html">回到文档首页 →</a></footer>
+    </main>
+  </div>
+</div>
+</body>
+</html>

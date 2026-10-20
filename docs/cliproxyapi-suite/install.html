@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="下载并部署 CLIProxyAPI 与 CPA-Manager Suite 联合发布包。">
+  <title>下载与安装 · CLIProxyAPI Suite</title>
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <a class="brand" href="index.html"><span class="brand-mark">CPA</span><span><strong>Suite 部署手册</strong><small>CLIProxyAPI · CPA-Manager</small></span></a>
+    <p class="nav-caption">从零开始</p>
+    <nav aria-label="文档导航"><ul class="nav-list">
+      <li><a href="index.html">概览</a></li><li><a href="install.html" aria-current="page">下载与安装</a></li><li><a href="oauth.html">OAuth 与调用</a></li><li><a href="manager.html">管理面板</a></li><li><a href="enterprise-audit.html">Enterprise Audit</a></li><li><a href="hardening.html">配置与风控基线</a></li>
+    </ul></nav>
+    <div class="sidebar-note"><a href="https://github.com/13210541230/CLIProxyAPI/releases" target="_blank" rel="noopener">你们的 GitHub Releases ↗</a></div>
+  </aside>
+  <div class="main">
+    <header class="topbar"><span class="topbar-label">部署手册 <span aria-hidden="true">/</span> 下载与安装</span><div class="topbar-links"><a href="https://help.router-for.me/cn/introduction/quick-start.html" target="_blank" rel="noopener">官方快速开始 ↗</a><a href="https://github.com/13210541230/CLIProxyAPI/releases" target="_blank" rel="noopener">Suite Release ↗</a></div></header>
+    <main class="content">
+      <p class="eyebrow">01 · Prepare</p><h1>下载与安装</h1>
+      <p class="lead">选择你们发布的完整 Suite 包。它将 CPA、CPA-Manager、更新器和启动脚本放在同一个目录，便于按版本配套运行。</p>
+      <div class="callout warn"><strong>发布源以你们的仓库为准：</strong><a href="https://github.com/13210541230/CLIProxyAPI/releases" target="_blank" rel="noopener">https://github.com/13210541230/CLIProxyAPI/releases</a>。官方 Quick Start 可作为通用 CPA 安装参考，但本手册的 CPA-Manager 联合包来自上述 fork。</div>
+
+      <h2>1. 选择 Release 资产</h2>
+      <p>在稳定版 Release 的 Assets 中找以 <code>CLIProxyAPI-Suite_</code> 开头的归档，不要用单独的 CPA 源码包替代。归档通常包含 CPA、CPA-Manager、cpa-updater、示例配置、启动/停止脚本和插件资源。</p>
+      <pre><code>CLIProxyAPI-Suite_&lt;version&gt;_&lt;platform&gt;_&lt;arch&gt;.zip       # Windows
+CLIProxyAPI-Suite_&lt;version&gt;_&lt;platform&gt;_&lt;arch&gt;.tar.gz    # Linux / macOS</code></pre>
+      <div class="table-wrap"><table><thead><tr><th>资产标记</th><th>选择建议</th></tr></thead><tbody>
+        <tr><td><code>windows_amd64</code></td><td>Intel / AMD 64 位 Windows</td></tr>
+        <tr><td><code>windows_aarch64</code></td><td>ARM64 Windows</td></tr>
+        <tr><td><code>linux_amd64</code> / <code>linux_aarch64</code></td><td>分别对应 x64 / ARM64 Linux；要加载插件时选择支持插件的普通 glibc 包。</td></tr>
+        <tr><td><code>darwin_amd64</code> / <code>darwin_aarch64</code></td><td>分别对应 Intel Mac / Apple Silicon。</td></tr>
+      </tbody></table></div>
+
+      <h2>2. 校验下载文件</h2>
+      <p>从同一 Release 下载 <code>suite-checksums.txt</code>，计算归档 SHA-256 并逐项比对。示例：</p>
+      <pre><code># Windows PowerShell
+Get-FileHash .\CLIProxyAPI-Suite_&lt;version&gt;_windows_amd64.zip -Algorithm SHA256
+
+# Linux
+sha256sum CLIProxyAPI-Suite_&lt;version&gt;_linux_amd64.tar.gz
+
+# macOS
+shasum -a 256 CLIProxyAPI-Suite_&lt;version&gt;_darwin_aarch64.tar.gz</code></pre>
+      <p class="muted small">如果校验不一致，删除该归档并重新从指定 Release 下载；不要运行校验失败的动态库或程序。</p>
+
+      <h2>3. 解压到稳定目录</h2>
+      <p>将归档解压到专门的、运行账户可读写的目录，不要直接在下载临时目录或公开 Web 根目录启动。典型目录内容：</p>
+      <pre><code>CLIProxyAPI-Suite/
+├── cli-proxy-api[.exe]
+├── cpa-manager[.exe]
+├── cpa-updater[.exe]
+├── config.example.yaml
+├── start.bat / start.sh
+├── stop.bat / stop.sh
+├── plugins/                  # 支持插件的平台包
+└── SUITE-README_CN.md</code></pre>
+      <p>Windows x64 可用例如 <code>D:\CLIProxyAPI-Suite</code>；Linux 可用专用目录如 <code>/opt/cliproxyapi</code>，并确保运行账号可以写日志、认证数据及插件数据目录。</p>
+
+      <h2>4. 创建并编辑配置</h2>
+      <p>首次启动脚本会在缺少 <code>config.yaml</code> 时复制模板后继续运行。生产使用前建议先复制、编辑：</p>
+      <pre><code>config.example.yaml → config.yaml</code></pre>
+      <p>仅本机使用的最小配置片段如下；将它合并到模板中，不要删掉自己需要的其他配置：</p>
+      <pre><code>host: "127.0.0.1"
+port: 8317
+
+auth-dir: "~/.cli-proxy-api"
+
+api-keys:
+  - "替换为足够长且随机的客户端API密钥"
+
+remote-management:
+  allow-remote: false
+  secret-key: "替换为另一条独立的管理密钥"
+  disable-control-panel: false</code></pre>
+      <div class="table-wrap"><table><thead><tr><th>配置</th><th>含义</th><th>建议</th></tr></thead><tbody>
+        <tr><td><code>host</code> / <code>port</code></td><td>CPA 代理服务监听地址和端口。</td><td>先绑定 <code>127.0.0.1</code>，默认端口为 <code>8317</code>。</td></tr>
+        <tr><td><code>api-keys</code></td><td>客户端请求代理 API 使用的密钥。</td><td>删除示例值，使用随机密钥；不要复用管理密钥。</td></tr>
+        <tr><td><code>remote-management.secret-key</code></td><td>管理 API 和管理页面认证。</td><td>设置独立随机密钥；留空时管理 API 不挂载。</td></tr>
+        <tr><td><code>remote-management.allow-remote</code></td><td>是否允许非本机访问管理接口。</td><td>本机部署保持 <code>false</code>；远程管理须另行做好网络隔离和 TLS。</td></tr>
+        <tr><td><code>auth-dir</code></td><td>OAuth 凭据文件所在目录。</td><td>默认在当前用户主目录下的 <code>.cli-proxy-api</code>；保护读写权限并备份。</td></tr>
+      </tbody></table></div>
+      <div class="callout warn"><strong>不要直接公开默认监听：</strong>模板的空 <code>host</code> 表示监听所有网卡。局域网接入要同时配置防火墙；<code>allow-remote</code> 控制管理接口，不是代理 API 的监听开关。</div>
+
+      <h3>4.1 账号与会话相关的必要配置</h3>
+      <p>以下配置决定账号如何被选择、请求标识是否按账号改写，以及账号出口如何隔离；建议首次上线前一次配好：</p>
+      <pre><code>routing:
+  # 把同一会话绑定到同一账号，并在 TTL 内保持绑定，避免频繁换号
+  session-affinity: true
+  session-affinity-ttl: "2h"
+  # 另一种满足 identity-confuse 前置条件的方式（也可保持默认 round-robin）
+  # strategy: "fill-first"
+
+codex:
+  # 按所选账号改写 prompt_cache_key 与安装标识等请求标识
+  identity-confuse: true
+  # 默认 false：强制官方 UA 与 Originator；需要真实客户端指纹时再评估关闭
+  disable-codex-cloaking: false
+
+# 全局出口代理；单账号出口请在凭据文件里用 "proxy_url" 覆盖
+proxy-url: ""
+
+plugins:
+  enabled: true
+  dir: "plugins"
+  configs:
+    enterprise-access-audit:
+      enabled: true</code></pre>
+      <div class="table-wrap"><table><thead><tr><th>配置</th><th>含义</th><th>建议</th></tr></thead><tbody>
+        <tr><td><code>routing.session-affinity</code></td><td>把同一会话绑定到同一账号，并在 TTL 内保持。</td><td>开启；TTL 按使用习惯设置（如 <code>2h</code>）。</td></tr>
+        <tr><td><code>routing.strategy</code></td><td>账号选择策略。<code>identity-confuse</code> 只在 <code>fill-first</code> 或 <code>session-affinity: true</code> 时生效。</td><td>按需；要用身份改写就确保两者之一成立。</td></tr>
+        <tr><td><code>codex.identity-confuse</code></td><td>按所选账号改写请求标识，避免多机共用同一账号时标识完全一致。</td><td>开启后抓一次上游请求确认真的生效。</td></tr>
+        <tr><td><code>codex.disable-codex-cloaking</code></td><td>关闭对 UA 与 Originator 的强制伪装。</td><td>默认保持 <code>false</code>；确需真实客户端指纹时再评估，并验证不会被上游拦截。</td></tr>
+        <tr><td><code>proxy-url</code></td><td>全局出口代理；凭据文件中的 <code>"proxy_url"</code> 优先级更高。</td><td>要一账号一出口时，把出口写在凭据文件里。</td></tr>
+        <tr><td><code>plugins</code></td><td>插件总开关、目录与各插件配置。</td><td>需要账号池、模型策略或审计能力时开启；账号池开关与并发上限由管理面板写入。</td></tr>
+      </tbody></table></div>
+      <div class="callout"><strong>为什么这样配：</strong>各配置项与账号健康的关系、以及客户端侧配套（遥测关闭、时区、并发节奏）见<a href="hardening.html">配置与风控基线</a>与<a href="../hardening-quick.html">风控预防速查</a>。</div>
+
+      <h2>5. 启动与停止</h2>
+      <div class="grid"><div class="card"><h3>Windows</h3><pre><code>.\start.bat
+.\stop.bat</code></pre><p>也可在 PowerShell 指定配置：<code>.\start.bat --config D:\cpa-config\config.yaml</code>（将示例路径换成实际文件）。</p></div><div class="card"><h3>Linux / macOS</h3><pre><code>chmod +x start.sh stop.sh
+./start.sh
+./stop.sh</code></pre><p>指定配置：<code>./start.sh --config /etc/cliproxyapi/config.yaml</code></p></div></div>
+      <p>启动脚本先启动 CLIProxyAPI，再启动 CPA-Manager，并记录本套件进程。正常停止请使用匹配的停止脚本，不要用进程名批量结束其他 CPA 实例。启动日志在套件目录的 <code>logs/</code> 下。</p>
+
+      <h2>6. 打开页面</h2>
+      <div class="table-wrap"><table><thead><tr><th>页面</th><th>默认地址</th><th>用途</th></tr></thead><tbody>
+        <tr><td><strong>CPA-Manager（主操作入口）</strong></td><td><code>http://127.0.0.1:18317/management.html</code></td><td>首次连接后，从同一面板管理配置、OAuth、监控、配额、更新和插件。</td></tr>
+        <tr><td>CPA 原生管理页（可选备用）</td><td><code>http://127.0.0.1:8317/management.html</code></td><td>仅在需要直接操作 CPA 原生管理接口时使用。</td></tr>
+      </tbody></table></div>
+      <p>首次连接时，在 CPA-Manager 中按提示填写 CPA 地址及管理密钥；若改过 CPA 端口，连接地址也要相应调整。详见<a href="manager.html">管理面板说明</a>，OAuth 操作见<a href="oauth.html">OAuth 与调用验证</a>。</p>
+      <div class="callout"><strong>官方通用参考：</strong><a href="https://help.router-for.me/cn/introduction/quick-start.html" target="_blank" rel="noopener">官方快速开始 ↗</a>介绍了 Homebrew、Linux 安装器、Windows、Docker 与源码方式；本文为方便 CPA-Manager 配套运维，专门按你们的 Suite Release 流程说明。</div>
+      <footer class="page-footer"><a href="index.html">← 返回概览</a><a href="oauth.html">下一步：OAuth 与调用 →</a></footer>
+    </main>
+  </div>
+</div>
+</body>
+</html>
