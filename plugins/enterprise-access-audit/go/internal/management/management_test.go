@@ -105,6 +105,9 @@ func TestResourceUIIsServedByPluginHandler(t *testing.T) {
 		!strings.Contains(body, "批量设置访问策略") ||
 		!strings.Contains(body, "data-audit-user-options") ||
 		!strings.Contains(body, "data-audit-user-option") ||
+		!strings.Contains(body, `data-filter="department_id"`) ||
+		!strings.Contains(body, "hashesForDepartment") ||
+		!strings.Contains(body, "isFormControlFocused") ||
 		!strings.Contains(body, "applyAuditFilters") ||
 		!strings.Contains(body, "部门、邮箱和 Key 尾码") ||
 		!strings.Contains(body, "错误原因") ||
