@@ -18,6 +18,11 @@ import (
 const userAgent = "CLIProxyAPI"
 const maxPluginStoreRedirects = 10
 
+// DefaultRegistryAPIURL is used only when the raw GitHub content endpoint is
+// unavailable. The raw endpoint remains the primary path to avoid consuming
+// GitHub API quota during normal plugin-store browsing.
+const DefaultRegistryAPIURL = "https://api.github.com/repos/router-for-me/CLIProxyAPI-Plugins-Store/contents/registry.json?ref=main"
+
 // HTTPDoer abstracts the HTTP client used to execute requests.
 type HTTPDoer = httpfetch.Doer
 
@@ -51,6 +56,15 @@ func (c Client) FetchRegistry(ctx context.Context) (Registry, error) {
 		registryURL = DefaultRegistryURL
 	}
 	data, errDownload := c.get(ctx, registryURL, "application/json", RequestKindRegistry, 0)
+	if errDownload != nil && registryURL == DefaultRegistryURL && ctx.Err() == nil && canFallbackOfficialRegistry(errDownload) {
+		fallbackData, errFallback := c.get(ctx, DefaultRegistryAPIURL, "application/vnd.github.raw+json", RequestKindRegistry, 0)
+		if errFallback == nil {
+			data = fallbackData
+			errDownload = nil
+		} else {
+			return Registry{}, fmt.Errorf("fetch official registry from raw endpoint: %w; GitHub API fallback failed: %v", errDownload, errFallback)
+		}
+	}
 	if errDownload != nil {
 		return Registry{}, errDownload
 	}
@@ -59,6 +73,14 @@ func (c Client) FetchRegistry(ctx context.Context) (Registry, error) {
 		return Registry{}, errParse
 	}
 	return registry, nil
+}
+
+func canFallbackOfficialRegistry(err error) bool {
+	var rateLimit *RateLimitError
+	if errors.As(err, &rateLimit) || strings.HasPrefix(err.Error(), "unexpected status ") {
+		return false
+	}
+	return true
 }
 
 // FetchLatestRelease returns the latest published release of the plugin's

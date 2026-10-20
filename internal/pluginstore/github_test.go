@@ -1,11 +1,47 @@
 package pluginstore
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 )
+
+func TestFetchRegistryFallsBackToGitHubAPI(t *testing.T) {
+	t.Parallel()
+
+	var requested []string
+	client := Client{HTTPClient: pluginIdentityDoerFunc(func(req *http.Request) (*http.Response, error) {
+		requested = append(requested, req.URL.String())
+		if req.URL.String() == DefaultRegistryURL {
+			return nil, errors.New("raw endpoint unavailable")
+		}
+		if req.URL.String() != DefaultRegistryAPIURL {
+			return nil, errors.New("unexpected registry URL")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"schema_version":1,"plugins":[]}`)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+
+	registry, errFetch := client.FetchRegistry(context.Background())
+	if errFetch != nil {
+		t.Fatalf("FetchRegistry() error = %v", errFetch)
+	}
+	if registry.SchemaVersion != SchemaVersion || len(registry.Plugins) != 0 {
+		t.Fatalf("registry = %#v, want empty schema %d registry", registry, SchemaVersion)
+	}
+	if len(requested) != 2 || requested[0] != DefaultRegistryURL || requested[1] != DefaultRegistryAPIURL {
+		t.Fatalf("requested URLs = %#v, want raw then API fallback", requested)
+	}
+}
 
 func TestSelectReleaseAssets(t *testing.T) {
 	t.Parallel()
