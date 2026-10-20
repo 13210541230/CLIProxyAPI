@@ -106,7 +106,9 @@ func TestResourceUIIsServedByPluginHandler(t *testing.T) {
 		!strings.Contains(body, "data-audit-user-options") ||
 		!strings.Contains(body, "data-audit-user-option") ||
 		!strings.Contains(body, "applyAuditFilters") ||
-		!strings.Contains(body, "部门、邮箱和 Key 尾码") {
+		!strings.Contains(body, "部门、邮箱和 Key 尾码") ||
+		!strings.Contains(body, "错误原因") ||
+		!strings.Contains(body, "error_summary") {
 
 		t.Fatal("resource UI does not contain the expected audit workspace controls")
 	}

@@ -153,12 +153,15 @@ func TestRPCCapabilitiesAndAdapterIncludeRequestLifecycle(t *testing.T) {
 		t.Fatal("RequestLifecyclePlugin = nil, want RPC adapter")
 	}
 	if errComplete := registered.Capabilities.RequestLifecyclePlugin.HandleRequestComplete(context.Background(), pluginapi.RequestCompletion{
-		RequestID: "request-rpc",
-		Outcome:   pluginapi.RequestCompletionSucceeded,
+		RequestID:    "request-rpc",
+		Outcome:      pluginapi.RequestCompletionFailed,
+		ErrorCode:    "account_pool_unavailable",
+		ErrorType:    "scheduler_rejection",
+		ErrorSummary: "bound account is unavailable",
 	}); errComplete != nil {
 		t.Fatalf("HandleRequestComplete() error = %v", errComplete)
 	}
-	if got.RequestID != "request-rpc" || got.Outcome != pluginapi.RequestCompletionSucceeded {
+	if got.RequestID != "request-rpc" || got.Outcome != pluginapi.RequestCompletionFailed || got.ErrorCode != "account_pool_unavailable" || got.ErrorType != "scheduler_rejection" || got.ErrorSummary != "bound account is unavailable" {
 		t.Fatalf("RPC completion = %#v", got)
 	}
 }

@@ -23,7 +23,10 @@ const (
 	ExecutionSessionMetadataKey = "execution_session_id"
 )
 
-var geminiPath = regexp.MustCompile(`^/v1beta/models/[^/:]+:(generateContent|streamGenerateContent)$`)
+var (
+	geminiPath          = regexp.MustCompile(`^/v1beta/models/[^/:]+:(generateContent|streamGenerateContent)$`)
+	safeAuditErrorLabel = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+)
 
 // Request mirrors the public interceptor envelope without importing CPA's root module.
 type Request struct {
@@ -54,6 +57,9 @@ type Completion struct {
 	Outcome        string         `json:"Outcome"`
 	StatusCode     int            `json:"StatusCode"`
 	Error          string         `json:"Error"`
+	ErrorCode      string         `json:"ErrorCode"`
+	ErrorType      string         `json:"ErrorType"`
+	ErrorSummary   string         `json:"ErrorSummary"` // Sanitized by CPA before it is sent to the plugin.
 	Metadata       map[string]any `json:"Metadata"`
 }
 
@@ -178,6 +184,7 @@ func (h *Handler) Complete(ctx context.Context, completion Completion) error {
 			securitySignal = cyberpolicy.UpstreamCyberPolicyCode
 		}
 	}
+	errorCode, errorType, errorSummary := safeCompletionErrorDetails(completion)
 	return h.state.WithStore(ctx, func(active *store.Store) error {
 		settings, errSettings := active.GetSettings(ctx, store.SettingsFromConfig(h.cfg))
 		if errSettings != nil {
@@ -197,10 +204,29 @@ func (h *Handler) Complete(ctx context.Context, completion Completion) error {
 			RequestID:       completion.RequestID,
 			Outcome:         completion.Outcome,
 			StatusCode:      completion.StatusCode,
+			ErrorCode:       errorCode,
+			ErrorType:       errorType,
+			ErrorSummary:    errorSummary,
 			SecuritySignal:  securitySignal,
 			SecurityMessage: securityMessage,
 		}, policy.AuditEnabled)
 	})
+}
+
+func safeCompletionErrorDetails(completion Completion) (string, string, string) {
+	return safeDiagnosticLabel(completion.ErrorCode), safeDiagnosticLabel(completion.ErrorType), strings.TrimSpace(completion.ErrorSummary)
+}
+
+func safeDiagnosticLabel(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) == 0 || len(value) > 128 || !safeAuditErrorLabel.MatchString(value) {
+		return ""
+	}
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, "sk-") || strings.HasPrefix(lower, "ghp_") {
+		return ""
+	}
+	return value
 }
 
 func (h *Handler) markAuditSkipped(requestID string) {

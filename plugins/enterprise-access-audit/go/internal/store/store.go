@@ -45,6 +45,9 @@ type AuditRecord struct {
 	RequestID             string
 	Outcome               string
 	StatusCode            int
+	ErrorCode             string
+	ErrorType             string
+	ErrorSummary          string
 	Text                  string
 	TextAvailable         bool
 	TextUnavailableReason string

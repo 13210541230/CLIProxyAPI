@@ -33,6 +33,9 @@ type Record struct {
 	RequestID             string    `json:"request_id"`
 	Outcome               string    `json:"outcome"`
 	StatusCode            int       `json:"status_code"`
+	ErrorCode             string    `json:"error_code,omitempty"`
+	ErrorType             string    `json:"error_type,omitempty"`
+	ErrorSummary          string    `json:"error_summary,omitempty"`
 	Text                  string    `json:"text"`
 	TextAvailable         bool      `json:"text_available"`
 	TextUnavailableReason string    `json:"text_unavailable_reason,omitempty"`

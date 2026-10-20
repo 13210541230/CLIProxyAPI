@@ -1159,9 +1159,13 @@ type RequestCompletion struct {
 	Outcome        RequestCompletionOutcome
 	StatusCode     int
 	Error          string
-	StartedAt      time.Time
-	CompletedAt    time.Time
-	Metadata       map[string]any
+	// ErrorCode, ErrorType, and ErrorSummary are sanitized structured details for failures.
+	ErrorCode    string
+	ErrorType    string
+	ErrorSummary string
+	StartedAt    time.Time
+	CompletedAt  time.Time
+	Metadata     map[string]any
 }
 
 // ResponseInterceptRequest describes a successful non-streaming response.

@@ -143,6 +143,10 @@ func (t *requestLifecycleTracker) requestID() string {
 }
 
 func (t *requestLifecycleTracker) complete(outcome pluginapi.RequestCompletionOutcome, statusCode int, err error) {
+	t.completeWithFailureDetails(outcome, statusCode, err, requestFailureDetailsFromError(err, nil))
+}
+
+func (t *requestLifecycleTracker) completeWithFailureDetails(outcome pluginapi.RequestCompletionOutcome, statusCode int, err error, details requestFailureDetails) {
 	if t == nil {
 		return
 	}
@@ -150,6 +154,9 @@ func (t *requestLifecycleTracker) complete(outcome pluginapi.RequestCompletionOu
 		completion := t.completion
 		completion.Outcome = outcome
 		completion.StatusCode = statusCode
+		completion.ErrorCode = details.code
+		completion.ErrorType = details.typeID
+		completion.ErrorSummary = details.summary
 		completion.CompletedAt = time.Now()
 		if err != nil {
 			completion.Error = err.Error()
@@ -182,7 +189,11 @@ func (t *requestLifecycleTracker) completeError(ctx context.Context, msg *interf
 	if outcome == pluginapi.RequestCompletionCanceled {
 		statusCode = 0
 	}
-	t.complete(outcome, statusCode, err)
+	var body []byte
+	if msg != nil && msg.DirectResponse {
+		body = msg.Body
+	}
+	t.completeWithFailureDetails(outcome, statusCode, err, requestFailureDetailsFromError(err, body))
 }
 
 func normalizedTerminationStatus(statusCode int) int {

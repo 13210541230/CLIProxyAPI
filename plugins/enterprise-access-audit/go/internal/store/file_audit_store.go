@@ -223,9 +223,9 @@ func (s *Store) DeleteAllAudits(ctx context.Context) (int64, error) {
 }
 
 func toAuditLogRecord(record AuditRecord) auditlog.Record {
-	return auditlog.Record{ID: record.ID, KeyHash: record.KeyHash, CreatedAt: record.CreatedAt, Model: record.Model, SourceFormat: record.SourceFormat, RequestID: record.RequestID, Outcome: record.Outcome, StatusCode: record.StatusCode, Text: record.Text, TextAvailable: record.TextAvailable, TextUnavailableReason: record.TextUnavailableReason, TextTruncated: record.TextTruncated, SecuritySignal: record.SecuritySignal, SecurityMessage: record.SecurityMessage}
+	return auditlog.Record{ID: record.ID, KeyHash: record.KeyHash, CreatedAt: record.CreatedAt, Model: record.Model, SourceFormat: record.SourceFormat, RequestID: record.RequestID, Outcome: record.Outcome, StatusCode: record.StatusCode, ErrorCode: record.ErrorCode, ErrorType: record.ErrorType, ErrorSummary: record.ErrorSummary, Text: record.Text, TextAvailable: record.TextAvailable, TextUnavailableReason: record.TextUnavailableReason, TextTruncated: record.TextTruncated, SecuritySignal: record.SecuritySignal, SecurityMessage: record.SecurityMessage}
 }
 
 func fromAuditLogRecord(record auditlog.Record) AuditRecord {
-	return AuditRecord{ID: record.ID, KeyHash: record.KeyHash, CreatedAt: record.CreatedAt, Model: record.Model, SourceFormat: record.SourceFormat, RequestID: record.RequestID, Outcome: record.Outcome, StatusCode: record.StatusCode, Text: record.Text, TextAvailable: record.TextAvailable, TextUnavailableReason: record.TextUnavailableReason, TextTruncated: record.TextTruncated, SecuritySignal: record.SecuritySignal, SecurityMessage: record.SecurityMessage}
+	return AuditRecord{ID: record.ID, KeyHash: record.KeyHash, CreatedAt: record.CreatedAt, Model: record.Model, SourceFormat: record.SourceFormat, RequestID: record.RequestID, Outcome: record.Outcome, StatusCode: record.StatusCode, ErrorCode: record.ErrorCode, ErrorType: record.ErrorType, ErrorSummary: record.ErrorSummary, Text: record.Text, TextAvailable: record.TextAvailable, TextUnavailableReason: record.TextUnavailableReason, TextTruncated: record.TextTruncated, SecuritySignal: record.SecuritySignal, SecurityMessage: record.SecurityMessage}
 }

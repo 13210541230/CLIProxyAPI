@@ -529,6 +529,9 @@ type auditResponse struct {
 	RequestID             string `json:"request_id"`
 	Outcome               string `json:"outcome"`
 	StatusCode            int    `json:"status_code"`
+	ErrorCode             string `json:"error_code,omitempty"`
+	ErrorType             string `json:"error_type,omitempty"`
+	ErrorSummary          string `json:"error_summary,omitempty"`
 	Text                  string `json:"text"`
 	TextAvailable         bool   `json:"text_available"`
 	TextUnavailableReason string `json:"text_unavailable_reason,omitempty"`
@@ -543,7 +546,7 @@ func auditJSON(record store.AuditRecord, maxTextBytes int) auditResponse {
 		text = string([]byte(text)[:maxTextBytes])
 		record.TextTruncated = true
 	}
-	return auditResponse{ID: record.ID, KeyHash: record.KeyHash, CreatedAt: record.CreatedAt.UTC().Format(time.RFC3339), Model: record.Model, SourceFormat: record.SourceFormat, RequestID: record.RequestID, Outcome: record.Outcome, StatusCode: record.StatusCode, Text: text, TextAvailable: record.TextAvailable, TextUnavailableReason: record.TextUnavailableReason, TextTruncated: record.TextTruncated, SecuritySignal: record.SecuritySignal, SecurityMessage: record.SecurityMessage}
+	return auditResponse{ID: record.ID, KeyHash: record.KeyHash, CreatedAt: record.CreatedAt.UTC().Format(time.RFC3339), Model: record.Model, SourceFormat: record.SourceFormat, RequestID: record.RequestID, Outcome: record.Outcome, StatusCode: record.StatusCode, ErrorCode: record.ErrorCode, ErrorType: record.ErrorType, ErrorSummary: record.ErrorSummary, Text: text, TextAvailable: record.TextAvailable, TextUnavailableReason: record.TextUnavailableReason, TextTruncated: record.TextTruncated, SecuritySignal: record.SecuritySignal, SecurityMessage: record.SecurityMessage}
 }
 
 func queryHashes(query url.Values, name string) ([]string, error) {
