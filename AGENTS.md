@@ -71,6 +71,8 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - The same-credential transient retry must skip request-fault errors (`isApplyPatchToolArgumentFault`), otherwise one failed request publishes several failure usage records. Transient failures that survive those retries are cooldown evidence; do not re-add a blanket "transient errors never cool" rule.
 - An explicit `model_not_found` on a subscription credential (`codex`, `claude`) uses the 30-minute account-scoped probe window; API-key providers follow upstream's transient/model-support classification.
 - v8 management handlers own a `CloneForRuntime` copy of the config, so handler-side edits appear on `h.cfg` and in the persisted `config.yaml`, not on the caller's struct; tests must assert accordingly.
+- End-to-end compatibility after a merge is verified with `scripts/windows/smoke-account-pool-exemption.ps1` (real requests through CPA `18399` and CPA-Manager `18318`) plus `scripts/windows/smoke-panel-v8-endpoints.ps1` (panel-facing v0/v8 endpoint matrix and the fork-only quota round-trip). Run both before declaring a merge healthy.
+- v8 dropped `PUT /v0/management/config` (JSON) and the whole `internal/api/modules/amp` surface (`/ampcode*`). The panel does not use the former (it saves through granular endpoints and `PUT /v0/management/config.yaml`, which still accepts legacy flat YAML); the latter leaves the panel's Amp page without a backend.
 - Two upstream tests fail on pristine `upstream/main` and are not merge regressions: `internal/translator/claude/openai/responses` `TestToolSearchDisabledMatchesDevGolden` and `sdk/api/handlers/openai` `TestResponsesInterruptStopsHTTPUpstream`.
 
 ## Account-pool change record
