@@ -405,7 +405,7 @@ func (e *Executor) registerAuthModels() int {
 	if e == nil || e.cfg == nil {
 		return 0
 	}
-	infos := e.modelInfos()
+	infos := e.publishedModelInfos()
 	if len(infos) == 0 {
 		return 0
 	}
@@ -467,7 +467,7 @@ func (e *Executor) RefreshCatalog(ctx context.Context) error {
 // RegisterModels publishes the resolved Go-plan models to the global registry so
 // /v1/models lists them and routing resolves the "opencode" provider.
 func (e *Executor) RegisterModels() []*registry.ModelInfo {
-	infos := e.modelInfos()
+	infos := e.publishedModelInfos()
 	if len(infos) == 0 {
 		return nil
 	}
@@ -477,13 +477,143 @@ func (e *Executor) RegisterModels() []*registry.ModelInfo {
 
 // ModelsForAuth returns the catalog models to publish for one auth, preferring the
 // live executor and falling back to an empty list when nothing is loaded yet.
-func ModelsForAuth() []*registry.ModelInfo {
+// Models listed in the config `oauth-excluded-models` entry for this provider are
+// filtered out here, because the generic exclusion helper skips API-key auths.
+func ModelsForAuth(cfg *config.Config) []*registry.ModelInfo {
 	executor := defaultExecutor.Load()
 	if executor == nil {
 		return nil
 	}
 	executor.ensureCatalog()
-	return executor.modelInfos()
+	return filterModels(executor.modelInfos(), ExcludedModels(cfg))
+}
+
+// Republish re-registers the provider's models after the exposure selection
+// changed, so the effect is visible without restarting the service.
+func Republish(cfg *config.Config) int {
+	executor := defaultExecutor.Load()
+	if executor == nil {
+		return 0
+	}
+	executor.cfg = cfg
+	infos := ModelsForAuth(cfg)
+	registry.GetGlobalRegistry().RegisterClient(registryClientID, ProviderName, infos)
+	// Per-auth bindings are what the router resolves against, so they must follow
+	// the same selection or the exclusion would be undone by the next rebind.
+	executor.registerAuthModels()
+	return len(infos)
+}
+
+// ExcludedModels returns the configured excluded model patterns for this provider.
+func ExcludedModels(cfg *config.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.OAuthExcludedModels[ProviderName]
+}
+
+// CatalogModels exposes the full catalog with protocol and capability details for
+// the management API. It is intentionally unfiltered so the UI can show every
+// model and let the operator decide which ones to expose.
+type CatalogModel struct {
+	ID        string `json:"id"`
+	Protocol  string `json:"protocol"`
+	Context   int    `json:"context,omitempty"`
+	MaxInput  int    `json:"max_input,omitempty"`
+	MaxOutput int    `json:"max_output,omitempty"`
+	ToolCall  bool   `json:"tool_call"`
+	Reasoning bool   `json:"reasoning"`
+}
+
+// CatalogModels lists every resolved Go-plan model with its protocol.
+func CatalogModels() []CatalogModel {
+	executor := defaultExecutor.Load()
+	if executor == nil {
+		return nil
+	}
+	executor.ensureCatalog()
+	models := executor.catalog.Models()
+	out := make([]CatalogModel, 0, len(models))
+	for _, model := range models {
+		out = append(out, CatalogModel{
+			ID:        model.ID,
+			Protocol:  string(model.Protocol),
+			Context:   model.Context,
+			MaxInput:  model.MaxInput,
+			MaxOutput: model.MaxOutput,
+			ToolCall:  model.ToolCall,
+			Reasoning: model.Reasoning,
+		})
+	}
+	return out
+}
+
+func filterModels(models []*registry.ModelInfo, excluded []string) []*registry.ModelInfo {
+	patterns := make([]string, 0, len(excluded))
+	for _, item := range excluded {
+		if trimmed := strings.ToLower(strings.TrimSpace(item)); trimmed != "" {
+			patterns = append(patterns, trimmed)
+		}
+	}
+	if len(patterns) == 0 {
+		return models
+	}
+	out := make([]*registry.ModelInfo, 0, len(models))
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		id := strings.ToLower(strings.TrimSpace(model.ID))
+		blocked := false
+		for _, pattern := range patterns {
+			if matchWildcard(pattern, id) {
+				blocked = true
+				break
+			}
+		}
+		if !blocked {
+			out = append(out, model)
+		}
+	}
+	return out
+}
+
+func matchWildcard(pattern, value string) bool {
+	if pattern == "" {
+		return false
+	}
+	if pattern == value {
+		return true
+	}
+	parts := strings.Split(pattern, "*")
+	if len(parts) == 1 {
+		return false
+	}
+	if !strings.HasPrefix(value, parts[0]) {
+		return false
+	}
+	remaining := value[len(parts[0]):]
+	for index := 1; index < len(parts); index++ {
+		part := parts[index]
+		if part == "" {
+			if index == len(parts)-1 {
+				return true
+			}
+			continue
+		}
+		position := strings.Index(remaining, part)
+		if position < 0 {
+			return false
+		}
+		remaining = remaining[position+len(part):]
+	}
+	return strings.HasSuffix(pattern, "*") || remaining == ""
+}
+
+// publishedModelInfos returns the catalog models that are currently exposed, i.e.
+// after applying the operator's exclusion selection.
+func (e *Executor) publishedModelInfos() []*registry.ModelInfo {
+	return filterModels(e.modelInfos(), ExcludedModels(e.cfg))
 }
 
 func (e *Executor) modelInfos() []*registry.ModelInfo {

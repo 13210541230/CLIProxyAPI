@@ -209,7 +209,7 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 		models = registry.GetDevinModels()
 		models = applyExcludedModels(models, excluded)
 	case opencode.ProviderName:
-		models = opencode.ModelsForAuth()
+		models = opencode.ModelsForAuth(cfg)
 		models = applyExcludedModels(models, excluded)
 	case "meta":
 		models = registry.GetMetaModels()

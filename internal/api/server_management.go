@@ -180,6 +180,8 @@ func (s *Server) registerManagementRoutes() {
 
 		mgmt.GET("/auth-files", s.mgmt.ListAuthFiles)
 		mgmt.GET("/opencode/accounts", s.mgmt.ListOpenCodeAccounts)
+		mgmt.GET("/opencode/models", s.mgmt.ListOpenCodeModels)
+		mgmt.PUT("/opencode/models", s.mgmt.PutOpenCodeModels)
 		mgmt.GET("/auth-credentials", s.mgmt.ListAuthCredentials)
 		mgmt.GET("/auth-files/models", s.mgmt.GetAuthFileModels)
 		mgmt.GET("/auth-files/modeltrace", s.mgmt.GetModelTrace)

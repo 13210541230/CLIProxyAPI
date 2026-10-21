@@ -90,7 +90,7 @@ func (e *Executor) AccountViews(auths []*coreauth.Auth) []AccountView {
 		}
 		view := AccountView{
 			ID:       auth.ID,
-			Label:    auth.Label,
+			Label:    accountLabel(auth),
 			Provider: ProviderName,
 			Status:   string(auth.Status),
 			Disabled: auth.Disabled,
@@ -136,6 +136,25 @@ func (e *Executor) SelectAccount(auths []*coreauth.Auth) *coreauth.Auth {
 		}
 	}
 	return best
+}
+
+// accountLabel prefers the label from the auth file over the provider name that
+// the generic loader assigns to non-standard auth types.
+func accountLabel(auth *coreauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if auth.Metadata != nil {
+		if value, ok := auth.Metadata["label"].(string); ok {
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	if !strings.EqualFold(auth.Label, ProviderName) {
+		return auth.Label
+	}
+	return ""
 }
 
 func quotaView(snapshot QuotaSnapshot) *QuotaView {
