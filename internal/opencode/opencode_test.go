@@ -12,6 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
@@ -450,5 +451,111 @@ func TestEndpointUnavailableDetection(t *testing.T) {
 	}
 	if isEndpointUnavailable(&upstreamError{code: http.StatusBadRequest, message: "opencode: Param Incorrect"}) {
 		t.Fatal("generic 400 must not be retried")
+	}
+}
+
+type usageCapture struct{ records chan usage.Record }
+
+func (c *usageCapture) HandleUsage(_ context.Context, record usage.Record) {
+	select {
+	case c.records <- record:
+	default:
+	}
+}
+
+func newUsageCapture(t *testing.T) *usageCapture {
+	t.Helper()
+	capture := &usageCapture{records: make(chan usage.Record, 8)}
+	usage.RegisterNamedPlugin("opencode-test-"+t.Name(), capture)
+	return capture
+}
+
+func (c *usageCapture) wait(t *testing.T) usage.Record {
+	t.Helper()
+	select {
+	case record := <-c.records:
+		return record
+	case <-time.After(3 * time.Second):
+		t.Fatal("no usage record published")
+		return usage.Record{}
+	}
+}
+
+func TestExecuteReportsUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-1","usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12},"choices":[]}`)
+	}))
+	defer server.Close()
+	capture := newUsageCapture(t)
+	executor := newTestExecutor(t, server)
+
+	if _, err := executor.Execute(context.Background(), testAuth(), cliproxyexecutor.Request{
+		Model:   "deepseek-v4.1-flash",
+		Payload: []byte(`{"model":"deepseek-v4.1-flash","messages":[]}`),
+		Format:  sdktranslator.FormatOpenAI,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI}); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	record := capture.wait(t)
+	if record.Provider != ProviderName {
+		t.Fatalf("usage provider = %q, want %q", record.Provider, ProviderName)
+	}
+	if record.Detail.TotalTokens != 12 {
+		t.Fatalf("usage total tokens = %d, want 12", record.Detail.TotalTokens)
+	}
+	if record.Model != "deepseek-v4.1-flash" {
+		t.Fatalf("usage model = %q", record.Model)
+	}
+}
+
+func TestExecuteStreamReportsUsageAndRequestsUsageChunk(t *testing.T) {
+	var upstreamBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		upstreamBody = string(raw)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":3,\"total_tokens\":12}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+	capture := newUsageCapture(t)
+	executor := newTestExecutor(t, server)
+
+	result, err := executor.ExecuteStream(context.Background(), testAuth(), cliproxyexecutor.Request{
+		Model:   "deepseek-v4.1-flash",
+		Payload: []byte(`{"model":"deepseek-v4.1-flash","stream":true,"messages":[]}`),
+		Format:  sdktranslator.FormatOpenAI,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, Stream: true})
+	if err != nil {
+		t.Fatalf("execute stream: %v", err)
+	}
+	for range result.Chunks {
+	}
+	record := capture.wait(t)
+	if record.Detail.TotalTokens != 12 {
+		t.Fatalf("stream usage total tokens = %d, want 12", record.Detail.TotalTokens)
+	}
+	if !strings.Contains(upstreamBody, `"include_usage":true`) {
+		t.Fatalf("chat stream must request a usage chunk, upstream body=%s", upstreamBody)
+	}
+}
+
+func TestEnsureStreamUsageOnlyForChat(t *testing.T) {
+	body := []byte(`{"stream":true}`)
+	chat := ensureStreamUsage(body, ProtocolChat)
+	if !strings.Contains(string(chat), `"include_usage":true`) {
+		t.Fatal("chat stream did not request usage")
+	}
+	if got := ensureStreamUsage(body, ProtocolResponses); string(got) != string(body) {
+		t.Fatalf("responses stream must stay untouched, got %s", got)
+	}
+	if got := ensureStreamUsage(body, ProtocolAnthropic); string(got) != string(body) {
+		t.Fatalf("anthropic stream must stay untouched, got %s", got)
+	}
+	kept := ensureStreamUsage([]byte(`{"stream":true,"stream_options":{"include_usage":false}}`), ProtocolChat)
+	if strings.Contains(string(kept), "false") {
+		t.Fatalf("explicit client value must be overridden, got %s", kept)
 	}
 }

@@ -20,8 +20,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/sjson"
 )
 
 // ProviderName is the auth-file "type" that selects this executor.
@@ -119,16 +121,22 @@ func (e *Executor) RequestToFormat(req cliproxyexecutor.Request, opts cliproxyex
 }
 
 // Execute performs a non-streaming request.
-func (e *Executor) Execute(ctx context.Context, auth *coreauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	httpResp, upstreamFormat, err := e.doSend(ctx, auth, req, opts, false)
+func (e *Executor) Execute(ctx context.Context, auth *coreauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (response cliproxyexecutor.Response, err error) {
+	reporter := e.newReporter(ctx, auth, req, opts, false)
+	defer reporter.TrackFailure(ctx, &err)
+	httpResp, upstreamFormat, err := e.doSend(ctx, reporter, auth, req, opts, false)
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
 	defer httpResp.Body.Close()
 	data, err := io.ReadAll(httpResp.Body)
 	if err != nil {
-		return cliproxyexecutor.Response{}, &upstreamError{code: http.StatusBadGateway, message: "opencode: read upstream body failed"}
+		readErr := &upstreamError{code: http.StatusBadGateway, message: "opencode: read upstream body failed"}
+		reporter.PublishFailure(ctx, readErr)
+		return cliproxyexecutor.Response{}, readErr
 	}
+	reporter.ObserveResponseModel(data)
+	e.reportUsage(ctx, reporter, upstreamFormat, data)
 	downstream := opts.ResponseFormat
 	if downstream == "" {
 		downstream = opts.SourceFormat
@@ -146,8 +154,10 @@ func (e *Executor) Execute(ctx context.Context, auth *coreauth.Auth, req cliprox
 }
 
 // ExecuteStream performs a streaming request and relays SSE chunks downstream.
-func (e *Executor) ExecuteStream(ctx context.Context, auth *coreauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
-	httpResp, upstreamFormat, err := e.doSend(ctx, auth, req, opts, true)
+func (e *Executor) ExecuteStream(ctx context.Context, auth *coreauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (result *cliproxyexecutor.StreamResult, err error) {
+	reporter := e.newReporter(ctx, auth, req, opts, true)
+	defer reporter.TrackFailure(ctx, &err)
+	httpResp, upstreamFormat, err := e.doSend(ctx, reporter, auth, req, opts, true)
 	if err != nil {
 		return nil, err
 	}
@@ -158,10 +168,26 @@ func (e *Executor) ExecuteStream(ctx context.Context, auth *coreauth.Auth, req c
 	if downstream != upstreamFormat {
 		log.Infof("[opencode] translated stream response %s -> %s model=%s", upstreamFormat, downstream, req.Model)
 	}
+	usageBuffer := &helps.StreamUsageBuffer{}
 	chunks := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(chunks)
 		defer httpResp.Body.Close()
+		var streamErr error
+		defer func() {
+			if ctx.Err() != nil {
+				usageBuffer.PublishFailure(ctx, reporter, ctx.Err())
+				return
+			}
+			if streamErr != nil {
+				usageBuffer.PublishFailure(ctx, reporter, streamErr)
+				return
+			}
+			if !usageBuffer.Publish(ctx, reporter) {
+				// Count the request even when the upstream stream carries no usage.
+				reporter.EnsurePublished(ctx)
+			}
+		}()
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(make([]byte, 0, 64<<10), 8<<20)
 		var param any
@@ -177,6 +203,8 @@ func (e *Executor) ExecuteStream(ctx context.Context, auth *coreauth.Auth, req c
 			if len(payload) == 0 {
 				continue
 			}
+			reporter.ObserveResponseModel(payload)
+			observeStreamUsage(upstreamFormat, payload, usageBuffer)
 			if downstream == upstreamFormat {
 				chunks <- cliproxyexecutor.StreamChunk{Payload: append([]byte("data: "), payload...)}
 				continue
@@ -189,6 +217,7 @@ func (e *Executor) ExecuteStream(ctx context.Context, auth *coreauth.Auth, req c
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil && ctx.Err() == nil {
+			streamErr = errScan
 			log.Warnf("[opencode] stream read error model=%s: %v", req.Model, errScan)
 		}
 	}()
@@ -222,7 +251,7 @@ func (e *Executor) HttpRequest(ctx context.Context, auth *coreauth.Auth, req *ht
 // doSend tries the preferred upstream protocol first and falls back to the other
 // OpenCode endpoints when upstream reports that the model is not served there.
 // The working protocol is remembered per model so later requests skip the probe.
-func (e *Executor) doSend(ctx context.Context, auth *coreauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool) (*http.Response, sdktranslator.Format, error) {
+func (e *Executor) doSend(ctx context.Context, reporter *helps.UsageReporter, auth *coreauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool) (*http.Response, sdktranslator.Format, error) {
 	// CLIProxyAPI leaves req.Payload in the client's format; the executor owns the
 	// conversion to whatever protocol the upstream model actually serves.
 	payloadFormat := opts.SourceFormat
@@ -242,7 +271,7 @@ func (e *Executor) doSend(ctx context.Context, auth *coreauth.Auth, req cliproxy
 			body = translated
 			log.Infof("[opencode] translated request %s -> %s model=%s", payloadFormat, protocol.Format(), req.Model)
 		}
-		resp, err := e.do(ctx, auth, req, opts, protocol, body, stream)
+		resp, err := e.do(ctx, reporter, auth, req, opts, protocol, body, stream)
 		if err == nil {
 			if index > 0 {
 				log.Infof("[opencode] learned upstream protocol %s for model=%s", protocol, req.Model)
@@ -313,10 +342,13 @@ func isEndpointUnavailable(err error) bool {
 		strings.Contains(message, "unsupported")
 }
 
-func (e *Executor) do(ctx context.Context, auth *coreauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, protocol Protocol, body []byte, stream bool) (*http.Response, error) {
+func (e *Executor) do(ctx context.Context, reporter *helps.UsageReporter, auth *coreauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, protocol Protocol, body []byte, stream bool) (*http.Response, error) {
 	key := APIKey(auth)
 	if key == "" {
 		return nil, &upstreamError{code: http.StatusUnauthorized, message: "opencode: auth is missing api_key"}
+	}
+	if stream {
+		body = ensureStreamUsage(body, protocol)
 	}
 	endpoint := e.baseURL + e.goPrefix + protocol.Path()
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
@@ -326,7 +358,7 @@ func (e *Executor) do(ctx context.Context, auth *coreauth.Auth, req cliproxyexec
 	ApplyHeaders(httpReq, body, identityFor(opts))
 	SetCredential(httpReq, protocol, key)
 
-	client := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	client := reporter.TrackHTTPClient(helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0))
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -801,6 +833,73 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return parsed
+}
+
+// newReporter builds the usage reporter with the stream flag and the same session
+// identity that is sent upstream, so per-request detail lines up with the OpenCode
+// session and the served model instead of only the requested one.
+func (e *Executor) newReporter(ctx context.Context, auth *coreauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool) *helps.UsageReporter {
+	reporter := helps.NewExecutorUsageReporter(ctx, e, req.Model, auth)
+	reporter.SetStream(stream)
+	if identity := identityFor(opts); identity.Session != "" {
+		reporter.SetSessionHierarchy(identity.Session, identity.ParentSession)
+	}
+	return reporter
+}
+
+// reportUsage publishes token accounting for a non-stream upstream response so
+// OpenCode traffic shows up in the same usage statistics as built-in providers.
+// Every completed request emits one record, even without upstream token counts.
+func (e *Executor) reportUsage(ctx context.Context, reporter *helps.UsageReporter, protocol sdktranslator.Format, data []byte) {
+	if detail, ok := parseResponseUsage(protocol, data); ok {
+		reporter.Publish(ctx, detail)
+		return
+	}
+	reporter.EnsurePublished(ctx)
+}
+
+func parseResponseUsage(protocol sdktranslator.Format, data []byte) (usage.Detail, bool) {
+	if len(data) == 0 {
+		return usage.Detail{}, false
+	}
+	var detail usage.Detail
+	switch protocol {
+	case sdktranslator.FormatClaude:
+		detail = helps.ParseClaudeUsage(data)
+	case sdktranslator.FormatOpenAIResponse:
+		detail = helps.ParsePluginExecutorResponseUsage("openai-response", data)
+	default:
+		detail = helps.ParseOpenAIUsage(data)
+	}
+	if detail.InputTokens == 0 && detail.OutputTokens == 0 && detail.TotalTokens == 0 &&
+		detail.CachedTokens == 0 && detail.CacheReadTokens == 0 && detail.CacheCreationTokens == 0 {
+		return usage.Detail{}, false
+	}
+	return detail, true
+}
+
+// observeStreamUsage parses one upstream SSE payload in its own protocol shape.
+func observeStreamUsage(format sdktranslator.Format, payload []byte, buffer *helps.StreamUsageBuffer) {
+	switch format {
+	case sdktranslator.FormatClaude:
+		buffer.ObserveClaudeStream(payload)
+	case sdktranslator.FormatOpenAIResponse:
+		helps.ObservePluginExecutorStreamUsage("openai-response", payload, buffer)
+	default:
+		buffer.ObserveOpenAIStream(payload)
+	}
+}
+
+// ensureStreamUsage asks the chat endpoint for a final usage chunk; OpenAI-style
+// providers only emit token counts in streams when this flag is present.
+func ensureStreamUsage(body []byte, protocol Protocol) []byte {
+	if protocol != ProtocolChat || len(body) == 0 {
+		return body
+	}
+	if next, err := sjson.SetBytes(body, "stream_options.include_usage", true); err == nil {
+		return next
+	}
+	return body
 }
 
 // upstreamError carries an HTTP-like status so credential state can react to it.
