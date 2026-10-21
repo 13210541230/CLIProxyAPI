@@ -179,6 +179,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/oauth-request-scoped-errors", s.mgmt.DeleteOAuthRequestScopedErrors)
 
 		mgmt.GET("/auth-files", s.mgmt.ListAuthFiles)
+		mgmt.GET("/opencode/accounts", s.mgmt.ListOpenCodeAccounts)
 		mgmt.GET("/auth-credentials", s.mgmt.ListAuthCredentials)
 		mgmt.GET("/auth-files/models", s.mgmt.GetAuthFileModels)
 		mgmt.GET("/auth-files/modeltrace", s.mgmt.GetModelTrace)
