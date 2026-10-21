@@ -4,12 +4,16 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +51,14 @@ const (
 	envDisableAccountHealth = "OPENCODE_DISABLE_ACCOUNT_HEALTH"
 )
 
+// publishedAuthSignature records the last per-auth model binding this process
+// published, so repeated reloads do not churn the registry epoch.
+var (
+	publishMu                sync.Mutex
+	publishedAuthSignature   string
+	publishedModelsSignature string
+)
+
 // Executor relays requests to the OpenCode Go plan on behalf of any harness.
 type Executor struct {
 	cfg         *config.Config
@@ -60,6 +72,8 @@ type Executor struct {
 	quotaEach   time.Duration
 
 	learned sync.Map // model -> Protocol resolved from upstream endpoint availability
+
+	publishMu sync.Mutex
 
 	loadMu      sync.Mutex
 	mu          sync.Mutex
@@ -449,6 +463,25 @@ func (e *Executor) registerAuthModels() int {
 	if err != nil {
 		return 0
 	}
+	// Re-registering an identical binding bumps the registry epoch and voids the
+	// service's in-flight per-auth registration, which it then discards as stale.
+	// Only publish when the binding actually changed. The guard is package-level
+	// because the service may construct a fresh executor per reload.
+	publishMu.Lock()
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
+			names = append(names, entry.Name())
+		}
+	}
+	sort.Strings(names)
+	signature := strings.Join(names, ",") + "|" + strconv.Itoa(len(infos))
+	if signature == publishedAuthSignature {
+		publishMu.Unlock()
+		return 0
+	}
+	publishedAuthSignature = signature
+	publishMu.Unlock()
 	registered := 0
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
@@ -503,8 +536,33 @@ func (e *Executor) RegisterModels() []*registry.ModelInfo {
 	if len(infos) == 0 {
 		return nil
 	}
+	// Publishing an unchanged model set still bumps the registry epoch, which makes
+	// the service discard its own in-flight per-auth registration as stale. Publish
+	// only when the served set actually changed.
+	signature := modelSetSignature(infos)
+	publishMu.Lock()
+	if signature == publishedModelsSignature {
+		publishMu.Unlock()
+		return infos
+	}
+	publishedModelsSignature = signature
+	publishMu.Unlock()
 	registry.GetGlobalRegistry().RegisterClient(registryClientID, ProviderName, infos)
 	return infos
+}
+
+// modelSetSignature is a stable digest of the served model IDs and protocols.
+func modelSetSignature(infos []*registry.ModelInfo) string {
+	parts := make([]string, 0, len(infos))
+	for _, info := range infos {
+		if info == nil {
+			continue
+		}
+		parts = append(parts, strings.ToLower(info.ID))
+	}
+	sort.Strings(parts)
+	digest := sha256.Sum256([]byte(strings.Join(parts, ",")))
+	return hex.EncodeToString(digest[:8])
 }
 
 // ModelsForAuth returns the catalog models to publish for one auth, preferring the
@@ -528,6 +586,10 @@ func Republish(cfg *config.Config) int {
 		return 0
 	}
 	executor.cfg = cfg
+	publishMu.Lock()
+	publishedAuthSignature = ""
+	publishedModelsSignature = ""
+	publishMu.Unlock()
 	infos := ModelsForAuth(cfg)
 	registry.GetGlobalRegistry().RegisterClient(registryClientID, ProviderName, infos)
 	// Per-auth bindings are what the router resolves against, so they must follow
