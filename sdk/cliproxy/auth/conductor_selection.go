@@ -1053,6 +1053,10 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 	}
 	resp, handled, errPick := scheduler.PickAuth(ctx, req)
 	if errPick != nil {
+		// The pick failed before any credential was chosen, so no executor will
+		// publish a usage record for this request; do it here to keep the
+		// scheduling-failure class visible in request monitoring.
+		publishSchedulerPickFailure(ctx, requestProvider, providers, model, opts, errPick)
 		return nil, true, errPick
 	}
 	if !handled || !resp.Handled {

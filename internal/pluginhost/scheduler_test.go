@@ -334,6 +334,35 @@ func TestHostExclusiveSchedulerUnavailableFailsClosed(t *testing.T) {
 	if !errors.As(errPick, &authErr) || authErr.StatusCode() != 503 || !strings.Contains(errPick.Error(), "policy_unavailable") {
 		t.Fatalf("PickAuth() error = %v, want policy_unavailable/503", errPick)
 	}
+	// The branch detail is what makes an unattributable outage diagnosable.
+	if !strings.Contains(errPick.Error(), "no serving scheduler record") || !strings.Contains(errPick.Error(), "pool-scheduler") {
+		t.Fatalf("PickAuth() error = %v, want the missing-record branch and the declared owner", errPick)
+	}
+}
+
+func TestHostExclusiveSchedulerPickErrorNamesThePlugin(t *testing.T) {
+	host := newHostWithRecords(capabilityRecord{
+		id:       "pool-scheduler",
+		priority: 1,
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			SchedulerExclusiveProviders: []string{"codex"},
+			Scheduler: schedulerFunc(func(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, error) {
+				return pluginapi.SchedulerPickResponse{}, errors.New("policy store is locked")
+			}),
+		}},
+	})
+	host.exclusiveOwners = map[string][]string{"codex": {"pool-scheduler"}}
+
+	req := schedulerRequest("auth-1")
+	req.Provider = "codex"
+	req.Options.Metadata = map[string]any{"quota_key_hash": "abcdef12"}
+	_, handled, errPick := host.PickAuth(context.Background(), req)
+	if !handled || errPick == nil {
+		t.Fatalf("PickAuth() handled %v err %v, want handled fail-closed", handled, errPick)
+	}
+	if !strings.Contains(errPick.Error(), "policy_unavailable") || !strings.Contains(errPick.Error(), "policy store is locked") {
+		t.Fatalf("PickAuth() error = %v, want the pick failure reason", errPick)
+	}
 }
 
 func TestHostExclusiveSchedulerRejectsWithoutBuiltinFallback(t *testing.T) {

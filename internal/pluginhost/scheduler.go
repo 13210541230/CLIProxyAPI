@@ -30,7 +30,13 @@ func (h *Host) PickAuth(ctx context.Context, req pluginapi.SchedulerPickRequest)
 			// claim without a serving record means an accidental failure (load
 			// error, fuse, capability loss) and must fail closed instead of
 			// leaking bound callers into global OAuth selection.
-			return pluginapi.SchedulerPickResponse{}, true, schedulerUnavailableError()
+			detail := "no serving scheduler record"
+			if ownerConflict {
+				detail = "multiple exclusive owners declared"
+			} else if owner := strings.TrimSpace(ownerID); owner != "" {
+				detail = "no serving scheduler record for owner " + owner
+			}
+			return pluginapi.SchedulerPickResponse{}, true, h.failClosedScheduler(provider, "record_missing", ownerID, detail)
 		}
 		return pluginapi.SchedulerPickResponse{}, false, nil
 	}
@@ -41,7 +47,7 @@ func (h *Host) PickAuth(ctx context.Context, req pluginapi.SchedulerPickRequest)
 			if identityErr != nil {
 				return pluginapi.SchedulerPickResponse{}, true, identityErr
 			}
-			return pluginapi.SchedulerPickResponse{}, true, schedulerUnavailableError()
+			return pluginapi.SchedulerPickResponse{}, true, h.failClosedScheduler(provider, "pick_error", record.id, errPick.Error())
 		}
 		return resp, handled, errPick
 	}
@@ -50,7 +56,7 @@ func (h *Host) PickAuth(ctx context.Context, req pluginapi.SchedulerPickRequest)
 			if identityErr != nil {
 				return pluginapi.SchedulerPickResponse{}, true, identityErr
 			}
-			return pluginapi.SchedulerPickResponse{}, true, schedulerUnavailableError()
+			return pluginapi.SchedulerPickResponse{}, true, h.failClosedScheduler(provider, "not_handled", record.id, "plugin did not handle the pick")
 		}
 		return resp, false, nil
 	}
@@ -62,7 +68,7 @@ func (h *Host) PickAuth(ctx context.Context, req pluginapi.SchedulerPickRequest)
 			if identityErr != nil {
 				return pluginapi.SchedulerPickResponse{}, true, identityErr
 			}
-			return pluginapi.SchedulerPickResponse{}, true, schedulerUnavailableError()
+			return pluginapi.SchedulerPickResponse{}, true, h.failClosedScheduler(provider, "invalid_response", record.id, reason)
 		}
 		return pluginapi.SchedulerPickResponse{}, false, nil
 	}
@@ -242,10 +248,30 @@ func validateSchedulerCallerHash(metadata map[string]any) error {
 	return nil
 }
 
-func schedulerUnavailableError() error {
+// schedulerUnavailableMessage is the stable operator-facing prefix. The
+// machine code stays policy_unavailable so alerts keyed on it keep working.
+const schedulerUnavailableMessage = "exclusive scheduler policy is unavailable"
+
+// failClosedScheduler reports why an exclusive claim had no usable policy and
+// returns the caller-facing error. Without the branch detail the four failure
+// modes below are indistinguishable in logs, which is what made an earlier
+// 24-second outage impossible to attribute.
+func (h *Host) failClosedScheduler(provider, branch, pluginID, detail string) error {
+	fields := log.Fields{"provider": provider, "branch": branch}
+	if id := strings.TrimSpace(pluginID); id != "" {
+		fields["plugin_id"] = id
+	}
+	if detail = strings.TrimSpace(detail); detail != "" {
+		fields["detail"] = detail
+	}
+	log.WithFields(fields).Warn("pluginhost: exclusive scheduler claim failed closed")
+	message := schedulerUnavailableMessage
+	if detail != "" {
+		message = message + ": " + boundedSchedulerReason(detail)
+	}
 	return &coreauth.Error{
 		Code:       "policy_unavailable",
-		Message:    "exclusive scheduler policy is unavailable",
+		Message:    message,
 		Retryable:  true,
 		HTTPStatus: 503,
 	}
