@@ -132,9 +132,10 @@ class Stub(BaseHTTPRequestHandler):
             finally:
                 with LOCK:
                     WAITING[account] -= 1
-        if entry["fail"]:
-            encoded = json.dumps({"error": {"message": "synthetic failure", "type": "server_error", "code": "synthetic_failure"}}).encode()
-            self.send_response(503)
+        if entry["fail"] or "overload-" in text:
+            overloaded = "overload-" in text
+            encoded = json.dumps({"error": {"message": "server_is_overloaded" if overloaded else "synthetic failure", "type": "server_error", "code": "server_is_overloaded" if overloaded else "synthetic_failure"}}).encode()
+            self.send_response(502 if overloaded else 503)
             self.send_header("Content-Type", "application/json")
         else:
             response = {"id": "resp-smoke", "object": "response", "status": "completed", "model": payload.get("model"),
@@ -176,7 +177,7 @@ remote-management:
 logging-to-file: false
 request-log: false
 request-retry: 0
-disable-cooling: true
+disable-cooling: false
 proxy-url: "http://127.0.0.1:{STUB_PORT}"
 usage-statistics-enabled: false
 plugins:
@@ -234,6 +235,11 @@ def run(keep_alive=False, manager_binary=None):
         files = checked(MANAGER, "/v0/management/auth-files")["files"]
         ids = {item.get("email"): item["id"] for item in files}
         a, b = ids["a@smoke.invalid"], ids["b@smoke.invalid"]
+        indexes = {item["id"]: item["auth_index"] for item in files}
+
+        def reset_cooldown(auth):
+            checked(CPA, "/v8/management/routing/cooldown/reset", "POST", {"auth_index": indexes[auth]})
+
         policy = {"version": 1, "provider": "codex", "pools": [{"id": "home", "name": "Home", "enabled": True}, {"id": "other", "name": "Other", "enabled": True}],
             "members": [{"poolId": "home", "authId": a, "enabled": True}, {"poolId": "other", "authId": b, "enabled": True}],
             "bindings": [{"apiKeyHash": key_hash(NORMAL), "poolId": "home"}, {"apiKeyHash": key_hash(EXEMPT), "poolId": "home", "crossPoolExempt": True}]}
@@ -296,9 +302,97 @@ def run(keep_alive=False, manager_binary=None):
         with LOCK:
             failure_accounts = [call["account"] for call in CALLS[before:]]
         assert failure_accounts and set(failure_accounts) == {"b"}, failure_accounts
+        reset_cooldown(b)
         status, payload = chat(EXEMPT, "borrowed-session")
         assert status == 200 and "handled-by-b" in json.dumps(payload), (status, payload)
         report["checks"].append("upstream failure never migrates active session")
+
+        # Explicit reassignment is different from an upstream failure: subsequent
+        # requests follow the new primary membership, while in-flight work stays put.
+        def publish_change(change):
+            current = checked(MANAGER, API)["policy"]
+            current["version"] += 1
+            current.pop("hash", None)
+            change(current)
+            checked(MANAGER, API + "/policy", "PUT", {"policy": current})
+
+        GATE.clear()
+        old_request = pool.submit(chat, NORMAL, "policy-rebind-inflight", "hold-policy-rebind")
+        wait_until(lambda: state(a)["active"] == 1, label="old request executing on auth a")
+
+        def move_user(current):
+            for binding in current["bindings"]:
+                if binding["apiKeyHash"] == key_hash(NORMAL):
+                    binding["poolId"] = "other"
+
+        publish_change(move_user)
+        status, payload = chat(NORMAL, "policy-rebind-inflight")
+        assert status == 200 and "handled-by-b" in json.dumps(payload), (status, payload)
+        assert state(a)["active"] == 1, "pool rebind migrated or released the old execution"
+        status, payload = chat(NORMAL, "new-user-session-after-rebind")
+        assert status == 200 and "handled-by-b" in json.dumps(payload), (status, payload)
+        report["checks"].append("caller pool change applies to old and new sessions without migrating in-flight work")
+        GATE.set()
+        status, payload = old_request.result(timeout=15)
+        assert status == 200 and "handled-by-a" in json.dumps(payload), (status, payload)
+        wait_until(lambda: state(a)["active"] == 0 and state(b)["active"] == 0, label="old and new executions drain")
+        status, payload = chat(NORMAL, "policy-rebind-inflight")
+        assert status == 200 and "handled-by-b" in json.dumps(payload), (status, payload)
+        report["checks"].append("old completion does not restore the old affinity")
+
+        def swap_accounts(current):
+            for member in current["members"]:
+                member["poolId"] = "other" if member["authId"] == a else "home"
+
+        publish_change(swap_accounts)
+        status, payload = chat(NORMAL, "policy-rebind-inflight")
+        assert status == 200 and "handled-by-a" in json.dumps(payload), (status, payload)
+        status, payload = chat(NORMAL, "new-session-after-auth-move")
+        assert status == 200 and "handled-by-a" in json.dumps(payload), (status, payload)
+        report["checks"].append("account pool move invalidates old affinity and selects only the current pool")
+
+        def remove_primary_member(current):
+            current["members"] = [member for member in current["members"] if member["authId"] != a]
+
+        publish_change(remove_primary_member)
+        with LOCK:
+            before = len(CALLS)
+        for session in ("policy-rebind-inflight", "new-user-empty-pool"):
+            status, payload = chat(NORMAL, session)
+            assert status == 503 and "assigned account pool has no eligible candidates" in json.dumps(payload), (session, status, payload)
+        with LOCK:
+            assert len(CALLS) == before, "empty assigned pool leaked a request to a foreign account"
+        report["checks"].append("unavailable target pool rejects old and new sessions without cross-pool fallback")
+
+        def restore_primary_member(current):
+            current["members"].append({"poolId": "other", "authId": a, "enabled": True})
+
+        publish_change(restore_primary_member)
+        status, payload = chat(NORMAL, "policy-rebind-inflight")
+        assert status == 200 and "handled-by-a" in json.dumps(payload), (status, payload)
+        report["checks"].append("restored current-pool capacity recovers the same session immediately")
+
+        # Reproduce the reported populated-pool failure through CPA's real
+        # cooldown filter, not by manually editing the scheduler candidates.
+        with LOCK:
+            before = len(CALLS)
+        status, payload = chat(NORMAL, "policy-rebind-inflight", "overload-synthetic")
+        assert status >= 400, (status, payload)
+        with LOCK:
+            assert CALLS[before:] and all(call["account"] == "a" for call in CALLS[before:]), CALLS[before:]
+            before = len(CALLS)
+        for session, expected_reason in (("policy-rebind-inflight", "bound account is not an eligible candidate"),
+                                         ("new-user-model-cooling", "assigned account pool has no eligible candidates")):
+            status, payload = chat(NORMAL, session)
+            assert status == 503 and expected_reason in json.dumps(payload), (session, status, payload)
+        with LOCK:
+            assert len(CALLS) == before, "cooling pool leaked traffic to the healthy foreign auth"
+        report["checks"].append("real 502 overload cools a configured pool member and rejects old/new sessions before upstream")
+        reset_cooldown(a)
+        status, payload = chat(NORMAL, "policy-rebind-inflight")
+        assert status == 200 and "handled-by-a" in json.dumps(payload), (status, payload)
+        report["checks"].append("clearing model cooldown restores the same account without rebinding")
+        wait_until(lambda: state(a)["active"] == 0 and state(b)["active"] == 0, label="final completion")
         report["state"] = {"a": state(a), "b": state(b)}
         with LOCK:
             report["upstreamCalls"] = list(CALLS)
@@ -337,8 +431,17 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--keep-alive", action="store_true")
     parser.add_argument("--manager-binary", type=Path)
+    parser.add_argument("--port-offset", type=int, default=0, help="Shift fixture ports and isolate scratch files without affecting another instance")
     try:
         args = parser.parse_args()
+        if args.port_offset:
+            CPA_PORT += args.port_offset
+            MANAGER_PORT += args.port_offset
+            STUB_PORT += args.port_offset
+            CPA = f"http://127.0.0.1:{CPA_PORT}"
+            MANAGER = f"http://127.0.0.1:{MANAGER_PORT}"
+            STUB = f"http://127.0.0.1:{STUB_PORT}"
+            SCRATCH = ROOT / "build_tmp" / f"account-pool-exemption-{args.port_offset}"
         run(args.keep_alive, args.manager_binary)
     except Exception:
         traceback.print_exc(file=sys.stdout)

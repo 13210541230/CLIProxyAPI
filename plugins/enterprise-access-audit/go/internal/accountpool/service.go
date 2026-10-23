@@ -212,9 +212,8 @@ func (s *Service) Apply(raw []byte) (Status, error) {
 	status := policyStatus(s.policy, s.ready, s.lastErr)
 	status.Enabled = s.enabled
 	s.mu.Unlock()
-	// Live session bindings deliberately survive publication: the pool
-	// namespace excludes pool and policy identity. Exemption toggles and pool
-	// reassignment must not rekey an active conversation.
+	// Keep session records across publication; the next pick validates the
+	// current caller pool and account membership before reusing the affinity.
 	return status, nil
 }
 
@@ -313,9 +312,6 @@ func (s *Service) Pick(request SchedulerPickRequest) SchedulerPickResponse {
 // unconfigured pools fall back to global selection so a stale exclusive
 // registration keeps serving requests instead of failing closed.
 func (s *Service) pickOAuthLayer(request SchedulerPickRequest, candidates []schedulerAuthCandidate) *SchedulerPickResponse {
-	if len(candidates) == 0 {
-		return nil
-	}
 	scoped := request
 	scoped.Candidates = candidates
 	caller := callerNamespace(request.Options.Metadata)
@@ -329,8 +325,10 @@ func (s *Service) pickOAuthLayer(request SchedulerPickRequest, candidates []sche
 	}
 
 	s.mu.RLock()
+	defer s.mu.RUnlock()
+	// Keep publication ordered with the affinity update: an older snapshot
+	// must not overwrite a binding selected under a newer pool assignment.
 	enabled, p, ready := s.enabled, s.policy, s.ready
-	s.mu.RUnlock()
 	// A concurrent disable after Pick's initial check is treated as a
 	// pass-through for this in-flight selection; subsequent picks delegate
 	// directly to the host builtin.
@@ -371,6 +369,7 @@ func (s *Service) pickOAuthLayer(request SchedulerPickRequest, candidates []sche
 	}
 	primary := make(map[string]struct{})
 	allowed := make(map[string]struct{})
+	memberPools := make(map[string][]string)
 	enabledPools := make(map[string]bool, len(p.Pools))
 	for _, item := range p.Pools {
 		enabledPools[item.ID] = item.Enabled
@@ -380,6 +379,7 @@ func (s *Service) pickOAuthLayer(request SchedulerPickRequest, candidates []sche
 			continue
 		}
 		allowed[member.AuthID] = struct{}{}
+		memberPools[member.AuthID] = append(memberPools[member.AuthID], member.PoolID)
 		if member.PoolID == poolID {
 			primary[member.AuthID] = struct{}{}
 		}
@@ -393,17 +393,12 @@ func (s *Service) pickOAuthLayer(request SchedulerPickRequest, candidates []sche
 			filtered = append(filtered, candidate)
 		}
 	}
-	if len(filtered) == 0 {
-		resp := reject("account_pool_unavailable", http.StatusServiceUnavailable, true, "assigned account pool has no eligible candidates")
-		return &resp
-	}
 	scoped.Candidates = filtered
 	scoped = withSessionNamespace(scoped, oauthNamespace(true, true, poolID, caller))
-	// Strict single-account routing: the bound session never hops to a
-	// sibling account. A decline (bound account cooled/removed, or a
-	// persistent busy streak) surfaces here and decideLayeredPick hands the
-	// request to the api-key provider when one exists.
-	authID, decline := s.engine.pickPool(scoped, primary, binding.CrossPoolExempt)
+	// Strict single-account routing: temporary ineligibility never hops to a
+	// sibling. Explicit pool/account reassignment invalidates the old affinity
+	// and reselects from the current primary pool on this request.
+	authID, decline := s.engine.pickPool(scoped, primary, binding.CrossPoolExempt, poolID, memberPools)
 	if authID != "" {
 		resp := selected(authID)
 		return &resp
@@ -412,7 +407,11 @@ func (s *Service) pickOAuthLayer(request SchedulerPickRequest, candidates []sche
 		resp := reject("account_busy", http.StatusServiceUnavailable, true, "bound account is saturated; deferring to the api-key provider if configured")
 		return &resp
 	}
-	resp := reject("account_pool_unavailable", http.StatusServiceUnavailable, true, "bound account is unavailable; deferring to the api-key provider if configured")
+	if decline == "account_pool_no_candidates" {
+		resp := reject("account_pool_unavailable", http.StatusServiceUnavailable, true, "assigned account pool has no eligible candidates for this request; deferring to the api-key provider if configured")
+		return &resp
+	}
+	resp := reject("account_pool_unavailable", http.StatusServiceUnavailable, true, "bound account is not an eligible candidate for this request; deferring to the api-key provider if configured")
 	return &resp
 }
 

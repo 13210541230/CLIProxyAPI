@@ -13,17 +13,19 @@ const (
 	// tokenBudgetPerAuth bounds tracked window bookkeeping per account.
 	tokenBudgetPerAuth = 1 << 20
 	// defaultSessionIdleTTL is how long a session may stay silent before its
-	// binding expires and re-selection becomes allowed. Mirrors the product
-	// rule: a bound session never changes OAuth accounts while it keeps
-	// talking; only an idle gap longer than this releases the binding.
+	// binding expires and re-selection becomes allowed. Explicit pool or
+	// account reassignment can also release a stale binding on the next pick.
 	defaultSessionIdleTTL = 2 * time.Hour
 )
 
-// sessionBinding tracks which account a session is pinned to plus the last
-// time the session carried a request (the idle-expiry clock).
+// sessionBinding tracks the selected account, its pool assignment, and the
+// last request time used for idle expiry.
 type sessionBinding struct {
-	AuthID   string
-	LastSeen time.Time
+	AuthID        string
+	LastSeen      time.Time
+	PoolID        string
+	Borrowed      bool
+	MemberPoolIDs []string
 }
 
 type sessionExpiryEntry struct {
@@ -240,21 +242,26 @@ func (e *Engine) Pick(request schedulerPickRequest) string {
 	return authID
 }
 
-// PickPool is the strict selector for pool-bound sessions. A binding survives
-// every failure: the bound account leaving the candidates (cooled, removed,
-// disabled) or a persistent busy streak yields a coded decline so the caller
-// can defer to the api-key provider layer — never a sibling OAuth account.
-// Only an idle gap longer than sessionIdleTTL releases the binding.
+// PickPool is the strict selector for pool-bound sessions without an active
+// policy-membership snapshot. A binding survives temporary candidate loss or a
+// persistent busy streak and yields a coded decline instead of hopping to a
+// sibling OAuth account. The service's policy-aware pick path additionally
+// invalidates affinity after an explicit pool/account reassignment.
 func (e *Engine) PickPool(request schedulerPickRequest) (string, string) {
 	return e.pick(request, true, nil)
 }
 
-func (e *Engine) pickPool(request schedulerPickRequest, primary map[string]struct{}, borrow bool) (string, string) {
-	return e.pick(request, true, &poolSelection{primary: primary, borrow: borrow})
+func (e *Engine) pickPool(request schedulerPickRequest, primary map[string]struct{}, borrow bool, poolID string, memberPools map[string][]string) (string, string) {
+	return e.pick(request, true, &poolSelection{
+		primary:     primary,
+		borrow:      borrow,
+		poolID:      poolID,
+		memberPools: memberPools,
+	})
 }
 
 func (e *Engine) pick(request schedulerPickRequest, strict bool, selection *poolSelection) (string, string) {
-	if e == nil || len(request.Candidates) == 0 {
+	if e == nil || len(request.Candidates) == 0 && selection == nil {
 		return "", ""
 	}
 	now := e.now().UTC()
@@ -289,7 +296,7 @@ func (e *Engine) pick(request schedulerPickRequest, strict bool, selection *pool
 		}
 		loads = append(loads, candidateLoad{AuthID: authID, Pressure: pressure, Load: load})
 	}
-	if len(loads) == 0 {
+	if len(loads) == 0 && selection == nil {
 		e.mu.Unlock()
 		return "", ""
 	}
@@ -300,44 +307,57 @@ func (e *Engine) pick(request schedulerPickRequest, strict bool, selection *pool
 	}
 	if sessionKey != "" {
 		if binding, ok := e.sessions[sessionKey]; ok && binding.AuthID != "" {
-			// The request just proved the session is alive: refresh the idle
-			// clock before any decline so an active session never expires.
-			binding.LastSeen = now
-			e.rememberSessionLocked(sessionKey, binding)
-			if _, eligible := seen[binding.AuthID]; eligible {
-				streak := e.busyRejections[sessionKey]
-				saturated := streak >= e.maxBusy && e.saturatedLocked(binding.AuthID, now)
-				if strict {
-					// Persistent saturation under strict pool routing defers to
-					// the api-key provider; the binding itself is kept. Once the
-					// account drains, the session probes it again and a successful
-					// admission clears the streak.
-					if saturated {
-						e.mu.Unlock()
-						return "", "account_busy"
+			if strict && selection != nil && selection.needsRebind(binding) {
+				// Keep the stale affinity until a primary pick succeeds, so a
+				// retry cannot become a new session and borrow from the old pool.
+				selection.borrow = false
+			} else {
+				// The request just proved the session is alive: refresh the idle
+				// clock before any decline so an active session never expires.
+				binding.LastSeen = now
+				if strict && selection != nil {
+					binding.PoolID = selection.poolID
+					if _, primary := selection.primary[binding.AuthID]; primary {
+						binding.Borrowed = false
+						binding.MemberPoolIDs = nil
 					}
-					e.reserveLocked(binding.AuthID, reservationRequestID(request), now)
-					e.mu.Unlock()
-					return binding.AuthID, ""
 				}
-				if saturated {
-					// Lenient layers (api-key entries, unbound global OAuth) keep
-					// the original hysteresis: a persistent saturated streak
-					// releases the binding so the session reaches a free account.
-					e.deleteSessionLocked(sessionKey)
-					// Fall through to load-balanced rebind below.
-				} else {
-					e.reserveLocked(binding.AuthID, reservationRequestID(request), now)
+				e.rememberSessionLocked(sessionKey, binding)
+				if _, eligible := seen[binding.AuthID]; eligible {
+					streak := e.busyRejections[sessionKey]
+					saturated := streak >= e.maxBusy && e.saturatedLocked(binding.AuthID, now)
+					if strict {
+						// Persistent saturation under strict pool routing defers to
+						// the api-key provider; the binding itself is kept. Once the
+						// account drains, the session probes it again and a successful
+						// admission clears the streak.
+						if saturated {
+							e.mu.Unlock()
+							return "", "account_busy"
+						}
+						e.reserveLocked(binding.AuthID, reservationRequestID(request), now)
+						e.mu.Unlock()
+						return binding.AuthID, ""
+					}
+					if saturated {
+						// Lenient layers (api-key entries, unbound global OAuth) keep
+						// the original hysteresis: a persistent saturated streak
+						// releases the binding so the session reaches a free account.
+						e.deleteSessionLocked(sessionKey)
+						// Fall through to load-balanced rebind below.
+					} else {
+						e.reserveLocked(binding.AuthID, reservationRequestID(request), now)
+						e.mu.Unlock()
+						return binding.AuthID, ""
+					}
+				} else if strict {
+					// A temporarily ineligible bound account (for example, cooled
+					// for this model) still declines instead of hopping to a sibling.
 					e.mu.Unlock()
-					return binding.AuthID, ""
+					return "", "account_pool_unavailable"
 				}
-			} else if strict {
-				// Bound account left the candidates: decline instead of hopping
-				// to a sibling account (single-account realism).
-				e.mu.Unlock()
-				return "", "account_pool_unavailable"
+				// Lenient layers rebind silently when their account disappears.
 			}
-			// Lenient layers rebind silently when their account disappears.
 		}
 	}
 
@@ -348,7 +368,7 @@ func (e *Engine) pick(request schedulerPickRequest, strict bool, selection *pool
 		loads = e.poolLoadsLocked(loads, &permissions, now)
 		if len(loads) == 0 {
 			e.mu.Unlock()
-			return "", "account_pool_unavailable"
+			return "", "account_pool_no_candidates"
 		}
 	}
 
@@ -374,7 +394,17 @@ func (e *Engine) pick(request schedulerPickRequest, strict bool, selection *pool
 	}
 	e.reserveLocked(selected, reservationRequestID(request), now)
 	if sessionKey != "" {
-		e.rememberSessionLocked(sessionKey, sessionBinding{AuthID: selected, LastSeen: now})
+		binding := sessionBinding{AuthID: selected, LastSeen: now}
+		if strict && selection != nil {
+			binding.PoolID = selection.poolID
+			_, primary := selection.primary[selected]
+			binding.Borrowed = !primary
+			if binding.Borrowed {
+				binding.MemberPoolIDs = append([]string(nil), selection.memberPools[selected]...)
+			}
+		}
+		delete(e.busyRejections, sessionKey)
+		e.rememberSessionLocked(sessionKey, binding)
 	}
 	e.mu.Unlock()
 	return selected, ""
@@ -501,8 +531,8 @@ func (e *Engine) admit(requestID, authID, sessionKey string, enforce bool, bindi
 			// The caller's own namespaced session key is provided by the service;
 			// never scan the shared sessions map (it can hold other callers'
 			// sessions bound to this account and misattribute streaks).
-			if _, tracked := e.sessions[sessionKey]; sessionKey != "" && tracked {
-				e.busyRejections[sessionKey] = 0 // a success clears the failure streak
+			if binding, tracked := e.sessions[sessionKey]; sessionKey != "" && tracked && binding.AuthID == authID {
+				e.busyRejections[sessionKey] = 0 // only the current account clears its streak
 			}
 			e.finishPendingLocked(requestID, now, false)
 			e.requests[requestID] = record
@@ -516,7 +546,7 @@ func (e *Engine) admit(requestID, authID, sessionKey string, enforce bool, bindi
 			// to its account through any number of failures (single-account
 			// realism). The streak only tells PickPool to defer the OAuth
 			// layer to the api-key provider while the account stays saturated.
-			if _, tracked := e.sessions[sessionKey]; sessionKey != "" && tracked {
+			if binding, tracked := e.sessions[sessionKey]; sessionKey != "" && tracked && binding.AuthID == authID {
 				e.busyRejections[sessionKey]++
 			}
 			e.finishPendingLocked(requestID, now, true)

@@ -186,7 +186,7 @@ func TestStatusReportsRuntimeSchedulerState(t *testing.T) {
 	}
 }
 
-func TestServicePickImmediatelyAfterMemberRemovalDoesNotHop(t *testing.T) {
+func TestServicePickImmediatelyAfterMemberRemovalReselectsWithinPool(t *testing.T) {
 	initial := mustPolicy(t,
 		[]Pool{{ID: "eng", Name: "Engineering", Enabled: true}},
 		[]Member{{PoolID: "eng", AuthID: "auth-a", Enabled: true}, {PoolID: "eng", AuthID: "auth-b", Enabled: true}},
@@ -221,11 +221,11 @@ func TestServicePickImmediatelyAfterMemberRemovalDoesNotHop(t *testing.T) {
 		t.Fatalf("Apply(member removal) error = %v", errApply)
 	}
 
-	// The very next request must preserve the session's binding and fail
-	// closed for its removed account instead of selecting the remaining peer.
+	// The next request must invalidate the removed account's affinity and
+	// reselect from the caller's current primary pool.
 	afterRemoval := svc.Pick(request)
-	if afterRemoval.Decision != "reject" || afterRemoval.ErrorCode != "account_pool_unavailable" {
-		t.Fatalf("pick immediately after member removal = %+v, want account_pool_unavailable", afterRemoval)
+	if afterRemoval.Decision != "selected" || afterRemoval.AuthID != "auth-b" {
+		t.Fatalf("pick immediately after member removal = %+v, want auth-b from the same pool", afterRemoval)
 	}
 }
 

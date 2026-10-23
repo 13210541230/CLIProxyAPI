@@ -159,7 +159,7 @@ func TestCrossPoolBorrowReservesAtomicallyAndLeavesOneSlot(t *testing.T) {
 	}
 }
 
-func TestBorrowedSessionSurvivesRevocationFailureAndPoolReassignment(t *testing.T) {
+func TestBorrowedSessionSurvivesRevocationAndRebindsToCurrentPool(t *testing.T) {
 	svc, now := borrowingService(t, true)
 	*now = now.Add(time.Minute)
 	holds := holdAccount(t, svc.engine, "a", 5)
@@ -196,15 +196,18 @@ func TestBorrowedSessionSurvivesRevocationFailureAndPoolReassignment(t *testing.
 	publishBorrowingPolicy(t, svc, p)
 	req.Candidates = borrowingRequest("").Candidates
 	if got := svc.Pick(req); got.AuthID != "b" {
-		t.Fatalf("primary-pool policy change must preserve session: %+v", got)
+		t.Fatalf("the new primary pool's auth must be selected after reassignment: %+v", got)
 	}
 	p = svc.Policy()
 	p.Version++
 	p.Bindings[0].PoolID = "home"
 	publishBorrowingPolicy(t, svc, p)
+	if got := svc.Pick(req); got.AuthID != "a" {
+		t.Fatalf("returning to home must reselect its primary auth immediately: %+v", got)
+	}
 	*now = now.Add(2*time.Hour + time.Second)
 	if got := svc.Pick(req); got.AuthID != "a" {
-		t.Fatalf("idle expiry must restore primary-only new allocation: %+v", got)
+		t.Fatalf("idle expiry must keep the current primary allocation: %+v", got)
 	}
 }
 

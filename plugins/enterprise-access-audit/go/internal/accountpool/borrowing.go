@@ -99,11 +99,35 @@ func (e *Engine) borrowableLocked(authID string, now time.Time) bool {
 	return true
 }
 
-// poolSelection separates new-session permissions from existing-session
-// eligibility. Revoking an exemption does not erase a borrowed binding.
+// poolSelection carries the current primary pool and the membership snapshot
+// used to validate existing session bindings. Revoking an exemption alone does
+// not erase a borrowed binding, but pool reassignment does.
 type poolSelection struct {
-	primary map[string]struct{}
-	borrow  bool
+	primary     map[string]struct{}
+	borrow      bool
+	poolID      string
+	memberPools map[string][]string
+}
+
+func (selection *poolSelection) needsRebind(binding sessionBinding) bool {
+	if _, remainsInPrimary := selection.primary[binding.AuthID]; remainsInPrimary {
+		return false
+	}
+	if selection.poolID != binding.PoolID {
+		return true
+	}
+	if binding.Borrowed {
+		// Adding/removing an unrelated membership does not move a borrowed
+		// conversation while its account still belongs to an original lender.
+		for _, original := range binding.MemberPoolIDs {
+			for _, current := range selection.memberPools[binding.AuthID] {
+				if original == current {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 func (e *Engine) poolLoadsLocked(loads []candidateLoad, selection *poolSelection, now time.Time) []candidateLoad {
