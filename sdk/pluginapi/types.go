@@ -585,22 +585,37 @@ type SchedulerPickResponse struct {
 // UnmarshalJSON supports both Go struct field names and snake_case field names.
 func (r *SchedulerPickResponse) UnmarshalJSON(data []byte) error {
 	type rawResponse struct {
-		AuthID          *string `json:"AuthID"`
-		AltAuthID       *string `json:"auth_id"`
-		DelegateBuiltin *string `json:"DelegateBuiltin"`
-		AltDelegate     *string `json:"delegate_builtin"`
-		Handled         *bool   `json:"Handled"`
-		AltHandled      *bool   `json:"handled"`
-		Reject          *bool   `json:"Reject"`
-		AltReject       *bool   `json:"reject"`
-		RejectReason    *string `json:"RejectReason"`
-		AltRejectReason *string `json:"reject_reason"`
-		RejectCode      *string `json:"RejectCode"`
-		AltRejectCode   *string `json:"reject_code"`
+		Decision        *SchedulerDecision `json:"Decision"`
+		AltDecision     *SchedulerDecision `json:"decision"`
+		AuthID          *string            `json:"AuthID"`
+		AltAuthID       *string            `json:"auth_id"`
+		DelegateBuiltin *string            `json:"DelegateBuiltin"`
+		AltDelegate     *string            `json:"delegate_builtin"`
+		ErrorCode       *string            `json:"ErrorCode"`
+		AltErrorCode    *string            `json:"error_code"`
+		HTTPStatus      *int               `json:"HTTPStatus"`
+		AltHTTPStatus   *int               `json:"http_status"`
+		Retryable       *bool              `json:"Retryable"`
+		AltRetryable    *bool              `json:"retryable"`
+		Reason          *string            `json:"Reason"`
+		AltReason       *string            `json:"reason"`
+		Handled         *bool              `json:"Handled"`
+		AltHandled      *bool              `json:"handled"`
+		Reject          *bool              `json:"Reject"`
+		AltReject       *bool              `json:"reject"`
+		RejectReason    *string            `json:"RejectReason"`
+		AltRejectReason *string            `json:"reject_reason"`
+		RejectCode      *string            `json:"RejectCode"`
+		AltRejectCode   *string            `json:"reject_code"`
 	}
 	var raw rawResponse
 	if errUnmarshal := json.Unmarshal(data, &raw); errUnmarshal != nil {
 		return errUnmarshal
+	}
+	if raw.Decision != nil {
+		r.Decision = *raw.Decision
+	} else if raw.AltDecision != nil {
+		r.Decision = *raw.AltDecision
 	}
 	if raw.AuthID != nil {
 		r.AuthID = *raw.AuthID
@@ -611,6 +626,26 @@ func (r *SchedulerPickResponse) UnmarshalJSON(data []byte) error {
 		r.DelegateBuiltin = *raw.DelegateBuiltin
 	} else if raw.AltDelegate != nil {
 		r.DelegateBuiltin = *raw.AltDelegate
+	}
+	if raw.ErrorCode != nil {
+		r.ErrorCode = *raw.ErrorCode
+	} else if raw.AltErrorCode != nil {
+		r.ErrorCode = *raw.AltErrorCode
+	}
+	if raw.HTTPStatus != nil {
+		r.HTTPStatus = *raw.HTTPStatus
+	} else if raw.AltHTTPStatus != nil {
+		r.HTTPStatus = *raw.AltHTTPStatus
+	}
+	if raw.Retryable != nil {
+		r.Retryable = *raw.Retryable
+	} else if raw.AltRetryable != nil {
+		r.Retryable = *raw.AltRetryable
+	}
+	if raw.Reason != nil {
+		r.Reason = *raw.Reason
+	} else if raw.AltReason != nil {
+		r.Reason = *raw.AltReason
 	}
 	if raw.Handled != nil {
 		r.Handled = *raw.Handled

@@ -498,18 +498,51 @@ func TestSchedulerPickResponseUnmarshalJSONCompatibility(t *testing.T) {
 	}
 }
 
+func TestSchedulerPickResponseUnmarshalJSONStructuredReject(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{
+			name:    "pascal case",
+			payload: `{"Decision":"reject","ErrorCode":"policy_unavailable","HTTPStatus":503,"Retryable":true,"Reason":"account pool policy unavailable","Handled":true}`,
+		},
+		{
+			name:    "snake case",
+			payload: `{"decision":"reject","error_code":"policy_unavailable","http_status":503,"retryable":true,"reason":"account pool policy unavailable","handled":true}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var resp SchedulerPickResponse
+			if errUnmarshal := json.Unmarshal([]byte(tc.payload), &resp); errUnmarshal != nil {
+				t.Fatalf("json.Unmarshal() error = %v", errUnmarshal)
+			}
+			if resp.Decision != SchedulerDecisionReject || resp.ErrorCode != "policy_unavailable" || resp.HTTPStatus != 503 || !resp.Retryable || resp.Reason != "account pool policy unavailable" || !resp.Handled {
+				t.Fatalf("response = %#v, want structured reject decision", resp)
+			}
+		})
+	}
+}
+
 func TestSchedulerPickResponseUnmarshalJSONOverwritesExistingFields(t *testing.T) {
 	// Verify that explicit false or empty string in incoming JSON correctly overwrites pre-existing true/non-empty values.
 	resp := SchedulerPickResponse{
+		Decision:        SchedulerDecisionReject,
 		AuthID:          "old-auth",
 		DelegateBuiltin: "old-delegate",
+		ErrorCode:       "old-error-code",
+		HTTPStatus:      503,
+		Retryable:       true,
+		Reason:          "old-reason",
 		Handled:         true,
 		Reject:          true,
 		RejectCode:      "old-code",
 		RejectReason:    "old-reason",
 	}
 
-	payload := `{"handled":false,"reject":false,"auth_id":"","delegate_builtin":"","reject_code":"","reject_reason":""}`
+	payload := `{"decision":"","handled":false,"reject":false,"auth_id":"","delegate_builtin":"","error_code":"","http_status":0,"retryable":false,"reason":"","reject_code":"","reject_reason":""}`
 	if errUnmarshal := json.Unmarshal([]byte(payload), &resp); errUnmarshal != nil {
 		t.Fatalf("json.Unmarshal() error = %v", errUnmarshal)
 	}
@@ -532,11 +565,19 @@ func TestSchedulerPickResponseUnmarshalJSONOverwritesExistingFields(t *testing.T
 	if resp.RejectReason != "" {
 		t.Fatalf("RejectReason = %q, want empty", resp.RejectReason)
 	}
+	if resp.Decision != "" || resp.ErrorCode != "" || resp.HTTPStatus != 0 || resp.Retryable || resp.Reason != "" {
+		t.Fatalf("structured fields were not overwritten with zero values: %#v", resp)
+	}
 
 	// Verify that omitting fields in incoming JSON leaves existing fields intact.
 	resp2 := SchedulerPickResponse{
-		AuthID:  "keep-auth",
-		Handled: true,
+		Decision:   SchedulerDecisionReject,
+		AuthID:     "keep-auth",
+		ErrorCode:  "keep-error",
+		HTTPStatus: 503,
+		Retryable:  true,
+		Reason:     "keep-reason",
+		Handled:    true,
 	}
 	if errUnmarshal := json.Unmarshal([]byte(`{"reject":true}`), &resp2); errUnmarshal != nil {
 		t.Fatalf("json.Unmarshal() error = %v", errUnmarshal)
@@ -549,6 +590,9 @@ func TestSchedulerPickResponseUnmarshalJSONOverwritesExistingFields(t *testing.T
 	}
 	if !resp2.Reject {
 		t.Fatalf("Reject = %v, want true", resp2.Reject)
+	}
+	if resp2.Decision != SchedulerDecisionReject || resp2.ErrorCode != "keep-error" || resp2.HTTPStatus != 503 || !resp2.Retryable || resp2.Reason != "keep-reason" {
+		t.Fatalf("omitted structured fields changed: %#v", resp2)
 	}
 }
 

@@ -3,6 +3,7 @@ package pluginhost
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -421,6 +422,64 @@ func TestRPCSchedulerPickUsesAdapter(t *testing.T) {
 			!reflect.DeepEqual(gotCandidate.Attributes, wantCandidate.Attributes) {
 			t.Fatalf("scheduler candidate[%d] = %#v, want %#v", index, gotCandidate, wantCandidate)
 		}
+	}
+}
+
+func TestRPCSchedulerPickPreservesStructuredReject(t *testing.T) {
+	want := pluginapi.SchedulerPickResponse{
+		Decision:   pluginapi.SchedulerDecisionReject,
+		ErrorCode:  "account_pool_unavailable",
+		HTTPStatus: 503,
+		Retryable:  true,
+		Reason:     "no candidates available for Codex scheduling",
+		Handled:    true,
+	}
+	var pickCalls int
+	lookup := newTestSymbolLookup(&testPlugin{
+		registerResult: pluginapi.Plugin{
+			Metadata: pluginapi.Metadata{
+				Name:             "scheduler",
+				Version:          "1.0.0",
+				Author:           "test",
+				GitHubRepository: "https://github.com/router-for-me/CLIProxyAPI",
+			},
+			Capabilities: pluginapi.Capabilities{
+				SchedulerExclusiveProviders: []string{"codex"},
+				Scheduler: schedulerFunc(func(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, error) {
+					pickCalls++
+					return want, nil
+				}),
+			},
+		},
+	})
+
+	plugin, errRegister := registerRPCPlugin(context.Background(), nil, "scheduler", lookup, pluginabi.MethodPluginRegister, nil)
+	if errRegister != nil {
+		t.Fatalf("registerRPCPlugin() error = %v", errRegister)
+	}
+	host := newHostWithRecords(capabilityRecord{id: "scheduler", plugin: plugin})
+	host.exclusiveOwners = map[string][]string{"codex": {"scheduler"}}
+
+	req := schedulerRequest("auth-1")
+	req.Provider = "codex"
+	req.Options.Metadata = map[string]any{"quota_key_hash": "abcdef12"}
+	_, handled, errPick := host.PickAuth(context.Background(), req)
+	if !handled {
+		t.Fatal("PickAuth() handled = false, want true")
+	}
+	var authErr interface {
+		Error() string
+		StatusCode() int
+	}
+	if !errors.As(errPick, &authErr) || authErr.StatusCode() != want.HTTPStatus ||
+		!strings.Contains(errPick.Error(), want.ErrorCode) || !strings.Contains(errPick.Error(), want.Reason) {
+		t.Fatalf("PickAuth() error = %v, want structured %s/%d rejection with reason", errPick, want.ErrorCode, want.HTTPStatus)
+	}
+	if strings.Contains(errPick.Error(), "policy_unavailable") {
+		t.Fatalf("PickAuth() replaced plugin rejection with fail-closed error: %v", errPick)
+	}
+	if pickCalls != 1 {
+		t.Fatalf("scheduler pick calls = %d, want 1", pickCalls)
 	}
 }
 
