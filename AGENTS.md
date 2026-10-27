@@ -62,6 +62,9 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - Avoid wall-clock `time.Sleep` in TTL, expiration, ordering, or cache-eviction unit tests due to platform timer granularity (e.g. Windows default timer resolution of ~15.6ms) and CI jitter under load; prefer controllable clocks (`nowFunc` / mock clock), explicit timestamp manipulation, or deterministic synchronization primitives.
 - Note: if modifying features that involve CLIProxyAPIHome, check if corresponding updates are needed in the CLIProxyAPIHome repository.
 
+## OpenCode streaming change record
+- OpenCode cross-protocol stream translators require `data:`-prefixed SSE lines, not bare JSON. Native Chat chunks must be JSON-only (the HTTP handler owns SSE framing and `[DONE]`); native Claude/Responses chunks must preserve event names, comments, and blank-line separators. Reuse `helps.NewCodexSSEScanner` for translated multi-line JSON, with assembly disabled for native framed passthrough. Guard with `internal/opencode/stream_test.go` and `scripts/windows/verify-opencode-stream.ps1` (`-Focus` / `-Race` supported).
+
 ## Upstream v8 merge record
 - This fork tracks upstream `CLIProxyAPI/v8`. Merge upstream into the `upstream-v8` branch first, run `scripts/windows/verify-upstream-v8-merge.ps1`, then fast-forward `main`; never merge upstream straight into `main`.
 - v7 → v8 changed the module path to `/v8`, renamed config paths (`oauth.providers.*` → `upstream.*`), and added the `/v8/management` API surface while freezing `/v0/management`. `/v0` compatibility is kept by reusing upstream's frozen registration plus fork-only endpoints; new features belong under `/v8/management`.

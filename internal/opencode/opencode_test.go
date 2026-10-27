@@ -288,7 +288,7 @@ func TestExecuteStreamPassthrough(t *testing.T) {
 		collected = append(collected, string(chunk.Payload))
 	}
 	joined := strings.Join(collected, "\n")
-	if !strings.Contains(joined, `"content":"hi"`) || !strings.Contains(joined, "[DONE]") {
+	if len(collected) != 1 || collected[0] != `{"choices":[{"delta":{"content":"hi"}}]}` {
 		t.Fatalf("unexpected stream chunks: %q", joined)
 	}
 }

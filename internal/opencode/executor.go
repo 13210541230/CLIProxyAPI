@@ -1,7 +1,6 @@
 package opencode
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -202,37 +201,49 @@ func (e *Executor) ExecuteStream(ctx context.Context, auth *coreauth.Auth, req c
 				reporter.EnsurePublished(ctx)
 			}
 		}()
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(make([]byte, 0, 64<<10), 8<<20)
+		send := func(chunk cliproxyexecutor.StreamChunk) bool {
+			select {
+			case chunks <- chunk:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		// Claude and Responses handlers consume framed SSE; Chat handlers frame
+		// JSON payloads themselves. Preserve native event names and separators,
+		// and let the translators normalize Chat and cross-protocol output.
+		nativeFramed := downstream == upstreamFormat && upstreamFormat != sdktranslator.FormatOpenAI
+		scanner := helps.NewCodexSSEScanner(ctx, httpResp.Body, 8<<20)
+		scanner.SetAssembly(!nativeFramed)
 		var param any
 		for scanner.Scan() {
-			line := bytes.TrimRight(scanner.Bytes(), "\r")
-			if len(line) == 0 {
-				continue
-			}
-			if !bytes.HasPrefix(line, []byte("data:")) {
-				continue
-			}
+			line := scanner.Bytes()
+			hasData := bytes.HasPrefix(line, []byte("data:"))
 			payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
-			if len(payload) == 0 {
-				continue
+			if hasData && len(payload) > 0 {
+				reporter.ObserveResponseModel(payload)
+				observeStreamUsage(upstreamFormat, payload, usageBuffer)
 			}
-			reporter.ObserveResponseModel(payload)
-			observeStreamUsage(upstreamFormat, payload, usageBuffer)
-			if downstream == upstreamFormat {
-				chunks <- cliproxyexecutor.StreamChunk{Payload: append([]byte("data: "), payload...)}
-				continue
-			}
-			for _, translated := range sdktranslator.TranslateStream(ctx, upstreamFormat, downstream, req.Model, opts.OriginalRequest, req.Payload, payload, &param) {
-				if len(translated) == 0 {
-					continue
+			if nativeFramed {
+				if !send(cliproxyexecutor.StreamChunk{Payload: append(bytes.Clone(line), '\n')}) {
+					return
 				}
-				chunks <- cliproxyexecutor.StreamChunk{Payload: translated}
+				continue
+			}
+			if !hasData || len(payload) == 0 {
+				continue
+			}
+			// Translators expect the data: prefix, not a bare JSON payload.
+			for _, translated := range sdktranslator.TranslateStream(ctx, upstreamFormat, downstream, req.Model, opts.OriginalRequest, req.Payload, line, &param) {
+				if len(translated) > 0 && !send(cliproxyexecutor.StreamChunk{Payload: bytes.Clone(translated)}) {
+					return
+				}
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil && ctx.Err() == nil {
 			streamErr = errScan
 			log.Warnf("[opencode] stream read error model=%s: %v", req.Model, errScan)
+			send(cliproxyexecutor.StreamChunk{Err: errScan})
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: chunks}, nil
