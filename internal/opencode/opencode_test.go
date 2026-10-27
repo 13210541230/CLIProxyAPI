@@ -14,6 +14,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	_ "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator/builtin"
 )
 
 func TestSessionIDForSignalIsStableAndCanonical(t *testing.T) {
@@ -266,6 +267,149 @@ func TestExecuteRoutesNativeProtocols(t *testing.T) {
 	}
 }
 
+func TestExecutePrefersInboundProtocolOverCatalogNative(t *testing.T) {
+	cases := []struct {
+		name            string
+		source          sdktranslator.Format
+		catalogProtocol Protocol
+		wantPath        string
+		responseBody    string
+	}{
+		{
+			name:            "responses request stays responses despite chat catalog default",
+			source:          sdktranslator.FormatOpenAIResponse,
+			catalogProtocol: ProtocolChat,
+			wantPath:        "/zen/go/v1/responses",
+			responseBody:    `{"id":"resp_1","object":"response","status":"completed","output":[]}`,
+		},
+		{
+			name:            "chat request stays chat despite responses catalog default",
+			source:          sdktranslator.FormatOpenAI,
+			catalogProtocol: ProtocolResponses,
+			wantPath:        "/zen/go/v1/chat/completions",
+			responseBody:    `{"id":"chatcmpl_1","object":"chat.completion","choices":[]}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotPath, gotBody string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				raw, _ := io.ReadAll(r.Body)
+				gotBody = string(raw)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tc.responseBody)
+			}))
+			defer server.Close()
+
+			model := "protocol-preference-model"
+			executor := newTestExecutor(t, server)
+			executor.catalog = NewCatalog(map[string]Protocol{model: tc.catalogProtocol})
+			payload := []byte(`{"model":"protocol-preference-model","messages":[{"role":"user","content":"hello"}]}`)
+			if tc.source == sdktranslator.FormatOpenAIResponse {
+				payload = []byte(`{"model":"protocol-preference-model","input":"hello","text":{"format":{"type":"json_schema","name":"answer","schema":{"type":"object"}}}}`)
+			}
+
+			_, err := executor.Execute(context.Background(), testAuth(), cliproxyexecutor.Request{
+				Model:   model,
+				Payload: payload,
+				Format:  tc.source,
+			}, cliproxyexecutor.Options{SourceFormat: tc.source, ResponseFormat: tc.source})
+			if err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if gotPath != tc.wantPath {
+				t.Fatalf("upstream path = %q, want inbound protocol path %q", gotPath, tc.wantPath)
+			}
+			if gotBody != string(payload) {
+				t.Fatalf("inbound-native request must be passed through unchanged; got %s, want %s", gotBody, payload)
+			}
+		})
+	}
+}
+
+func TestExecuteFallsBackFromResponsesOnlyWhenEndpointUnavailable(t *testing.T) {
+	var paths []string
+	var chatBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if strings.HasSuffix(r.URL.Path, "/responses") {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = io.WriteString(w, `{"error":{"message":"Endpoint is unavailable."}}`)
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
+		chatBody = string(raw)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"responses-fallback-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	model := "responses-fallback-model"
+	executor := newTestExecutor(t, server)
+	executor.catalog = NewCatalog(map[string]Protocol{model: ProtocolChat})
+	payload := []byte(`{"model":"responses-fallback-model","input":"hello","text":{"format":{"type":"json_schema","name":"answer","schema":{"type":"object"}}}}`)
+	request := cliproxyexecutor.Request{Model: model, Payload: payload, Format: sdktranslator.FormatOpenAIResponse}
+	options := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse, ResponseFormat: sdktranslator.FormatOpenAIResponse}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		paths = nil
+		chatBody = ""
+		if _, err := executor.Execute(context.Background(), testAuth(), request, options); err != nil {
+			t.Fatalf("attempt %d: %v", attempt+1, err)
+		}
+		if attempt == 0 {
+			if len(paths) != 2 || !strings.HasSuffix(paths[0], "/responses") || !strings.HasSuffix(paths[1], "/chat/completions") {
+				t.Fatalf("first attempt paths = %v, want Responses then Chat fallback", paths)
+			}
+			if !strings.Contains(chatBody, `"response_format":{"type":"json_schema"`) {
+				t.Fatalf("fallback must use CPA translation chain and preserve JSON schema, body=%s", chatBody)
+			}
+		} else if len(paths) != 1 || !strings.HasSuffix(paths[0], "/chat/completions") {
+			t.Fatalf("known-unsupported Responses endpoint should be skipped, paths=%v", paths)
+		}
+	}
+}
+
+func TestExecuteStreamPrefersInboundResponsesOverCatalogNative(t *testing.T) {
+	var gotPath, gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		raw, _ := io.ReadAll(r.Body)
+		gotBody = string(raw)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	model := "stream-responses-model"
+	executor := newTestExecutor(t, server)
+	executor.catalog = NewCatalog(map[string]Protocol{model: ProtocolChat})
+	payload := []byte(`{"model":"stream-responses-model","stream":true,"input":"hello"}`)
+	result, err := executor.ExecuteStream(context.Background(), testAuth(), cliproxyexecutor.Request{
+		Model:   model,
+		Payload: payload,
+		Format:  sdktranslator.FormatOpenAIResponse,
+	}, cliproxyexecutor.Options{
+		SourceFormat:   sdktranslator.FormatOpenAIResponse,
+		ResponseFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:         true,
+	})
+	if err != nil {
+		t.Fatalf("execute stream: %v", err)
+	}
+	for range result.Chunks {
+	}
+	if gotPath != "/zen/go/v1/responses" {
+		t.Fatalf("upstream path = %q, want inbound Responses endpoint", gotPath)
+	}
+	if gotBody != string(payload) {
+		t.Fatalf("native Responses stream request was rewritten: got %s, want %s", gotBody, payload)
+	}
+}
+
 func TestExecuteStreamPassthrough(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -318,11 +462,38 @@ func TestExecuteUpstreamErrorCarriesStatus(t *testing.T) {
 	}
 }
 
-func TestRequestToFormatUsesCatalog(t *testing.T) {
+func TestResponseFormatErrorDoesNotTriggerProtocolFallback(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = io.WriteString(w, `{"error":{"type":"invalid_request_error","message":"This response_format type is unavailable now"}}`)
+	}))
+	defer server.Close()
+
+	model := "response-format-validation-model"
+	executor := newTestExecutor(t, server)
+	executor.catalog = NewCatalog(map[string]Protocol{model: ProtocolChat})
+	_, err := executor.Execute(context.Background(), testAuth(), cliproxyexecutor.Request{
+		Model:   model,
+		Payload: []byte(`{"model":"response-format-validation-model","input":"hello","text":{"format":{"type":"json_schema","schema":{"type":"object"}}}}`),
+		Format:  sdktranslator.FormatOpenAIResponse,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse})
+	if err == nil || !strings.Contains(err.Error(), "response_format type") {
+		t.Fatalf("expected upstream response_format validation error, got %v", err)
+	}
+	if len(paths) != 1 || paths[0] != "/zen/go/v1/responses" {
+		t.Fatalf("response_format validation error should not fall back to another protocol, paths=%v", paths)
+	}
+}
+
+func TestRequestToFormatPrefersInboundProtocol(t *testing.T) {
 	executor := New(&config.Config{})
 	executor.catalog = NewCatalog(map[string]Protocol{"gpt-native": ProtocolResponses})
-	if got := executor.RequestToFormat(cliproxyexecutor.Request{Model: "gpt-native"}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI}); got != sdktranslator.FormatOpenAIResponse {
-		t.Fatalf("RequestToFormat = %q, want responses", got)
+	request := cliproxyexecutor.Request{Model: "gpt-native", Format: sdktranslator.FormatOpenAI}
+	options := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI}
+	if got := executor.RequestToFormat(request, options); got != sdktranslator.FormatOpenAI {
+		t.Fatalf("RequestToFormat = %q, want inbound chat", got)
 	}
 	if got := executor.RequestToFormat(cliproxyexecutor.Request{Model: "unknown"}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude}); got != sdktranslator.FormatClaude {
 		t.Fatalf("unknown model should keep the inbound format, got %q", got)

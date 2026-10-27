@@ -70,7 +70,8 @@ type Executor struct {
 	refreshEach time.Duration
 	quotaEach   time.Duration
 
-	learned sync.Map // model -> Protocol resolved from upstream endpoint availability
+	learned     sync.Map // model -> Protocol resolved from upstream endpoint availability
+	unavailable sync.Map // (model, protocol) -> true after endpoint-unavailable response
 
 	publishMu sync.Mutex
 
@@ -117,9 +118,14 @@ func NewExecutor(cfg *config.Config) *Executor { return New(cfg) }
 // Identifier returns the provider key handled by this executor.
 func (e *Executor) Identifier() string { return ProviderName }
 
-// RequestToFormat declares the upstream wire format for the selected model so the
-// core pipeline translates the inbound payload once, before execution.
+// RequestToFormat reports the inbound protocol as the preferred upstream format.
+// If that endpoint has already been confirmed unavailable for this model, it
+// reports the learned or catalog-native fallback instead.
 func (e *Executor) RequestToFormat(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) sdktranslator.Format {
+	sourceFormat := requestSourceFormat(req, opts)
+	if protocol, ok := ProtocolForFormat(sourceFormat); ok && !e.endpointUnavailable(req.Model, protocol) {
+		return protocol.Format()
+	}
 	if protocol, ok := e.learnedProtocol(req.Model); ok {
 		return protocol.Format()
 	}
@@ -127,8 +133,8 @@ func (e *Executor) RequestToFormat(req cliproxyexecutor.Request, opts cliproxyex
 	if protocol, ok := e.catalog.Protocol(req.Model); ok {
 		return protocol.Format()
 	}
-	if _, ok := ProtocolForFormat(opts.SourceFormat); ok {
-		return opts.SourceFormat
+	if _, ok := ProtocolForFormat(sourceFormat); ok {
+		return sourceFormat
 	}
 	return sdktranslator.FormatOpenAI
 }
@@ -277,12 +283,9 @@ func (e *Executor) HttpRequest(ctx context.Context, auth *coreauth.Auth, req *ht
 // OpenCode endpoints when upstream reports that the model is not served there.
 // The working protocol is remembered per model so later requests skip the probe.
 func (e *Executor) doSend(ctx context.Context, reporter *helps.UsageReporter, auth *coreauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool) (*http.Response, sdktranslator.Format, error) {
-	// CLIProxyAPI leaves req.Payload in the client's format; the executor owns the
-	// conversion to whatever protocol the upstream model actually serves.
-	payloadFormat := opts.SourceFormat
-	if req.Format != "" {
-		payloadFormat = req.Format
-	}
+	// Keep the caller's protocol when the model endpoint supports it. Only
+	// translate after the upstream explicitly reports that endpoint unavailable.
+	payloadFormat := requestSourceFormat(req, opts)
 	candidates := e.candidateProtocols(req.Model, payloadFormat)
 	var lastErr error
 	for index, protocol := range candidates {
@@ -308,6 +311,7 @@ func (e *Executor) doSend(ctx context.Context, reporter *helps.UsageReporter, au
 		if !isEndpointUnavailable(err) {
 			return nil, protocol.Format(), err
 		}
+		e.rememberEndpointUnavailable(req.Model, protocol)
 		log.Infof("[opencode] model=%s is not served on %s upstream, trying another endpoint", req.Model, protocol)
 	}
 	if lastErr == nil {
@@ -317,21 +321,57 @@ func (e *Executor) doSend(ctx context.Context, reporter *helps.UsageReporter, au
 }
 
 func (e *Executor) candidateProtocols(model string, sourceFormat sdktranslator.Format) []Protocol {
-	preferred := ProtocolChat
-	if protocol, ok := e.learnedProtocol(model); ok {
-		preferred = protocol
-	} else if protocol, ok := e.catalog.Protocol(model); ok {
-		preferred = protocol
-	} else if inbound, ok := ProtocolForFormat(sourceFormat); ok {
-		preferred = inbound
-	}
-	order := []Protocol{preferred}
-	for _, candidate := range []Protocol{ProtocolChat, ProtocolResponses, ProtocolAnthropic} {
-		if candidate != preferred {
-			order = append(order, candidate)
+	order := make([]Protocol, 0, 3)
+	appendIfAvailable := func(candidate Protocol) {
+		if candidate == "" || e.endpointUnavailable(model, candidate) {
+			return
 		}
+		for _, existing := range order {
+			if existing == candidate {
+				return
+			}
+		}
+		order = append(order, candidate)
+	}
+
+	// The inbound protocol is tried first, independent of the catalog's default.
+	// The catalog/learned protocol is a conversion fallback only after the inbound
+	// endpoint has been rejected as unavailable.
+	if inbound, ok := ProtocolForFormat(sourceFormat); ok {
+		appendIfAvailable(inbound)
+	}
+	if learned, ok := e.learnedProtocol(model); ok {
+		appendIfAvailable(learned)
+	} else if native, ok := e.catalog.Protocol(model); ok {
+		appendIfAvailable(native)
+	}
+	for _, candidate := range []Protocol{ProtocolChat, ProtocolResponses, ProtocolAnthropic} {
+		appendIfAvailable(candidate)
 	}
 	return order
+}
+
+func requestSourceFormat(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) sdktranslator.Format {
+	if opts.SourceFormat != "" {
+		return opts.SourceFormat
+	}
+	return req.Format
+}
+
+func endpointProtocolKey(model string, protocol Protocol) string {
+	return strings.ToLower(strings.TrimSpace(model)) + "\x00" + string(protocol)
+}
+
+func (e *Executor) endpointUnavailable(model string, protocol Protocol) bool {
+	_, unavailable := e.unavailable.Load(endpointProtocolKey(model, protocol))
+	return unavailable
+}
+
+func (e *Executor) rememberEndpointUnavailable(model string, protocol Protocol) {
+	if e == nil || strings.TrimSpace(model) == "" || protocol == "" {
+		return
+	}
+	e.unavailable.Store(endpointProtocolKey(model, protocol), true)
 }
 
 func (e *Executor) learnedProtocol(model string) (Protocol, bool) {
@@ -363,8 +403,9 @@ func isEndpointUnavailable(err error) bool {
 	}
 	message := strings.ToLower(statusErr.Error())
 	return strings.Contains(message, "endpoint is unavailable") ||
-		strings.Contains(message, "not found") ||
-		strings.Contains(message, "unsupported")
+		strings.Contains(message, "endpoint unavailable") ||
+		strings.Contains(message, "endpoint not found") ||
+		strings.Contains(message, "unsupported endpoint")
 }
 
 func (e *Executor) do(ctx context.Context, reporter *helps.UsageReporter, auth *coreauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, protocol Protocol, body []byte, stream bool) (*http.Response, error) {

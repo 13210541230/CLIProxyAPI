@@ -1,6 +1,10 @@
 # Binaries
 cli-proxy-api
 *.exe
+/build/*.dll
+/build/*.h
+/build/management-*.html
+/build/*.exe~
 
 # Configuration
 config.yaml
@@ -34,12 +38,15 @@ docs/*
 !docs/CLIProxyAPI-Suite-从零部署指南.md
 !docs/cliproxyapi-suite/
 !docs/management-api-v8.md
+!docs/opencode-provider_CN.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md
 AGENTS.override.md
 
 # Tooling metadata
+/.ccg/plan/
+/.pi-glla/
 .vscode/*
 .worktrees/
 .codex/*

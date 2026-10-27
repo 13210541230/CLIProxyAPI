@@ -62,7 +62,8 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - Avoid wall-clock `time.Sleep` in TTL, expiration, ordering, or cache-eviction unit tests due to platform timer granularity (e.g. Windows default timer resolution of ~15.6ms) and CI jitter under load; prefer controllable clocks (`nowFunc` / mock clock), explicit timestamp manipulation, or deterministic synchronization primitives.
 - Note: if modifying features that involve CLIProxyAPIHome, check if corresponding updates are needed in the CLIProxyAPIHome repository.
 
-## OpenCode streaming change record
+## OpenCode provider change record
+- Prefer the inbound Chat/Responses/Claude endpoint independently of the catalog default. Only explicit endpoint-unavailable responses may trigger protocol conversion; remember rejected model/protocol combinations in process. Never use generic model, authentication, or payload-validation errors as evidence to change endpoints. Guard with the inbound-preference and fallback tests in `internal/opencode/opencode_test.go`.
 - OpenCode cross-protocol stream translators require `data:`-prefixed SSE lines, not bare JSON. Native Chat chunks must be JSON-only (the HTTP handler owns SSE framing and `[DONE]`); native Claude/Responses chunks must preserve event names, comments, and blank-line separators. Reuse `helps.NewCodexSSEScanner` for translated multi-line JSON, with assembly disabled for native framed passthrough. Guard with `internal/opencode/stream_test.go` and `scripts/windows/verify-opencode-stream.ps1` (`-Focus` / `-Race` supported).
 
 ## Upstream v8 merge record

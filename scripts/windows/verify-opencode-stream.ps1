@@ -10,7 +10,7 @@ try {
         exit $LASTEXITCODE
     }
     if ($Race) {
-        go test -race ./internal/opencode -run '^TestOpenCodeStream' -count=1 -timeout=90s -v 2>&1 | Tee-Object -FilePath logs/opencode-stream-race.log
+        go test -race ./internal/opencode -count=1 -timeout=180s -v 2>&1 | Tee-Object -FilePath logs/opencode-stream-race.log
         exit $LASTEXITCODE
     }
     if (-not $BuildOnly) {
