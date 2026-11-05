@@ -120,9 +120,10 @@ type requiredAuthKindContextKey struct{}
 type credentialPolicyContextKey struct{}
 
 type authSelectionEligibility struct {
-	requiredKind     string
-	credentialPolicy string
-	disallowFreeAuth bool
+	requiredKind      string
+	credentialPolicy  string
+	disallowFreeAuth  bool
+	retryHintExcluded map[string]time.Time
 }
 
 func withRequiredAuthKind(ctx context.Context, requiredKind string) context.Context {
@@ -146,12 +147,16 @@ func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecut
 	if ctx != nil {
 		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
 		eligibility.credentialPolicy, _ = ctx.Value(credentialPolicyContextKey{}).(string)
+		eligibility.retryHintExcluded = transientScope(ctx).activeHintExclusions(time.Now())
 	}
 	return eligibility
 }
 
 func (e authSelectionEligibility) allows(auth *Auth) bool {
 	if auth == nil {
+		return false
+	}
+	if _, excluded := e.retryHintExcluded[auth.ID]; excluded {
 		return false
 	}
 	if e.requiredKind != "" && auth.AuthKind() != e.requiredKind {
@@ -1268,6 +1273,10 @@ func (m *Manager) closestCooldownWait(providers []string, model string, attempt 
 }
 
 func (m *Manager) closestCooldownWaitWithAttempted(providers []string, model string, attempt int, eligibility authSelectionEligibility, pinnedAuthID string, defaultRequestRetry int, status int, attempted map[string]struct{}) (time.Duration, bool) {
+	return m.closestCooldownWaitWithHints(providers, model, attempt, eligibility, pinnedAuthID, defaultRequestRetry, status, attempted, nil)
+}
+
+func (m *Manager) closestCooldownWaitWithHints(providers []string, model string, attempt int, eligibility authSelectionEligibility, pinnedAuthID string, defaultRequestRetry int, status int, attempted map[string]struct{}, hints map[string]time.Time) (time.Duration, bool) {
 	if m == nil || len(providers) == 0 {
 		return 0, false
 	}
@@ -1318,6 +1327,9 @@ func (m *Manager) closestCooldownWaitWithAttempted(providers []string, model str
 		retryEligible, next := retryRoundAvailabilityForAuth(auth, checkModel, now)
 		if !retryEligible {
 			continue
+		}
+		if hintUntil := hints[auth.ID]; hintUntil.After(now) && hintUntil.After(next) {
+			next = hintUntil
 		}
 
 		wasAttempted := false
@@ -1478,11 +1490,15 @@ func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts c
 		return *retryAfter, true
 	}
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
+	hintDeadlines := eligibility.retryHintExcluded
+	// Hinted credentials are unavailable now, but remain eligible for a retry
+	// after their upstream deadline if the configured wait limit permits it.
+	eligibility.retryHintExcluded = nil
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	if !isRequestRetryRoundError(err) || !m.retryAllowed(attempt, providers, model, eligibility, pinnedAuthID, defaultRequestRetry) {
 		return 0, false
 	}
-	wait, found := m.closestCooldownWaitWithAttempted(providers, model, attempt, eligibility, pinnedAuthID, defaultRequestRetry, status, attempted)
+	wait, found := m.closestCooldownWaitWithHints(providers, model, attempt, eligibility, pinnedAuthID, defaultRequestRetry, status, attempted, hintDeadlines)
 	if found {
 		if wait > 0 && (maxWait <= 0 || wait > maxWait) {
 			return 0, false
@@ -2336,6 +2352,12 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	opts.EnsureMetadata()
 	if m.HomeEnabled() {
 		return m.pickNextViaHome(ctx, model, opts, tried)
+	}
+	for authID := range transientScope(ctx).activeHintExclusions(time.Now()) {
+		if tried == nil {
+			tried = make(map[string]struct{})
+		}
+		tried[authID] = struct{}{}
 	}
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = "mixed"
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model

@@ -227,7 +227,11 @@ routing:
     save-cooldown-status: false
 
     # Cooldown duration in seconds for transient upstream errors (408/500/502/503/504/520-526).
-    # Set to 0 to keep the legacy 60-second cooldown; set to -1 to disable transient error cooldowns.
+    # For Codex OAuth, three independent failures for the same account and target model within 60 seconds
+    # are required before cooling; retries of one request count once and a later success resets its streak.
+    # Set to 0 for a 60-second cooldown; set to -1 to disable transient error cooldowns.
+    # An explicit upstream Retry-After for a Codex transient failure or turn-rate limit still applies;
+    # immediate retries on that credential are skipped even if cooldown is globally disabled.
     transient-error-cooldown-seconds: 0
 
 # Shared request/response behavior.

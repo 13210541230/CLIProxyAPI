@@ -121,6 +121,8 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
+	ctx, transientScope := m.withTransientRequestScope(ctx)
+	defer transientScope.finish(ctx, m)
 	req, opts = cliproxysession.Enrich(req, opts)
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
@@ -136,7 +138,10 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	var lastErr error
 	var preferredUpstreamErr error
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
-	for attempt := 0; ; attempt++ {
+	var retryWaitSpent time.Duration
+	hintRecoveryUsed := false
+	attempt := 0
+	for {
 		roundAttempted := make(map[string]struct{})
 		roundOpts := withAttemptedAuthTracker(opts, roundAttempted)
 		resp, errExec := m.executeMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, attempt, defaultRequestRetry)
@@ -146,6 +151,16 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
 			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExec)
 		}
+		if !hintRecoveryUsed {
+			budget := maxWait - retryWaitSpent
+			if wait, ok := m.retryHintAfterPoolRejection(ctx, opts, errExec, preferredUpstreamErr, retryModel, attempt, defaultRequestRetry, roundAttempted, budget); ok {
+				hintRecoveryUsed = true
+				if errWait := waitForCooldown(ctx, wait, budget); errWait != nil {
+					return cliproxyexecutor.Response{}, errWait
+				}
+				continue
+			}
+		}
 		if hasUpstreamExecutionAttempt(errExec) {
 			preferredUpstreamErr = errExec
 		}
@@ -154,9 +169,14 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		if !shouldRetry {
 			break
 		}
+		waitStarted := time.Now()
 		if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
 			return cliproxyexecutor.Response{}, errWait
 		}
+		if wait > 0 {
+			retryWaitSpent += time.Since(waitStarted)
+		}
+		attempt++
 	}
 	if lastErr != nil {
 		if ctx != nil {
@@ -181,6 +201,8 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
+	ctx, transientScope := m.withTransientRequestScope(ctx)
+	defer transientScope.finish(ctx, m)
 	req, opts = cliproxysession.Enrich(req, opts)
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
@@ -196,7 +218,10 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 	var lastErr error
 	var preferredUpstreamErr error
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
-	for attempt := 0; ; attempt++ {
+	var retryWaitSpent time.Duration
+	hintRecoveryUsed := false
+	attempt := 0
+	for {
 		roundAttempted := make(map[string]struct{})
 		roundOpts := withAttemptedAuthTracker(opts, roundAttempted)
 		resp, errExec := m.executeCountMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, attempt, defaultRequestRetry)
@@ -206,6 +231,16 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
 			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExec)
 		}
+		if !hintRecoveryUsed {
+			budget := maxWait - retryWaitSpent
+			if wait, ok := m.retryHintAfterPoolRejection(ctx, opts, errExec, preferredUpstreamErr, retryModel, attempt, defaultRequestRetry, roundAttempted, budget); ok {
+				hintRecoveryUsed = true
+				if errWait := waitForCooldown(ctx, wait, budget); errWait != nil {
+					return cliproxyexecutor.Response{}, errWait
+				}
+				continue
+			}
+		}
 		if hasUpstreamExecutionAttempt(errExec) {
 			preferredUpstreamErr = errExec
 		}
@@ -214,9 +249,14 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		if !shouldRetry {
 			break
 		}
+		waitStarted := time.Now()
 		if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
 			return cliproxyexecutor.Response{}, errWait
 		}
+		if wait > 0 {
+			retryWaitSpent += time.Since(waitStarted)
+		}
+		attempt++
 	}
 	if lastErr != nil {
 		if ctx != nil {
@@ -234,6 +274,12 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
+	ctx, transientScope := m.withTransientRequestScope(ctx)
+	defer func() {
+		if !transientScope.hasStream() {
+			transientScope.finish(ctx, m)
+		}
+	}()
 	req, opts = cliproxysession.Enrich(req, opts)
 	if m.HomeEnabled() {
 		if unlockSession := m.lockHomeWebsocketSession(ctx, opts); unlockSession != nil {
@@ -252,6 +298,8 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	homeRetryLimit := -1
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
 	attempt := 0
+	var retryWaitSpent time.Duration
+	hintRecoveryUsed := false
 	retryRoundPending := false
 	retryRoundWaited := false
 	for {
@@ -260,6 +308,16 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, &homeRetryLimit, attempt, defaultRequestRetry)
 		if errStream == nil {
 			return result, nil
+		}
+		if !hintRecoveryUsed {
+			budget := maxWait - retryWaitSpent
+			if wait, ok := m.retryHintAfterPoolRejection(ctx, opts, errStream, preferredUpstreamErr, retryModel, attempt, defaultRequestRetry, roundAttempted, budget); ok {
+				hintRecoveryUsed = true
+				if errWait := waitForCooldown(ctx, wait, budget); errWait != nil {
+					return nil, errWait
+				}
+				continue
+			}
 		}
 		if hasUpstreamExecutionAttempt(errStream) {
 			preferredUpstreamErr = errStream
@@ -286,8 +344,12 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		if !shouldRetry {
 			break
 		}
+		waitStarted := time.Now()
 		if errWait := waitForCooldown(ctx, wait, maxWait); errWait != nil {
 			return nil, errWait
+		}
+		if wait > 0 {
+			retryWaitSpent += time.Since(waitStarted)
 		}
 		attempt++
 		retryRoundPending = m.HomeEnabled()
@@ -618,13 +680,16 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			executionSeq := m.nextExecutionSeq()
 			startExec := time.Now()
 			resp, errExec := executionExecutor.Execute(execCtx, auth, execReq, execOpts)
-			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
+			errExec = markUpstreamExecutionAttemptFromContext(execCtx, withCodexRetryAfterHint(execCtx, errExec, provider, auth))
 			durationExec := time.Since(startExec)
 			if errExec != nil {
 				if hasUpstreamExecutionAttempt(errExec) {
 					upstreamErr = errExec
 				}
 				if errCtx := execCtx.Err(); errCtx != nil {
+					if strings.EqualFold(provider, "codex") && auth.AuthKind() == AuthKindOAuth {
+						m.recordCanceledUpstreamCooldown(execCtx, auth, provider, resultModel, routeModel, execOpts, errExec, false, executionSeq)
+					}
 					return cliproxyexecutor.Response{}, errCtx
 				}
 				refreshCtx := newUpstreamAttemptContext(execCtx)
@@ -636,7 +701,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
 					resp, errExec = executionExecutor.Execute(execCtx, auth, execReq, execOpts)
-					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
+					errExec = markUpstreamExecutionAttemptFromContext(execCtx, withCodexRetryAfterHint(execCtx, errExec, provider, auth))
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
 						if hasUpstreamExecutionAttempt(errExec) {
@@ -644,6 +709,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 						}
 						warnLogUpstreamFailure(execCtx, entry, executionProvider, upstreamModel, auth, durationRetry, errExec)
 						if errCtx := execCtx.Err(); errCtx != nil {
+							if strings.EqualFold(provider, "codex") && auth.AuthKind() == AuthKindOAuth {
+								m.recordCanceledUpstreamCooldown(execCtx, auth, provider, resultModel, routeModel, execOpts, errExec, false, executionSeq)
+							}
 							return cliproxyexecutor.Response{}, errCtx
 						}
 					}
@@ -657,7 +725,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: execOpts, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
 			if errExec != nil {
 				result.Error = resultErrorFromError(errExec)
-				if ra := retryAfterFromError(errExec); ra != nil {
+				if ra := retryAfterFromErrorForAuth(errExec, provider, auth); ra != nil {
 					result.RetryAfter = ra
 				}
 				if isCredentialScopedError(errExec) {
@@ -669,6 +737,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					m.recordAvailabilityNeutralResult(execCtx, result)
 				} else {
 					m.MarkResult(execCtx, result)
+				}
+				if hasCodexRetryAfterHint(errExec, provider, auth) && !(okAction && isRequestScopedStop(action, okAction)) {
+					authErr = errExec
+					break
 				}
 				if okAction {
 					if isRequestScopedStop(action, okAction) {
@@ -690,19 +762,23 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				// keeps failing. This runs after request-scoped classification so
 				// a 502 carrying a request fault is never blindly retried.
 				for transientAttempt := 0; transientAttempt < int(m.transientCredentialRetries.Load()); transientAttempt++ {
-					if !isTransientUpstreamError(errExec) || isApplyPatchToolArgumentFault(errExec) {
+					if !isTransientUpstreamError(errExec) || isApplyPatchToolArgumentFault(errExec) || hasCodexRetryAfterHint(errExec, provider, auth) {
 						break
 					}
 					execCtx = newUpstreamAttemptContext(execCtx)
+					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
 					resp, errExec = executionExecutor.Execute(execCtx, auth, execReq, execOpts)
-					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
+					errExec = markUpstreamExecutionAttemptFromContext(execCtx, withCodexRetryAfterHint(execCtx, errExec, provider, auth))
 					if errExec != nil {
 						if hasUpstreamExecutionAttempt(errExec) {
 							upstreamErr = errExec
 						}
 						warnLogUpstreamFailure(execCtx, entry, executionProvider, upstreamModel, auth, time.Since(startRetry), errExec)
 						if errCtx := execCtx.Err(); errCtx != nil {
+							if strings.EqualFold(provider, "codex") && auth.AuthKind() == AuthKindOAuth {
+								m.recordCanceledUpstreamCooldown(execCtx, auth, provider, resultModel, routeModel, execOpts, errExec, false, executionSeq)
+							}
 							return cliproxyexecutor.Response{}, errCtx
 						}
 						continue
@@ -710,10 +786,36 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					break
 				}
 				if errExec == nil {
-					m.MarkResult(execCtx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: true, Options: execOpts})
+					m.MarkResult(execCtx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: true, Options: execOpts, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq})
 					attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, upstreamModel, aliasResult)
 					rewriteForceMappedResponse(&resp, attemptAliasResult)
 					return resp, nil
+				}
+				if executionSeq != result.ExecutionSeq && m.isCodexOAuth(auth.ID) {
+					result.ExecutionSeq = executionSeq
+					result.Error = resultErrorFromError(errExec)
+					result.RetryAfter = retryAfterFromErrorForAuth(errExec, provider, auth)
+					result.CredentialScope = isCredentialScopedError(errExec)
+					action, matched := matchRequestScopedErrorAction(auth, errExec, m.runtimeConfigSnapshot())
+					applyRequestScopedActionToResult(action, matched, &result)
+					if isResponsesCompactAvailabilityNeutralError(execOpts, errExec, result.Error) {
+						if scope := transientScope(execCtx); scope != nil {
+							scope.discard(result)
+						}
+						m.recordAvailabilityNeutralResult(execCtx, result)
+					} else {
+						m.MarkResult(execCtx, result)
+					}
+					if matched && isRequestScopedStop(action, matched) {
+						return cliproxyexecutor.Response{}, wrapRequestStopError(errExec)
+					}
+					if isRequestInvalidError(errExec) {
+						return cliproxyexecutor.Response{}, errExec
+					}
+					if hasCodexRetryAfterHint(errExec, provider, auth) {
+						authErr = errExec
+						break
+					}
 				}
 				authErr = errExec
 				if result.CredentialScope {
@@ -864,13 +966,16 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			executionSeq := m.nextExecutionSeq()
 			startExec := time.Now()
 			resp, errExec := executor.CountTokens(execCtx, auth, execReq, execOpts)
-			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
+			errExec = markUpstreamExecutionAttemptFromContext(execCtx, withCodexRetryAfterHint(execCtx, errExec, provider, auth))
 			durationExec := time.Since(startExec)
 			if errExec != nil {
 				if hasUpstreamExecutionAttempt(errExec) {
 					upstreamErr = errExec
 				}
 				if errCtx := execCtx.Err(); errCtx != nil {
+					if strings.EqualFold(provider, "codex") && auth.AuthKind() == AuthKindOAuth {
+						m.recordCanceledUpstreamCooldown(execCtx, auth, provider, resultModel, routeModel, execOpts, errExec, false, executionSeq)
+					}
 					return cliproxyexecutor.Response{}, errCtx
 				}
 				refreshCtx := newUpstreamAttemptContext(execCtx)
@@ -882,7 +987,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
 					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
-					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
+					errExec = markUpstreamExecutionAttemptFromContext(execCtx, withCodexRetryAfterHint(execCtx, errExec, provider, auth))
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
 						if hasUpstreamExecutionAttempt(errExec) {
@@ -890,6 +995,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 						}
 						warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationRetry, errExec)
 						if errCtx := execCtx.Err(); errCtx != nil {
+							if strings.EqualFold(provider, "codex") && auth.AuthKind() == AuthKindOAuth {
+								m.recordCanceledUpstreamCooldown(execCtx, auth, provider, resultModel, routeModel, execOpts, errExec, false, executionSeq)
+							}
 							return cliproxyexecutor.Response{}, errCtx
 						}
 					}
@@ -903,7 +1011,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: execOpts, SkipQuotaObservation: true, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
 			if errExec != nil {
 				result.Error = resultErrorFromError(errExec)
-				if ra := retryAfterFromError(errExec); ra != nil {
+				if ra := retryAfterFromErrorForAuth(errExec, provider, auth); ra != nil {
 					result.RetryAfter = ra
 				}
 				action, okAction := matchRequestScopedErrorAction(auth, errExec, m.runtimeConfigSnapshot())
@@ -919,6 +1027,10 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 						result.CredentialScope = true
 					}
 					m.MarkResult(execCtx, result)
+				}
+				if hasCodexRetryAfterHint(errExec, provider, auth) && !(okAction && isRequestScopedStop(action, okAction)) {
+					authErr = errExec
+					break
 				}
 				if okAction {
 					if isRequestScopedStop(action, okAction) {
@@ -937,19 +1049,23 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				// rotating credentials (see executeMixedOnce for rationale). Runs
 				// after request-scoped classification.
 				for transientAttempt := 0; transientAttempt < int(m.transientCredentialRetries.Load()); transientAttempt++ {
-					if !isTransientUpstreamError(errExec) || isApplyPatchToolArgumentFault(errExec) {
+					if !isTransientUpstreamError(errExec) || isApplyPatchToolArgumentFault(errExec) || hasCodexRetryAfterHint(errExec, provider, auth) {
 						break
 					}
 					execCtx = newUpstreamAttemptContext(execCtx)
+					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
 					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
-					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
+					errExec = markUpstreamExecutionAttemptFromContext(execCtx, withCodexRetryAfterHint(execCtx, errExec, provider, auth))
 					if errExec != nil {
 						if hasUpstreamExecutionAttempt(errExec) {
 							upstreamErr = errExec
 						}
 						warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, time.Since(startRetry), errExec)
 						if errCtx := execCtx.Err(); errCtx != nil {
+							if strings.EqualFold(provider, "codex") && auth.AuthKind() == AuthKindOAuth {
+								m.recordCanceledUpstreamCooldown(execCtx, auth, provider, resultModel, routeModel, execOpts, errExec, false, executionSeq)
+							}
 							return cliproxyexecutor.Response{}, errCtx
 						}
 						continue
@@ -957,10 +1073,36 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					break
 				}
 				if errExec == nil {
-					m.MarkResult(execCtx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: true, Options: execOpts, SkipQuotaObservation: true})
+					m.MarkResult(execCtx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: true, Options: execOpts, SkipQuotaObservation: true, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq})
 					attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, upstreamModel, aliasResult)
 					rewriteForceMappedResponse(&resp, attemptAliasResult)
 					return resp, nil
+				}
+				if executionSeq != result.ExecutionSeq && m.isCodexOAuth(auth.ID) {
+					result.ExecutionSeq = executionSeq
+					result.Error = resultErrorFromError(errExec)
+					result.RetryAfter = retryAfterFromErrorForAuth(errExec, provider, auth)
+					result.CredentialScope = isCredentialScopedError(errExec)
+					action, matched := matchRequestScopedErrorAction(auth, errExec, m.runtimeConfigSnapshot())
+					applyRequestScopedActionToResult(action, matched, &result)
+					if isCountTokensEndpointNotFoundError(errExec, execReq.Model) && (result.Error == nil || result.Error.Code != ErrorCodeForceCooldown) {
+						if scope := transientScope(execCtx); scope != nil {
+							scope.discard(result)
+						}
+						m.recordAvailabilityNeutralResult(execCtx, result)
+					} else {
+						m.MarkResult(execCtx, result)
+					}
+					if matched && isRequestScopedStop(action, matched) {
+						return cliproxyexecutor.Response{}, wrapRequestStopError(errExec)
+					}
+					if isRequestInvalidError(errExec) {
+						return cliproxyexecutor.Response{}, errExec
+					}
+					if hasCodexRetryAfterHint(errExec, provider, auth) {
+						authErr = errExec
+						break
+					}
 				}
 				authErr = errExec
 				if result.CredentialScope {
@@ -1314,7 +1456,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			// retried.
 			if selection == nil {
 				for transientAttempt := 0; transientAttempt < int(m.transientCredentialRetries.Load()); transientAttempt++ {
-					if !isTransientUpstreamError(errStream) {
+					if !isTransientUpstreamError(errStream) || hasCodexRetryAfterHint(errStream, provider, auth) {
 						break
 					}
 					execCtx = newUpstreamAttemptContext(execCtx)

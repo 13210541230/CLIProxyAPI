@@ -372,6 +372,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	} else if auth.RegistrationEpoch == 0 {
 		auth.RegistrationEpoch = m.authEpochs[auth.ID]
 	}
+	incomingGeneration := auth.Generation
 	if !auth.indexAssigned && auth.Index == "" {
 		auth.Index = existing.Index
 		auth.indexAssigned = existing.indexAssigned
@@ -449,6 +450,16 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 		}
 	}
 	auth.EnsureIndex()
+	preserveStaleAvailability := func() {
+		if mode == updateModeReplace && incomingGeneration > 0 && incomingGeneration < existing.Generation &&
+			!credChanged && auth.RegistrationEpoch == existing.RegistrationEpoch &&
+			strings.EqualFold(existing.Provider, "codex") && existing.AuthKind() == AuthKindOAuth &&
+			!auth.Disabled && auth.Status != StatusDisabled && !existing.Disabled && existing.Status != StatusDisabled &&
+			!m.cooldownDisabledForAuth(auth) {
+			preserveCurrentAuthAvailability(auth, existing)
+		}
+	}
+	preserveStaleAvailability()
 	// Save before publication, including the transactional Meta mint path.
 	// Runtime-only changes made during I/O are merged below, never overwritten.
 	existingBeforeSave := existing.Clone()
@@ -467,6 +478,8 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 		return nil, false, false, fmt.Errorf("auth %s changed registration during persistence", auth.ID)
 	}
 	mergeAuthSaveDelta(auth, existingBeforeSave, existing, false)
+	preserveStaleAvailability()
+	reconcileTransientFailures(auth, existing, !credChanged && auth.RegistrationEpoch == existing.RegistrationEpoch)
 	if existing.Generation >= auth.Generation {
 		auth.Generation = existing.Generation + 1
 	}

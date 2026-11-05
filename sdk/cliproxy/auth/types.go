@@ -336,6 +336,8 @@ type ModelState struct {
 	// must not clear it. Runtime only: zero after restart so restored
 	// cooldowns can still be cleared by any success.
 	cooldownRecordedSeq uint64 `json:"-"`
+	// transientFailures is process-local evidence for repeated upstream failures.
+	transientFailures transientFailureHistory
 	// credentialQuotaShadow holds this model's independent (own-failure)
 	// cooldown layer while the outer fields present the auth-level
 	// credential quota propagated over it, so quota restoration can drop

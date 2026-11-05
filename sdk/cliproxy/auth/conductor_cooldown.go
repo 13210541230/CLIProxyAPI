@@ -910,13 +910,29 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if m != nil {
+	settling, _ := ctx.Value(transientSettlementKey{}).(bool)
+	if m != nil && !settling {
 		if policy := m.ResultPolicy(); policy != nil {
 			result = policy.ApplyResultPolicy(ctx, result)
 			if result.AuthID == "" {
 				return
 			}
 		}
+	}
+	if !settling && m != nil && result.RetryAfter == nil && strings.EqualFold(result.Provider, "codex") &&
+		(isCodexTurnRateLimit(result) || isCodexTransientStatus(result.Error)) && m.isCodexOAuth(result.AuthID) {
+		result.RetryAfter = codexRetryAfter(ctx)
+	}
+	if scope := transientScope(ctx); scope != nil && !settling {
+		if isCodexTransientFailure(result) && m.isCodexOAuth(result.AuthID) {
+			if result.ExecutionSeq == 0 {
+				result.ExecutionSeq = m.nextExecutionSeq()
+			}
+			if scope.stage(ctx, result) {
+				return
+			}
+		}
+		scope.discard(result)
 	}
 	modelKey := canonicalModelKey(result.Model)
 
@@ -947,6 +963,16 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		now = time.Now()
 		responseHeaders := internallogging.GetResponseHeaders(ctx)
 		modelState := existingModelState(auth, modelKey)
+		codexOAuth := modelKey != "" && strings.EqualFold(auth.Provider, "codex") && auth.AuthKind() == AuthKindOAuth
+		transientEligible := codexOAuth && isCodexTransientFailure(result)
+		seq := result.ExecutionSeq
+		if seq == 0 && codexOAuth && (transientEligible || result.Success) {
+			seq = m.nextExecutionSeq()
+		}
+		if result.Success && codexOAuth {
+			ensureModelState(auth, modelKey).transientFailures.success(seq)
+		}
+		skipTransientCooling := transientEligible && !ensureModelState(auth, modelKey).transientFailures.record(now, seq)
 		var cooldownRecordsBefore []CooldownStateRecord
 		trackCooldownState := m.cooldownStore != nil
 		if trackCooldownState {
@@ -1002,7 +1028,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		} else {
 			if modelKey != "" {
-				if !shouldSkipCredentialCooldown(result.Error) {
+				if !shouldSkipCredentialCooldown(result.Error) && !skipTransientCooling {
 					disableCooling := m.cooldownDisabledForAuth(auth)
 					if result.Error != nil && result.Error.Code == ErrorCodeForceCooldown {
 						disableCooling = false
@@ -1017,7 +1043,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						!(auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now)) {
 						if shadow := state.credentialQuotaShadow; shadow != nil && isModelStateActiveCooldown(shadow, now) {
 							preservedSeq := shadow.cooldownRecordedSeq
-							*state = *shadow.cloneShallow()
+							restoreModelStateShadow(state, shadow)
 							state.cooldownRecordedSeq = preservedSeq
 						} else {
 							resetModelState(state, now)
@@ -1037,11 +1063,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					if ownLayerPending {
 						if state.credentialQuotaShadow != nil {
 							preservedSeq := state.credentialQuotaShadow.cooldownRecordedSeq
-							*state = *state.credentialQuotaShadow.cloneShallow()
+							restoreModelStateShadow(state, state.credentialQuotaShadow)
 							state.cooldownRecordedSeq = preservedSeq
 						} else {
-							fresh := &ModelState{}
-							*state = *fresh
+							restoreModelStateShadow(state, &ModelState{})
 						}
 					}
 					state.Unavailable = true
@@ -1077,6 +1102,13 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							next := now.Add(12 * time.Hour)
 							state.NextRetryAfter = next
 						}
+					} else if codexOAuth && isCodexTurnRateLimit(result) {
+						if !disableCooling && result.RetryAfter != nil && *result.RetryAfter > 0 {
+							state.NextRetryAfter = now.Add(*result.RetryAfter)
+						} else {
+							state.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
+						}
+						state.Unavailable = !state.NextRetryAfter.IsZero()
 					} else if isCloudflareChallengeResultError(result.Error) {
 						next, backoffLevel := nextCloudflareCooldown(state.Quota.BackoffLevel, disableCooling, now)
 						state.NextRetryAfter = next
@@ -1187,7 +1219,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 											!(auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now)) {
 											if shadow := otherState.credentialQuotaShadow; shadow != nil && isModelStateActiveCooldown(shadow, now) {
 												preservedSeq := shadow.cooldownRecordedSeq
-												*otherState = *shadow.cloneShallow()
+												restoreModelStateShadow(otherState, shadow)
 												otherState.cooldownRecordedSeq = preservedSeq
 											} else {
 												resetModelState(otherState, now)
@@ -1248,7 +1280,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								}
 							}
 						case 408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526:
-							state.NextRetryAfter = recoverableFailureRetryAfterWithHint(now, result.RetryAfter, disableCooling)
+							if codexOAuth && !disableCooling && result.RetryAfter != nil && *result.RetryAfter > 0 {
+								state.NextRetryAfter = now.Add(*result.RetryAfter)
+							} else {
+								state.NextRetryAfter = recoverableFailureRetryAfterWithHint(now, result.RetryAfter, disableCooling)
+							}
 							state.Unavailable = !state.NextRetryAfter.IsZero()
 						default:
 							state.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
@@ -1591,6 +1627,7 @@ func mergeModelState(target, source *ModelState) *ModelState {
 	// restored or alias-migrated state into a live auth cannot reopen the
 	// stale-success race. Both sides stay zero across a process restart,
 	// where restored cooldowns must remain clearable by any success.
+	merged.transientFailures = mergeTransientFailureHistories(target.transientFailures, source.transientFailures)
 	merged.cooldownRecordedSeq = target.cooldownRecordedSeq
 	if source.cooldownRecordedSeq > merged.cooldownRecordedSeq {
 		merged.cooldownRecordedSeq = source.cooldownRecordedSeq
@@ -2393,15 +2430,22 @@ func retryAfterFromError(err error) *time.Duration {
 		RetryAfter() *time.Duration
 	}
 	var rap retryAfterProvider
-	if !errors.As(err, &rap) || rap == nil {
-		return nil
+	if errors.As(err, &rap) && rap != nil {
+		if retryAfter := rap.RetryAfter(); retryAfter != nil {
+			value := *retryAfter
+			return &value
+		}
 	}
-	retryAfter := rap.RetryAfter()
-	if retryAfter == nil {
-		return nil
+	// Codex WebSocket errors carry response headers in the error itself rather
+	// than the HTTP response context. Preserve the explicit turn-limit hint.
+	type headersProvider interface {
+		Headers() http.Header
 	}
-	value := *retryAfter
-	return &value
+	var hp headersProvider
+	if errors.As(err, &hp) && hp != nil && isCodexTurnRateLimit(Result{Error: &Error{HTTPStatus: statusCodeFromError(err), Message: err.Error()}}) {
+		return codexRetryAfterHeaders(hp.Headers())
+	}
+	return nil
 }
 
 func isCredentialScopedError(err error) bool {

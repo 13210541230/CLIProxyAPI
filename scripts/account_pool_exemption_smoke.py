@@ -120,10 +120,12 @@ class Stub(BaseHTTPRequestHandler):
         payload = json.loads(data or b"{}")
         text = json.dumps(payload.get("input", ""))
         account = "a" if self.headers.get("Authorization") == "Bearer synthetic-a" else "b"
-        entry = {"account": account, "hold": "hold-" in text, "fail": "fail-" in text, "session": self.headers.get("Session_id", self.headers.get("X-Session-Id", "")),
+        entry = {"account": account, "model": payload.get("model"), "hold": "hold-" in text, "fail": "fail-" in text, "recoverAfterHint": "recover-after-hint" in text,
+                 "session": self.headers.get("Session_id", self.headers.get("X-Session-Id", "")),
                  "reservationHeaderPresent": bool(self.headers.get("X-CPA-Account-Pool-Request-Id"))}
         with LOCK:
             CALLS.append(entry)
+            first_recover_attempt = entry["recoverAfterHint"] and sum(call["recoverAfterHint"] for call in CALLS) == 1
         if entry["hold"]:
             with LOCK:
                 WAITING[account] += 1
@@ -132,11 +134,15 @@ class Stub(BaseHTTPRequestHandler):
             finally:
                 with LOCK:
                     WAITING[account] -= 1
-        if entry["fail"] or "overload-" in text:
+        if entry["fail"] or ("overload-" in text and (not entry["recoverAfterHint"] or first_recover_attempt)):
             overloaded = "overload-" in text
             encoded = json.dumps({"error": {"message": "server_is_overloaded" if overloaded else "synthetic failure", "type": "server_error", "code": "server_is_overloaded" if overloaded else "synthetic_failure"}}).encode()
             self.send_response(502 if overloaded else 503)
             self.send_header("Content-Type", "application/json")
+            if entry["recoverAfterHint"]:
+                self.send_header("Retry-After", "1")
+            elif "with-retry-after" in text:
+                self.send_header("Retry-After", "30")
         else:
             response = {"id": "resp-smoke", "object": "response", "status": "completed", "model": payload.get("model"),
                         "output": [{"id": "msg-smoke", "type": "message", "role": "assistant", "status": "completed",
@@ -153,7 +159,7 @@ class Stub(BaseHTTPRequestHandler):
             pass
 
 
-def prepare(manager_binary=None):
+def prepare(manager_binary=None, cooling_disabled=False):
     for port in (CPA_PORT, MANAGER_PORT, STUB_PORT):
         with socket.socket() as sock:
             assert sock.connect_ex(("127.0.0.1", port)) != 0, f"Port {port} occupied; refusing to affect another process"
@@ -176,8 +182,15 @@ remote-management:
   disable-control-panel: true
 logging-to-file: false
 request-log: false
-request-retry: 0
-disable-cooling: false
+request-retry: 1
+max-retry-interval: 2
+disable-cooling: {str(cooling_disabled).lower()}
+oauth-model-alias:
+  codex:
+    - name: "gpt-6.1-sol"
+      alias: "gpt-5.5"
+      fork: true
+      force-mapping: true
 proxy-url: "http://127.0.0.1:{STUB_PORT}"
 usage-statistics-enabled: false
 plugins:
@@ -211,8 +224,8 @@ def state(auth):
     return checked(MANAGER, API + "/state?authId=" + auth)["state"]
 
 
-def run(keep_alive=False, manager_binary=None):
-    prepare(manager_binary)
+def run(keep_alive=False, manager_binary=None, cooling_disabled_probe=False):
+    prepare(manager_binary, cooling_disabled_probe)
     upstream = ThreadingHTTPServer(("127.0.0.1", STUB_PORT), Stub)
     threading.Thread(target=upstream.serve_forever, daemon=True).start()
     report = {"checks": [], "ports": {"cpa": CPA_PORT, "manager": MANAGER_PORT, "stub": STUB_PORT}}
@@ -253,8 +266,36 @@ def run(keep_alive=False, manager_binary=None):
         report["model"] = model
         report["authIds"] = {"a": a, "b": b}
 
-        def chat(key, session, text="probe"):
-            return request(CPA, "/v1/responses", "POST", {"model": model, "input": [{"role": "user", "content": text}], "stream": False}, key=key, headers={"X-Session-Id": session})
+        def chat(key, session, text="probe", requested_model=None):
+            return request(CPA, "/v1/responses", "POST", {"model": requested_model or model, "input": [{"role": "user", "content": text}], "stream": False}, key=key, headers={"X-Session-Id": session})
+
+        if cooling_disabled_probe:
+            retry_config = checked(CPA, "/v8/management/config/routing/retry")
+            assert retry_config.get("request-retry") == 1 and retry_config.get("max-retry-interval") == 2, retry_config
+            status, payload = chat(NORMAL, "cooling-disabled", requested_model="gpt-6.1-sol")
+            assert status == 200 and "handled-by-a" in json.dumps(payload), (status, payload)
+            with LOCK:
+                before = len(CALLS)
+            status, payload = chat(NORMAL, "cooling-disabled", "overload-synthetic-with-retry-after", "gpt-5.5")
+            assert status >= 400, (status, payload)
+            with LOCK:
+                calls = CALLS[before:]
+                assert len(calls) == 1 and calls[0]["account"] == "a" and calls[0]["model"] == "gpt-6.1-sol", calls
+            status, payload = chat(NORMAL, "cooling-disabled", requested_model="gpt-6.1-sol")
+            assert status == 200 and "handled-by-a" in json.dumps(payload), (status, payload)
+            report["checks"].append("cooling disabled: request-retry=1 respects upstream Retry-After without rebinding")
+            with LOCK:
+                before = len(CALLS)
+            started = time.monotonic()
+            status, payload = chat(NORMAL, "cooling-disabled", "overload-recover-after-hint", "gpt-5.5")
+            elapsed = time.monotonic() - started
+            with LOCK:
+                calls = CALLS[before:]
+            assert status == 200 and "handled-by-a" in json.dumps(payload) and elapsed >= 0.8, (status, payload, elapsed, calls, retry_config)
+            assert len(calls) == 2 and all(call["account"] == "a" for call in calls), calls
+            report["checks"].append(f"cooling disabled: same account recovers after upstream hint ({elapsed:.2f}s)")
+            print("SMOKE_PASS", json.dumps(report["checks"]), flush=True)
+            return
 
         status, payload = chat(EXEMPT, "primary-first")
         assert status == 200 and "handled-by-a" in json.dumps(payload), (status, payload)
@@ -372,24 +413,62 @@ def run(keep_alive=False, manager_binary=None):
         assert status == 200 and "handled-by-a" in json.dumps(payload), (status, payload)
         report["checks"].append("restored current-pool capacity recovers the same session immediately")
 
-        # Reproduce the reported populated-pool failure through CPA's real
-        # cooldown filter, not by manually editing the scheduler candidates.
+        # Verify isolated and sustained upstream failures through the actual
+        # scheduler and cooldown filter, without editing candidate lists.
         with LOCK:
             before = len(CALLS)
-        status, payload = chat(NORMAL, "policy-rebind-inflight", "overload-synthetic")
+        status, payload = chat(NORMAL, "policy-rebind-inflight", "overload-synthetic", "gpt-5.5")
         assert status >= 400, (status, payload)
         with LOCK:
-            assert CALLS[before:] and all(call["account"] == "a" for call in CALLS[before:]), CALLS[before:]
+            assert CALLS[before:] and all(call["account"] == "a" and call["model"] == "gpt-6.1-sol" for call in CALLS[before:]), CALLS[before:]
+        status, payload = chat(NORMAL, "policy-rebind-inflight", requested_model="gpt-6.1-sol")
+        assert status == 200 and "handled-by-a" in json.dumps(payload), (status, payload)
+        report["checks"].append("one alias 502 leaves the bound account and target model available")
+        with LOCK:
+            before = len(CALLS)
+        status, payload = chat(NORMAL, "policy-rebind-inflight", "overload-synthetic-with-retry-after", "gpt-5.5")
+        assert status >= 400, (status, payload)
+        with LOCK:
+            hinted_calls = CALLS[before:]
+            assert len(hinted_calls) == 1 and hinted_calls[0]["account"] == "a" and hinted_calls[0]["model"] == "gpt-6.1-sol", hinted_calls
+            before = len(CALLS)
+        status, payload = chat(NORMAL, "policy-rebind-inflight", requested_model="gpt-6.1-sol")
+        assert status == 503 and "bound account is not an eligible candidate" in json.dumps(payload), (status, payload)
+        with LOCK:
+            assert len(CALLS) == before, "explicit Retry-After failed to stop the next upstream request"
+        reset_cooldown(a)
+        status, payload = chat(NORMAL, "policy-rebind-inflight", requested_model="gpt-6.1-sol")
+        assert status == 200 and "handled-by-a" in json.dumps(payload), (status, payload)
+        report["checks"].append("explicit 502 Retry-After prevents immediate retry and protects the target model until reset")
+        with LOCK:
+            before = len(CALLS)
+        started = time.monotonic()
+        status, payload = chat(NORMAL, "policy-rebind-inflight", "overload-recover-after-hint", "gpt-5.5")
+        elapsed = time.monotonic() - started
+        assert status == 200 and "handled-by-a" in json.dumps(payload) and elapsed >= 0.8, (status, payload, elapsed)
+        with LOCK:
+            calls = CALLS[before:]
+            assert len(calls) == 2 and all(call["account"] == "a" for call in calls), calls
+        report["checks"].append(f"same account recovers after permitted upstream wait ({elapsed:.2f}s)")
+        for _ in range(3):
+            with LOCK:
+                before = len(CALLS)
+            status, payload = chat(NORMAL, "policy-rebind-inflight", "overload-synthetic", "gpt-5.5")
+            assert status >= 400, (status, payload)
+            with LOCK:
+                assert CALLS[before:] and all(call["account"] == "a" and call["model"] == "gpt-6.1-sol" for call in CALLS[before:]), CALLS[before:]
+        with LOCK:
             before = len(CALLS)
         for session, expected_reason in (("policy-rebind-inflight", "bound account is not an eligible candidate"),
                                          ("new-user-model-cooling", "assigned account pool has no eligible candidates")):
-            status, payload = chat(NORMAL, session)
+            requested_model = "gpt-5.5" if session == "policy-rebind-inflight" else "gpt-6.1-sol"
+            status, payload = chat(NORMAL, session, requested_model=requested_model)
             assert status == 503 and expected_reason in json.dumps(payload), (session, status, payload)
         with LOCK:
             assert len(CALLS) == before, "cooling pool leaked traffic to the healthy foreign auth"
-        report["checks"].append("real 502 overload cools a configured pool member and rejects old/new sessions before upstream")
+        report["checks"].append("three independent 502 requests cool a pool member and reject old/new sessions before upstream")
         reset_cooldown(a)
-        status, payload = chat(NORMAL, "policy-rebind-inflight")
+        status, payload = chat(NORMAL, "policy-rebind-inflight", requested_model="gpt-6.1-sol")
         assert status == 200 and "handled-by-a" in json.dumps(payload), (status, payload)
         report["checks"].append("clearing model cooldown restores the same account without rebinding")
         wait_until(lambda: state(a)["active"] == 0 and state(b)["active"] == 0, label="final completion")
@@ -431,6 +510,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--keep-alive", action="store_true")
     parser.add_argument("--manager-binary", type=Path)
+    parser.add_argument("--cooling-disabled-probe", action="store_true", help="Verify Retry-After with global cooling disabled")
     parser.add_argument("--port-offset", type=int, default=0, help="Shift fixture ports and isolate scratch files without affecting another instance")
     try:
         args = parser.parse_args()
@@ -442,7 +522,7 @@ if __name__ == "__main__":
             MANAGER = f"http://127.0.0.1:{MANAGER_PORT}"
             STUB = f"http://127.0.0.1:{STUB_PORT}"
             SCRATCH = ROOT / "build_tmp" / f"account-pool-exemption-{args.port_offset}"
-        run(args.keep_alive, args.manager_binary)
+        run(args.keep_alive, args.manager_binary, args.cooling_disabled_probe)
     except Exception:
         traceback.print_exc(file=sys.stdout)
         sys.exit(1)
