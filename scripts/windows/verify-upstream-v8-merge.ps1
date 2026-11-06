@@ -4,25 +4,28 @@
 # issues; anything else still fails the run. Do not leave a second worktree (for
 # example a pristine upstream checkout under build_tmp) inside the repository while
 # running: internal/util TestInPlaceByteWritesAreReviewed scans the whole tree.
+param([string]$LogPath)
 $ErrorActionPreference = 'Continue'
-$repo = 'D:\C_projects\CLIProxyAPI'
-$log = Join-Path $repo 'logs\verify-upstream-v8-merge.log'
+$repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$log = if ($LogPath) { $LogPath } else { Join-Path $repo 'logs\verify-upstream-v8-merge.log' }
 Set-Location $repo
 if (Test-Path $log) { Remove-Item $log -Force }
 $failed = @()
 # Documented pre-existing upstream conditions (reproduced on a pristine upstream
 # worktree): vet notes about unsafe.Pointer in the DLL loader, one openai handler
 # test, and one translator golden test.
-$knownPatterns = @(
-  'possible misuse of unsafe.Pointer',
-  'TestResponsesInterruptStopsHTTPUpstream',
-  'openai_responses_interrupt_test.go',
-  'TestToolSearchDisabledMatchesDevGolden',
-  'claude_openai-responses_tool_search_disabled_test.go'
-)
+$knownPatterns = @{
+  'test-sdk-api' = @('TestResponsesInterruptStopsHTTPUpstream', 'openai_responses_interrupt_test.go')
+  'test-translator' = @('TestToolSearchDisabledMatchesDevGolden', 'claude_openai-responses_tool_search_disabled_test.go')
+  'test-core' = @('TestToolSearchDisabledMatchesDevGolden', 'claude_openai-responses_tool_search_disabled_test.go')
+}
 function Write-Log([string]$text) { $text | Out-File -FilePath $log -Append -Encoding utf8 }
-function Test-Known([string]$line) {
-  foreach ($pattern in $knownPatterns) { if ($line -like "*$pattern*") { return $true } }
+function Test-Known([string]$name, [string]$line) {
+  if ($name -eq 'go-vet') {
+    $normalized = $line.Replace('\', '/')
+    return $normalized -match 'internal/pluginhost/loader_windows(_test)?\.go:\d+:\d+: possible misuse of unsafe\.Pointer'
+  }
+  foreach ($pattern in $knownPatterns[$name]) { if ($line -like "*$pattern*") { return $true } }
   return $false
 }
 function Step([string]$name, [scriptblock]$block) {
@@ -30,9 +33,10 @@ function Step([string]$name, [scriptblock]$block) {
   $out = & $block 2>&1 | Out-String
   $code = $LASTEXITCODE
   $unexpected = @()
+  $knownSeen = $false
   foreach ($line in ($out -split "`r?`n")) {
     if ($line.Trim() -eq '') { continue }
-    if (Test-Known $line) { continue }
+    if (Test-Known $name $line) { $knownSeen = $true; continue }
     # Build/test summaries belong to the exit code check, not to failure detection.
     if ($line -match '^(FAIL|ok)\s') { continue }
     if ($line -match '^\s*---\s*FAIL:') { $unexpected += $line; continue }
@@ -40,10 +44,13 @@ function Step([string]$name, [scriptblock]$block) {
     if ($code -ne 0 -and $line -match '^\s+---\s*FAIL:') { $unexpected += $line; continue }
     if ($code -ne 0 -and $line -match 'panic:|undefined:|cannot use|build failed') { $unexpected += $line; continue }
   }
+  if ($code -ne 0 -and -not $knownSeen -and $unexpected.Count -eq 0) {
+    $unexpected += "command failed with exit code $code without a recognized baseline failure"
+  }
   if ($out) { Write-Log $out.TrimEnd() }
   Write-Log "=== $name exit=$code unexpected=$($unexpected.Count)"
   if ($unexpected.Count -gt 0) {
-    $global:failed += $name
+    $script:failed += $name
     foreach ($line in $unexpected) { Write-Log "!!! $name unexpected: $line" }
     return
   }
@@ -67,5 +74,5 @@ if ($failed.Count -gt 0) {
   Write-Log "=== FAILED: $($failed -join ', ')"
   exit 1
 }
-Write-Log '=== ALL GREEN'
+Write-Log '=== COMPLETED: no unexpected failures (documented baseline failures may be excluded)'
 exit 0

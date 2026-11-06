@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
 )
 
 const (
@@ -64,6 +64,10 @@ func requestLogCaptureEnabled(cfg *config.Config) bool {
 // RecordAPIRequest stores the upstream request metadata in Gin context for request logging.
 func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequestLog) {
 	if cfg == nil || cfg.CommercialMode {
+		return
+	}
+	// Check the immutable policy before accessing the pooled request context.
+	if !cfg.RequestLog && logging.DeferredAPIRequestCaptureDisabled(ctx) {
 		return
 	}
 	ginCtx := ginContextFrom(ctx)
@@ -409,21 +413,21 @@ func AppendCodexAPIWebsocketResponse(ctx context.Context, cfg *config.Config, pa
 }
 
 func parseCodexTurnStateMetadataHeaders(payload []byte) http.Header {
-	if gjson.GetBytes(payload, "type").String() != "codex.response.metadata" {
+	if ojson.GetBytes(payload, "type").String() != "codex.response.metadata" {
 		return nil
 	}
 
-	metadataHeaders := gjson.GetBytes(payload, "headers")
+	metadataHeaders := ojson.GetBytes(payload, "headers")
 	if !metadataHeaders.IsObject() {
 		return nil
 	}
 
 	var turnState string
-	metadataHeaders.ForEach(func(key, value gjson.Result) bool {
+	metadataHeaders.ForEach(func(key, value ojson.Result) bool {
 		if !strings.EqualFold(key.String(), "x-codex-turn-state") {
 			return true
 		}
-		if value.Type == gjson.String {
+		if value.Type == ojson.String {
 			turnState = strings.TrimSpace(value.String())
 		}
 		return false
@@ -770,9 +774,9 @@ func extractHTMLTitle(body []byte) string {
 
 // extractJSONErrorMessage attempts to extract error.message from JSON error responses
 func extractJSONErrorMessage(body []byte) string {
-	result := gjson.GetBytes(body, "error.message")
+	result := ojson.GetBytesNoCopy(body, "error.message")
 	if result.Exists() && result.String() != "" {
-		return result.String()
+		return strings.Clone(result.String())
 	}
 	return ""
 }

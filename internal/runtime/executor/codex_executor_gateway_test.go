@@ -1,11 +1,35 @@
 package executor
 
 import (
+	"context"
+	"net/http"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
+
+func TestCodexRequestCredsSIWCPartitionAndGateway(t *testing.T) {
+	const gateway = "https://codex-relay.example.com/backend-api/codex"
+	const explicit = "https://explicit.example.com/backend-api/codex"
+	e := NewCodexExecutor(&config.Config{Codex: config.CodexConfig{BaseURL: gateway}})
+	auth := &coreauth.Auth{Metadata: map[string]any{
+		"access_token": "outer-token", "use_siwc": true,
+		"siwc": map[string]any{"access_token": "siwc-token"},
+	}}
+	codexHeaders := http.Header{"User-Agent": []string{"codex_cli_rs/1.0"}}
+	piHeaders := http.Header{"User-Agent": []string{"pi-agent/1.0"}}
+	if key, base := e.codexRequestCreds(context.Background(), auth, codexHeaders); key != "outer-token" || base != gateway {
+		t.Fatalf("Codex client credentials = (%q, %q), want outer token and gateway", key, base)
+	}
+	if key, base := e.codexRequestCreds(context.Background(), auth, piHeaders); key != "siwc-token" || base != defaultOpenAISIWCBaseURL {
+		t.Fatalf("Pi client credentials = (%q, %q), want SIWC token and SIWC endpoint", key, base)
+	}
+	auth.Attributes = map[string]string{"base_url": explicit}
+	if key, base := e.codexRequestCreds(context.Background(), auth, codexHeaders); key != "outer-token" || base != explicit {
+		t.Fatalf("explicit Codex client credentials = (%q, %q), want outer token and explicit endpoint", key, base)
+	}
+}
 
 func TestCodexCredsGatewayResolution(t *testing.T) {
 	const gateway = "https://codex-relay.example.com/backend-api/codex"

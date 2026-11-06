@@ -234,7 +234,7 @@ def run(keep_alive=False, manager_binary=None, cooling_disabled_probe=False):
     log_handle = (LOGS / "account-pool-exemption-manager.log").open("w", encoding="utf-8")
     env = os.environ.copy()
     for name in list(env):
-        if name.startswith(("CPA_", "USAGE_")) or name in ("HTTP_ADDR", "PANEL_PATH", "MANAGEMENT_STATIC_PATH", "WRITABLE_PATH"):
+        if name.upper().startswith(("CPA_", "USAGE_", "PGSTORE_", "GITSTORE_", "OBJECTSTORE_")) or name.upper() in ("HTTP_ADDR", "PANEL_PATH", "MANAGEMENT_STATIC_PATH", "WRITABLE_PATH"):
             env.pop(name, None)
     env["CPA_MANAGER_CONFIG"] = str(SCRATCH / "config.json")
     env["MANAGEMENT_STATIC_PATH"] = str(SCRATCH / "static")

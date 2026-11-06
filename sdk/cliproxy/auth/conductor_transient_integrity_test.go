@@ -14,6 +14,40 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
+func TestAvailabilityNeutralAttemptDiscardsPriorStagedTransientFailure(t *testing.T) {
+	for _, mode := range []string{"compact", "count"} {
+		t.Run(mode, func(t *testing.T) {
+			m, id := newTransientTestManager(t)
+			m.SetTransientCredentialRetries(0)
+			ctx, scope := m.withTransientRequestScope(context.Background())
+			prior := Result{AuthID: id, Provider: "codex", Model: "gpt-5.6-terra", Error: &Error{HTTPStatus: http.StatusBadGateway, Message: "server_is_overloaded"}}
+			if !scope.stage(ctx, prior) {
+				t.Fatal("could not stage prior transient failure")
+			}
+			invoke := func(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+				return cliproxyexecutor.Response{}, customStatusError{code: http.StatusNotImplemented, msg: "not implemented"}
+			}
+			m.RegisterExecutor(&mockCustomErrorExecutor{identifier: "codex", executeFn: invoke, countFn: invoke})
+			req := cliproxyexecutor.Request{Model: "gpt-5.6-terra"}
+			var err error
+			if mode == "compact" {
+				_, err = m.executeMixedOnce(ctx, []string{"codex"}, req, cliproxyexecutor.Options{Alt: "responses/compact"}, 1, 0, 1)
+			} else {
+				_, err = m.executeCountMixedOnce(ctx, []string{"codex"}, req, cliproxyexecutor.Options{}, 1, 0, 1)
+			}
+			if err == nil {
+				t.Fatal("expected unsupported endpoint error")
+			}
+			scope.mu.Lock()
+			_, retained := scope.pending[transientKey(prior)]
+			scope.mu.Unlock()
+			if retained {
+				t.Fatal("availability-neutral result retained a prior staged failure for the same request")
+			}
+		})
+	}
+}
+
 func TestCodexOverloadHonorsExplicitRetryAfter(t *testing.T) {
 	previous := transientErrorCooldownSeconds.Load()
 	transientErrorCooldownSeconds.Store(-1)

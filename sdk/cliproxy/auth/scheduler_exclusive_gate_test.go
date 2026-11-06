@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"testing"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -121,6 +123,84 @@ func TestManagerExclusiveClaimGateIsProviderScoped(t *testing.T) {
 	}
 	if scheduler.calls != 1 {
 		t.Fatalf("scheduler.calls = %d after claimed pick, want 1", scheduler.calls)
+	}
+}
+
+func TestManagerExclusiveClaimGateSelectionPaths(t *testing.T) {
+	for _, fastPath := range []bool{true, false} {
+		pathName := "fast-path"
+		if !fastPath {
+			pathName = "custom-selector"
+		}
+		for _, claim := range []string{"codex", ""} {
+			claimName := "claimed"
+			if claim == "" {
+				claimName = "released"
+			}
+			for _, tc := range []struct {
+				name      string
+				providers []string
+				mixed     bool
+			}{
+				{name: "single-codex", providers: []string{"codex"}},
+				{name: "single-unclaimed", providers: []string{"gemini"}},
+				{name: "mixed-claimed-first", providers: []string{"codex", "gemini"}, mixed: true},
+				{name: "mixed-claimed-last", providers: []string{"gemini", "codex"}, mixed: true},
+				{name: "mixed-unclaimed", providers: []string{"gemini"}, mixed: true},
+			} {
+				t.Run(pathName+"/"+claimName+"/"+tc.name, func(t *testing.T) {
+					var selector Selector = &RoundRobinSelector{}
+					customSelector := &trackingSelector{}
+					if !fastPath {
+						selector = customSelector
+					}
+					manager := NewManager(nil, selector, nil)
+					for _, provider := range []string{"codex", "gemini"} {
+						manager.executors[provider] = schedulerTestExecutor{}
+						if _, errRegister := manager.Register(context.Background(), &Auth{ID: "auth-" + provider, Provider: provider}); errRegister != nil {
+							t.Fatalf("Register(%s) error = %v", provider, errRegister)
+						}
+					}
+					if manager.useSchedulerFastPath() != fastPath {
+						t.Fatalf("useSchedulerFastPath() = %v, want %v", manager.useSchedulerFastPath(), fastPath)
+					}
+					scheduler := &exclusiveClaimGateScheduler{claim: claim}
+					scheduler.handled = true
+					scheduler.err = &Error{Code: "policy_unavailable", Message: "exclusive scheduler policy is unavailable", Retryable: true, HTTPStatus: 503}
+					manager.SetPluginScheduler(scheduler)
+					opts := cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.SelectionIDMetadataKey: "stale-selection"}}
+					var got *Auth
+					var errPick error
+					if tc.mixed {
+						got, _, _, errPick = manager.pickNextMixed(context.Background(), tc.providers, "", opts, nil)
+					} else {
+						got, _, errPick = manager.pickNext(context.Background(), tc.providers[0], "", opts, nil)
+					}
+					claimed := false
+					for _, provider := range tc.providers {
+						claimed = claimed || provider == claim
+					}
+					if claimed {
+						if got != nil || !errors.Is(errPick, scheduler.err) {
+							t.Fatalf("pick() = %v, %v; want nil, policy_unavailable", got, errPick)
+						}
+						if scheduler.calls != 1 || customSelector.calls != 0 {
+							t.Fatalf("plugin calls = %d, selector calls = %d; want 1, 0", scheduler.calls, customSelector.calls)
+						}
+					} else {
+						if errPick != nil || got == nil || !slices.Contains(tc.providers, got.Provider) {
+							t.Fatalf("pick() = %v, %v; want native selection from %v", got, errPick, tc.providers)
+						}
+						if scheduler.calls != 0 {
+							t.Fatalf("plugin calls = %d without a relevant claim, want 0", scheduler.calls)
+						}
+					}
+					if _, exists := opts.Metadata[cliproxyexecutor.SelectionIDMetadataKey]; exists {
+						t.Fatal("failed or native pick retained a plugin selection ID")
+					}
+				})
+			}
+		}
 	}
 }
 

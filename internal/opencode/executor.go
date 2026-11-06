@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
@@ -26,7 +27,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/sjson"
 )
 
 // ProviderName is the auth-file "type" that selects this executor.
@@ -1010,8 +1010,9 @@ func ensureStreamUsage(body []byte, protocol Protocol) []byte {
 	if protocol != ProtocolChat || len(body) == 0 {
 		return body
 	}
-	if next, err := sjson.SetBytes(body, "stream_options.include_usage", true); err == nil {
-		return next
+	doc := ojson.NewDoc(body)
+	if err := doc.Set("stream_options.include_usage", true); err == nil {
+		return doc.Bytes()
 	}
 	return body
 }
