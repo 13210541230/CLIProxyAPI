@@ -3,12 +3,46 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // The v8 migration comments out configuration sections it does not recognise.
 // Fork-only fields therefore have to be registered in the v8 layout, otherwise
 // an operator's quota limits, Codex gateway, or plugin settings disappear the
 // first time the config is saved.
+func TestV8MigrationKeepsUsageExemptKeyHashes(t *testing.T) {
+	const hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	raw := []byte("usage-exempt-api-key-sha256: [" + hash + "]\n")
+	migrated, _, err := NormalizeConfigLayout(raw, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateV8Config(migrated); err != nil {
+		t.Fatal(err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(migrated, &doc); err != nil {
+		t.Fatal(err)
+	}
+	node := yamlPath(doc.Content[0], "observability.usage.usage-exempt-api-key-sha256")
+	if node == nil || len(node.Content) != 1 || node.Content[0].Value != hash {
+		t.Fatalf("usage exemption lost during migration: %s", migrated)
+	}
+	cfg, err := ParseConfigBytes(migrated)
+	if err != nil || len(cfg.UsageExemptAPIKeySHA256) != 1 || cfg.UsageExemptAPIKeySHA256[0] != hash {
+		t.Fatalf("parsed exemption = %#v, error = %v", cfg, err)
+	}
+	again, _, err := NormalizeConfigLayout(migrated, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = ParseConfigBytes(again)
+	if err != nil || len(cfg.UsageExemptAPIKeySHA256) != 1 || cfg.UsageExemptAPIKeySHA256[0] != hash {
+		t.Fatalf("re-migrated exemption = %#v, error = %v", cfg, err)
+	}
+}
+
 func TestV8MigrationKeepsForkOnlyConfiguration(t *testing.T) {
 	const gateway = "https://relay.example.invalid/codex"
 	raw := []byte(`host: 127.0.0.1

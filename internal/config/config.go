@@ -88,6 +88,9 @@ type Config struct {
 	// UsageStatisticsEnabled toggles in-memory usage aggregation; when false, usage data is discarded.
 	UsageStatisticsEnabled bool `yaml:"usage-statistics-enabled" json:"usage-statistics-enabled"`
 
+	// UsageExemptAPIKeySHA256 contains full SHA-256 hashes of client keys excluded from the usage queue.
+	UsageExemptAPIKeySHA256 []string `yaml:"usage-exempt-api-key-sha256" json:"usage-exempt-api-key-sha256"`
+
 	// RedisUsageQueueRetentionSeconds controls how long usage queue items are retained
 	// in memory for Management API consumers.
 	// Default: 60. Max: 3600.

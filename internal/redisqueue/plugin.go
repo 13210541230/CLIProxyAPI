@@ -25,7 +25,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	if p == nil {
 		return
 	}
-	if !Enabled() || !UsageStatisticsEnabled() {
+	if !Enabled() || !UsageStatisticsEnabled() || usageKeyExempt(strings.TrimSpace(record.APIKey)) {
 		return
 	}
 

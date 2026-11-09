@@ -37,6 +37,7 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - `internal/watcher/` — Config hot-reload and watchers
 - `internal/wsrelay/` — WebSocket relay sessions
 - `internal/usage/` — Usage and token accounting
+- `observability.usage.usage-exempt-api-key-sha256` excludes configured client-key hashes from the Manager usage queue only; retain other usage consumers and existing quota pause/downgrade states. New dedicated keys avoid historical usage; in-flight records use the exemption active when processed.
 - `internal/home/` — CLIProxyAPIHome control plane integration (bootstrap, RESP communication, dispatch coordination)
 - `internal/tui/` — Bubbletea terminal UI (`--tui`, `--standalone`)
 - `sdk/cliproxy/` — Embeddable SDK entry (service/builder/watchers/pipeline)

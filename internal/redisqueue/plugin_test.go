@@ -2,6 +2,8 @@ package redisqueue
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +15,36 @@ import (
 	coresession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
+
+func TestUsageQueueExemptClientKey(t *testing.T) {
+	withEnabledQueue(t, func() {
+		hash := sha256.Sum256([]byte("exempt-key"))
+		SetUsageExemptKeyHashes([]string{hex.EncodeToString(hash[:])})
+		defer SetUsageExemptKeyHashes(nil)
+
+		manager := coreusage.NewManager(16)
+		manager.Register(&usageQueuePlugin{})
+		defer manager.Stop()
+
+		exemptCtx := coreusage.WithAPIKey(context.Background(), "exempt-key")
+		manager.Publish(exemptCtx, coreusage.Record{Model: "exempt-success"})
+		manager.Publish(exemptCtx, coreusage.Record{Model: "exempt-failure", Failed: true})
+		manager.Publish(coreusage.WithAPIKey(context.Background(), "normal-key"), coreusage.Record{Model: "normal"})
+		payload := waitForSinglePayload(t, 2*time.Second)
+		requireStringField(t, payload, "model", "normal")
+		if records := PopOldest(10); len(records) != 0 {
+			t.Fatalf("unexpected exempt records: %d", len(records))
+		}
+		manager.Publish(context.Background(), coreusage.Record{Model: "unknown-identity", Failed: true})
+		payload = waitForSinglePayload(t, 2*time.Second)
+		requireStringField(t, payload, "model", "unknown-identity")
+
+		SetUsageExemptKeyHashes(nil)
+		manager.Publish(exemptCtx, coreusage.Record{Model: "after-removal"})
+		payload = waitForSinglePayload(t, 2*time.Second)
+		requireStringField(t, payload, "model", "after-removal")
+	})
+}
 
 func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 	withEnabledQueue(t, func() {
