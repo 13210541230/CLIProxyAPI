@@ -3,8 +3,11 @@ package redisqueue
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
 	"strings"
 	"sync/atomic"
+
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 )
 
 var usageStatisticsEnabled atomic.Bool
@@ -27,6 +30,9 @@ func SetUsageExemptKeyHashes(hashes []string) {
 	exempt := make(map[string]struct{}, len(hashes))
 	for _, hash := range hashes {
 		exempt[strings.ToLower(strings.TrimSpace(hash))] = struct{}{}
+	}
+	if hash := strings.TrimSpace(os.Getenv(sdkaccess.UnmonitoredAPIKeyHashEnv)); hash != "" {
+		exempt[strings.ToLower(hash)] = struct{}{}
 	}
 	usageExemptKeyHashes.Store(exempt)
 }

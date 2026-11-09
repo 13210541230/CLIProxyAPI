@@ -1271,7 +1271,10 @@ observability:
     # When false, disable in-memory usage statistics aggregation
     usage-statistics-enabled: false
 
-    # Full SHA-256 hashes of dedicated client API keys excluded from the usage queue.
+    # Full SHA-256 hashes of client API keys excluded from the usage queue.
+    # For a dedicated key absent from this config and the Manager key list, set the
+    # CPA_UNMONITORED_API_KEY_SHA256 process environment variable instead; do not add
+    # that key or its digest to YAML. Restart the process after changing the variable.
     # These requests are excluded from Manager monitoring and its usage-based quota calculations.
     # This does not clear existing pauses/downgrades or disable other logs and plugins.
     # In-flight records use the exemption list active when they reach the queue.

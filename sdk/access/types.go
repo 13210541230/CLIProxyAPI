@@ -30,6 +30,9 @@ const (
 
 	// DefaultAccessProviderName is applied when no provider name is supplied.
 	DefaultAccessProviderName = "config-inline"
+
+	// UnmonitoredAPIKeyHashEnv holds the full SHA-256 of a dedicated client key.
+	UnmonitoredAPIKeyHashEnv = "CPA_UNMONITORED_API_KEY_SHA256"
 )
 
 // MakeInlineAPIKeyProvider constructs an inline API key provider configuration.

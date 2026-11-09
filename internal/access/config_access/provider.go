@@ -2,11 +2,16 @@ package configaccess
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"net/http"
+	"os"
 	"strings"
 
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	log "github.com/sirupsen/logrus"
 )
 
 // Register ensures the config-access provider is available to the access manager.
@@ -17,23 +22,33 @@ func Register(cfg *sdkconfig.SDKConfig) {
 	}
 
 	keys := normalizeKeys(cfg.APIKeys)
-	if len(keys) == 0 {
+	privateHash, configured := os.LookupEnv(sdkaccess.UnmonitoredAPIKeyHashEnv)
+	privateHash = strings.ToLower(strings.TrimSpace(privateHash))
+	if configured {
+		decoded, err := hex.DecodeString(privateHash)
+		if err != nil || len(decoded) != sha256.Size {
+			log.Errorf("%s must be a full SHA-256 hex digest; the dedicated key is disabled", sdkaccess.UnmonitoredAPIKeyHashEnv)
+			privateHash = ""
+		}
+	}
+	if len(keys) == 0 && !configured {
 		sdkaccess.UnregisterProvider(sdkaccess.AccessProviderTypeConfigAPIKey)
 		return
 	}
 
 	sdkaccess.RegisterProvider(
 		sdkaccess.AccessProviderTypeConfigAPIKey,
-		newProvider(sdkaccess.DefaultAccessProviderName, keys),
+		newProvider(sdkaccess.DefaultAccessProviderName, keys, privateHash),
 	)
 }
 
 type provider struct {
-	name string
-	keys map[string]struct{}
+	name        string
+	keys        map[string]struct{}
+	privateHash string
 }
 
-func newProvider(name string, keys []string) *provider {
+func newProvider(name string, keys []string, privateHash string) *provider {
 	providerName := strings.TrimSpace(name)
 	if providerName == "" {
 		providerName = sdkaccess.DefaultAccessProviderName
@@ -42,7 +57,7 @@ func newProvider(name string, keys []string) *provider {
 	for _, key := range keys {
 		keySet[key] = struct{}{}
 	}
-	return &provider{name: providerName, keys: keySet}
+	return &provider{name: providerName, keys: keySet, privateHash: privateHash}
 }
 
 func (p *provider) Identifier() string {
@@ -54,9 +69,6 @@ func (p *provider) Identifier() string {
 
 func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.Result, *sdkaccess.AuthError) {
 	if p == nil {
-		return nil, sdkaccess.NewNotHandledError()
-	}
-	if len(p.keys) == 0 {
 		return nil, sdkaccess.NewNotHandledError()
 	}
 	authHeader := r.Header.Get("Authorization")
@@ -89,7 +101,12 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 		if candidate.value == "" {
 			continue
 		}
-		if _, ok := p.keys[candidate.value]; ok {
+		_, ok := p.keys[candidate.value]
+		if !ok && p.privateHash != "" {
+			sum := sha256.Sum256([]byte(candidate.value))
+			ok = subtle.ConstantTimeCompare([]byte(hex.EncodeToString(sum[:])), []byte(p.privateHash)) == 1
+		}
+		if ok {
 			return &sdkaccess.Result{
 				Provider:  p.Identifier(),
 				Principal: candidate.value,
