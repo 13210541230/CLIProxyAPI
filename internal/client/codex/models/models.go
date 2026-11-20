@@ -146,6 +146,7 @@ func buildCodexClientModelsWithToolCapabilities(models []map[string]any, provide
 			}
 			applyCodexClientDevinDisplayName(entry, id, model, providersForModel)
 			applyCodexClientApplyPatchCapability(entry, id, applyPatchCapabilityForModel)
+			applyCodexClientAPISupport(entry, id, providersForModel)
 			result = append(result, entry)
 			continue
 		}
@@ -159,6 +160,7 @@ func buildCodexClientModelsWithToolCapabilities(models []map[string]any, provide
 		applyCodexClientVisibilityOverride(entry, id)
 		applyCodexClientDevinDisplayName(entry, id, model, providersForModel)
 		applyCodexClientApplyPatchCapability(entry, id, applyPatchCapabilityForModel)
+		applyCodexClientAPISupport(entry, id, providersForModel)
 		result = append(result, entry)
 	}
 
@@ -614,6 +616,18 @@ func codexClientModelProviders(id string, providersForModel ProvidersForModelFun
 		providers = providersForModel(base)
 	}
 	return providers
+}
+
+// applyCodexClientAPISupport marks non-Codex routes as available to API-key clients.
+func applyCodexClientAPISupport(entry map[string]any, id string, providersForModel ProvidersForModelFunc) {
+	if providersForModel == nil {
+		return
+	}
+	providers := codexClientModelProviders(id, providersForModel)
+	if len(providers) == 0 || allCodexClientProvidersAre(providers, "codex") {
+		return
+	}
+	entry["supported_in_api"] = true
 }
 
 // allCodexClientProvidersAre reports whether providers is non-empty and every

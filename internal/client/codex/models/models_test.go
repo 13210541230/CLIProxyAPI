@@ -787,6 +787,31 @@ func TestCodexClientModelsResponse_OAuthAliasesInheritCanonicalMetadata(t *testi
 	}
 }
 
+func TestCodexClientModelsExposeNonCodexRoutesToAPIKeyClients(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		providers []string
+		want      bool
+	}{
+		{name: "Claude route", providers: []string{"claude"}, want: true},
+		{name: "Codex route", providers: []string{"codex"}, want: false},
+		{name: "mixed routes", providers: []string{"codex", "claude"}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := BuildResponseForClient([]map[string]any{{"id": "gpt-6-chat-thinking"}}, func(string) []string {
+				return tc.providers
+			}, false, "")
+			models, ok := resp["models"].([]map[string]any)
+			if !ok || len(models) != 1 {
+				t.Fatalf("models = %#v, want one model", resp["models"])
+			}
+			if supported, ok := models[0]["supported_in_api"].(bool); !ok || supported != tc.want {
+				t.Errorf("supported_in_api = %#v, want %t", models[0]["supported_in_api"], tc.want)
+			}
+		})
+	}
+}
+
 func TestCodexClientModelsResponse_ExplicitRouteOverridesHonored(t *testing.T) {
 	modelRegistry := registry.GetGlobalRegistry()
 	clientID := "codex-route-override-test-client"
